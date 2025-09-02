@@ -22,6 +22,7 @@
 #include "nodes/parsenodes.h"
 #include "storage/block.h"
 
+typedef struct Distribution Distribution;
 
 /*
  * Relids
@@ -1631,6 +1632,9 @@ typedef struct Path
 
 	/* sort ordering of path's output; a List of PathKey nodes; see above */
 	List	   *pathkeys;
+
+	/* save the rows distribution of the current path */
+	Distribution *rows_dist pg_node_attr(read_write_ignore);
 } Path;
 
 /* Macro for extracting a path's parameterization relids; beware double eval */
