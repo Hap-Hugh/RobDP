@@ -47,26 +47,27 @@
  * be treated as ANDs or ORs, and we don't want to code each one separately.
  * Hence, these types and support routines.
  */
-typedef enum
-{
-	CLASS_ATOM,					/* expression that's not AND or OR */
-	CLASS_AND,					/* expression with AND semantics */
-	CLASS_OR					/* expression with OR semantics */
+typedef enum {
+    CLASS_ATOM, /* expression that's not AND or OR */
+    CLASS_AND, /* expression with AND semantics */
+    CLASS_OR /* expression with OR semantics */
 } PredClass;
 
 typedef struct PredIterInfoData *PredIterInfo;
 
-typedef struct PredIterInfoData
-{
-	/* node-type-specific iteration state */
-	void	   *state;
-	List	   *state_list;
-	/* initialize to do the iteration */
-	void		(*startup_fn) (Node *clause, PredIterInfo info);
-	/* next-component iteration function */
-	Node	   *(*next_fn) (PredIterInfo info);
-	/* release resources when done with iteration */
-	void		(*cleanup_fn) (PredIterInfo info);
+typedef struct PredIterInfoData {
+    /* node-type-specific iteration state */
+    void *state;
+    List *state_list;
+
+    /* initialize to do the iteration */
+    void (*startup_fn)(Node *clause, PredIterInfo info);
+
+    /* next-component iteration function */
+    Node *(*next_fn)(PredIterInfo info);
+
+    /* release resources when done with iteration */
+    void (*cleanup_fn)(PredIterInfo info);
 } PredIterInfoData;
 
 #define iterate_begin(item, clause, info)	\
@@ -81,34 +82,55 @@ typedef struct PredIterInfoData
 
 
 static bool predicate_implied_by_recurse(Node *clause, Node *predicate,
-										 bool weak);
+                                         bool weak);
+
 static bool predicate_refuted_by_recurse(Node *clause, Node *predicate,
-										 bool weak);
+                                         bool weak);
+
 static PredClass predicate_classify(Node *clause, PredIterInfo info);
+
 static void list_startup_fn(Node *clause, PredIterInfo info);
+
 static Node *list_next_fn(PredIterInfo info);
+
 static void list_cleanup_fn(PredIterInfo info);
+
 static void boolexpr_startup_fn(Node *clause, PredIterInfo info);
+
 static void arrayconst_startup_fn(Node *clause, PredIterInfo info);
+
 static Node *arrayconst_next_fn(PredIterInfo info);
+
 static void arrayconst_cleanup_fn(PredIterInfo info);
+
 static void arrayexpr_startup_fn(Node *clause, PredIterInfo info);
+
 static Node *arrayexpr_next_fn(PredIterInfo info);
+
 static void arrayexpr_cleanup_fn(PredIterInfo info);
+
 static bool predicate_implied_by_simple_clause(Expr *predicate, Node *clause,
-											   bool weak);
+                                               bool weak);
+
 static bool predicate_refuted_by_simple_clause(Expr *predicate, Node *clause,
-											   bool weak);
-static Node *extract_not_arg(Node *clause);
-static Node *extract_strong_not_arg(Node *clause);
+                                               bool weak);
+
+static Node *extract_not_arg(Node * clause);
+static Node *extract_strong_not_arg(Node * clause);
+
 static bool clause_is_strict_for(Node *clause, Node *subexpr, bool allow_false);
+
 static bool operator_predicate_proof(Expr *predicate, Node *clause,
-									 bool refute_it, bool weak);
+                                     bool refute_it, bool weak);
+
 static bool operator_same_subexprs_proof(Oid pred_op, Oid clause_op,
-										 bool refute_it);
+                                         bool refute_it);
+
 static bool operator_same_subexprs_lookup(Oid pred_op, Oid clause_op,
-										  bool refute_it);
-static Oid	get_btree_test_op(Oid pred_op, Oid clause_op, bool refute_it);
+                                          bool refute_it);
+
+static Oid get_btree_test_op(Oid pred_op, Oid clause_op, bool refute_it);
+
 static void InvalidateOprProofCacheCallBack(Datum arg, int cacheid, uint32 hashvalue);
 
 
@@ -150,33 +172,32 @@ static void InvalidateOprProofCacheCallBack(Datum arg, int cacheid, uint32 hashv
  */
 bool
 predicate_implied_by(List *predicate_list, List *clause_list,
-					 bool weak)
-{
-	Node	   *p,
-			   *c;
+                     bool weak) {
+    Node *p,
+            *c;
 
-	if (predicate_list == NIL)
-		return true;			/* no predicate: implication is vacuous */
-	if (clause_list == NIL)
-		return false;			/* no restriction: implication must fail */
+    if (predicate_list == NIL)
+        return true; /* no predicate: implication is vacuous */
+    if (clause_list == NIL)
+        return false; /* no restriction: implication must fail */
 
-	/*
+    /*
 	 * If either input is a single-element list, replace it with its lone
 	 * member; this avoids one useless level of AND-recursion.  We only need
 	 * to worry about this at top level, since eval_const_expressions should
 	 * have gotten rid of any trivial ANDs or ORs below that.
 	 */
-	if (list_length(predicate_list) == 1)
-		p = (Node *) linitial(predicate_list);
-	else
-		p = (Node *) predicate_list;
-	if (list_length(clause_list) == 1)
-		c = (Node *) linitial(clause_list);
-	else
-		c = (Node *) clause_list;
+    if (list_length(predicate_list) == 1)
+        p = (Node *) linitial(predicate_list);
+    else
+        p = (Node *) predicate_list;
+    if (list_length(clause_list) == 1)
+        c = (Node *) linitial(clause_list);
+    else
+        c = (Node *) clause_list;
 
-	/* And away we go ... */
-	return predicate_implied_by_recurse(c, p, weak);
+    /* And away we go ... */
+    return predicate_implied_by_recurse(c, p, weak);
 }
 
 /*
@@ -220,33 +241,32 @@ predicate_implied_by(List *predicate_list, List *clause_list,
  */
 bool
 predicate_refuted_by(List *predicate_list, List *clause_list,
-					 bool weak)
-{
-	Node	   *p,
-			   *c;
+                     bool weak) {
+    Node *p,
+            *c;
 
-	if (predicate_list == NIL)
-		return false;			/* no predicate: no refutation is possible */
-	if (clause_list == NIL)
-		return false;			/* no restriction: refutation must fail */
+    if (predicate_list == NIL)
+        return false; /* no predicate: no refutation is possible */
+    if (clause_list == NIL)
+        return false; /* no restriction: refutation must fail */
 
-	/*
+    /*
 	 * If either input is a single-element list, replace it with its lone
 	 * member; this avoids one useless level of AND-recursion.  We only need
 	 * to worry about this at top level, since eval_const_expressions should
 	 * have gotten rid of any trivial ANDs or ORs below that.
 	 */
-	if (list_length(predicate_list) == 1)
-		p = (Node *) linitial(predicate_list);
-	else
-		p = (Node *) predicate_list;
-	if (list_length(clause_list) == 1)
-		c = (Node *) linitial(clause_list);
-	else
-		c = (Node *) clause_list;
+    if (list_length(predicate_list) == 1)
+        p = (Node *) linitial(predicate_list);
+    else
+        p = (Node *) predicate_list;
+    if (list_length(clause_list) == 1)
+        c = (Node *) linitial(clause_list);
+    else
+        c = (Node *) clause_list;
 
-	/* And away we go ... */
-	return predicate_refuted_by_recurse(c, p, weak);
+    /* And away we go ... */
+    return predicate_refuted_by_recurse(c, p, weak);
 }
 
 /*----------
@@ -288,212 +308,189 @@ predicate_refuted_by(List *predicate_list, List *clause_list,
  */
 static bool
 predicate_implied_by_recurse(Node *clause, Node *predicate,
-							 bool weak)
-{
-	PredIterInfoData clause_info;
-	PredIterInfoData pred_info;
-	PredClass	pclass;
-	bool		result;
+                             bool weak) {
+    PredIterInfoData clause_info;
+    PredIterInfoData pred_info;
+    PredClass pclass;
+    bool result;
 
-	/* skip through RestrictInfo */
-	Assert(clause != NULL);
-	if (IsA(clause, RestrictInfo))
-		clause = (Node *) ((RestrictInfo *) clause)->clause;
+    /* skip through RestrictInfo */
+    Assert(clause != NULL);
+    if (IsA(clause, RestrictInfo))
+        clause = (Node *) ((RestrictInfo *) clause)->clause;
 
-	pclass = predicate_classify(predicate, &pred_info);
+    pclass = predicate_classify(predicate, &pred_info);
 
-	switch (predicate_classify(clause, &clause_info))
-	{
-		case CLASS_AND:
-			switch (pclass)
-			{
-				case CLASS_AND:
+    switch (predicate_classify(clause, &clause_info)) {
+        case CLASS_AND:
+            switch (pclass) {
+                case CLASS_AND:
 
-					/*
+                    /*
 					 * AND-clause => AND-clause if A implies each of B's items
 					 */
-					result = true;
-					iterate_begin(pitem, predicate, pred_info)
-					{
-						if (!predicate_implied_by_recurse(clause, pitem,
-														  weak))
-						{
-							result = false;
-							break;
-						}
-					}
-					iterate_end(pred_info);
-					return result;
+                    result = true;
+                    iterate_begin(pitem, predicate, pred_info) {
+                            if (!predicate_implied_by_recurse(clause, pitem,
+                                                              weak)) {
+                                result = false;
+                                break;
+                            }
+                        }
+                    iterate_end(pred_info);
+                    return result;
 
-				case CLASS_OR:
+                case CLASS_OR:
 
-					/*
+                    /*
 					 * AND-clause => OR-clause if A implies any of B's items
 					 *
 					 * Needed to handle (x AND y) => ((x AND y) OR z)
 					 */
-					result = false;
-					iterate_begin(pitem, predicate, pred_info)
-					{
-						if (predicate_implied_by_recurse(clause, pitem,
-														 weak))
-						{
-							result = true;
-							break;
-						}
-					}
-					iterate_end(pred_info);
-					if (result)
-						return result;
+                    result = false;
+                    iterate_begin(pitem, predicate, pred_info) {
+                            if (predicate_implied_by_recurse(clause, pitem,
+                                                             weak)) {
+                                result = true;
+                                break;
+                            }
+                        }
+                    iterate_end(pred_info);
+                    if (result)
+                        return result;
 
-					/*
+                    /*
 					 * Also check if any of A's items implies B
 					 *
 					 * Needed to handle ((x OR y) AND z) => (x OR y)
 					 */
-					iterate_begin(citem, clause, clause_info)
-					{
-						if (predicate_implied_by_recurse(citem, predicate,
-														 weak))
-						{
-							result = true;
-							break;
-						}
-					}
-					iterate_end(clause_info);
-					return result;
+                    iterate_begin(citem, clause, clause_info) {
+                            if (predicate_implied_by_recurse(citem, predicate,
+                                                             weak)) {
+                                result = true;
+                                break;
+                            }
+                        }
+                    iterate_end(clause_info);
+                    return result;
 
-				case CLASS_ATOM:
+                case CLASS_ATOM:
 
-					/*
+                    /*
 					 * AND-clause => atom if any of A's items implies B
 					 */
-					result = false;
-					iterate_begin(citem, clause, clause_info)
-					{
-						if (predicate_implied_by_recurse(citem, predicate,
-														 weak))
-						{
-							result = true;
-							break;
-						}
-					}
-					iterate_end(clause_info);
-					return result;
-			}
-			break;
+                    result = false;
+                    iterate_begin(citem, clause, clause_info) {
+                            if (predicate_implied_by_recurse(citem, predicate,
+                                                             weak)) {
+                                result = true;
+                                break;
+                            }
+                        }
+                    iterate_end(clause_info);
+                    return result;
+            }
+            break;
 
-		case CLASS_OR:
-			switch (pclass)
-			{
-				case CLASS_OR:
+        case CLASS_OR:
+            switch (pclass) {
+                case CLASS_OR:
 
-					/*
+                    /*
 					 * OR-clause => OR-clause if each of A's items implies any
 					 * of B's items.  Messy but can't do it any more simply.
 					 */
-					result = true;
-					iterate_begin(citem, clause, clause_info)
-					{
-						bool		presult = false;
+                    result = true;
+                    iterate_begin(citem, clause, clause_info) {
+                            bool presult = false;
 
-						iterate_begin(pitem, predicate, pred_info)
-						{
-							if (predicate_implied_by_recurse(citem, pitem,
-															 weak))
-							{
-								presult = true;
-								break;
-							}
-						}
-						iterate_end(pred_info);
-						if (!presult)
-						{
-							result = false; /* doesn't imply any of B's */
-							break;
-						}
-					}
-					iterate_end(clause_info);
-					return result;
+                            iterate_begin(pitem, predicate, pred_info) {
+                                    if (predicate_implied_by_recurse(citem, pitem,
+                                                                     weak)) {
+                                        presult = true;
+                                        break;
+                                    }
+                                }
+                            iterate_end(pred_info);
+                            if (!presult) {
+                                result = false; /* doesn't imply any of B's */
+                                break;
+                            }
+                        }
+                    iterate_end(clause_info);
+                    return result;
 
-				case CLASS_AND:
-				case CLASS_ATOM:
+                case CLASS_AND:
+                case CLASS_ATOM:
 
-					/*
+                    /*
 					 * OR-clause => AND-clause if each of A's items implies B
 					 *
 					 * OR-clause => atom if each of A's items implies B
 					 */
-					result = true;
-					iterate_begin(citem, clause, clause_info)
-					{
-						if (!predicate_implied_by_recurse(citem, predicate,
-														  weak))
-						{
-							result = false;
-							break;
-						}
-					}
-					iterate_end(clause_info);
-					return result;
-			}
-			break;
+                    result = true;
+                    iterate_begin(citem, clause, clause_info) {
+                            if (!predicate_implied_by_recurse(citem, predicate,
+                                                              weak)) {
+                                result = false;
+                                break;
+                            }
+                        }
+                    iterate_end(clause_info);
+                    return result;
+            }
+            break;
 
-		case CLASS_ATOM:
-			switch (pclass)
-			{
-				case CLASS_AND:
+        case CLASS_ATOM:
+            switch (pclass) {
+                case CLASS_AND:
 
-					/*
+                    /*
 					 * atom => AND-clause if A implies each of B's items
 					 */
-					result = true;
-					iterate_begin(pitem, predicate, pred_info)
-					{
-						if (!predicate_implied_by_recurse(clause, pitem,
-														  weak))
-						{
-							result = false;
-							break;
-						}
-					}
-					iterate_end(pred_info);
-					return result;
+                    result = true;
+                    iterate_begin(pitem, predicate, pred_info) {
+                            if (!predicate_implied_by_recurse(clause, pitem,
+                                                              weak)) {
+                                result = false;
+                                break;
+                            }
+                        }
+                    iterate_end(pred_info);
+                    return result;
 
-				case CLASS_OR:
+                case CLASS_OR:
 
-					/*
+                    /*
 					 * atom => OR-clause if A implies any of B's items
 					 */
-					result = false;
-					iterate_begin(pitem, predicate, pred_info)
-					{
-						if (predicate_implied_by_recurse(clause, pitem,
-														 weak))
-						{
-							result = true;
-							break;
-						}
-					}
-					iterate_end(pred_info);
-					return result;
+                    result = false;
+                    iterate_begin(pitem, predicate, pred_info) {
+                            if (predicate_implied_by_recurse(clause, pitem,
+                                                             weak)) {
+                                result = true;
+                                break;
+                            }
+                        }
+                    iterate_end(pred_info);
+                    return result;
 
-				case CLASS_ATOM:
+                case CLASS_ATOM:
 
-					/*
+                    /*
 					 * atom => atom is the base case
 					 */
-					return
-						predicate_implied_by_simple_clause((Expr *) predicate,
-														   clause,
-														   weak);
-			}
-			break;
-	}
+                    return
+                            predicate_implied_by_simple_clause((Expr *) predicate,
+                                                               clause,
+                                                               weak);
+            }
+            break;
+    }
 
-	/* can't get here */
-	elog(ERROR, "predicate_classify returned a bogus value");
-	return false;
+    /* can't get here */
+    elog(ERROR, "predicate_classify returned a bogus value");
+    return false;
 }
 
 /*----------
@@ -529,85 +526,76 @@ predicate_implied_by_recurse(Node *clause, Node *predicate,
  */
 static bool
 predicate_refuted_by_recurse(Node *clause, Node *predicate,
-							 bool weak)
-{
-	PredIterInfoData clause_info;
-	PredIterInfoData pred_info;
-	PredClass	pclass;
-	Node	   *not_arg;
-	bool		result;
+                             bool weak) {
+    PredIterInfoData clause_info;
+    PredIterInfoData pred_info;
+    PredClass pclass;
+    Node *not_arg;
+    bool result;
 
-	/* skip through RestrictInfo */
-	Assert(clause != NULL);
-	if (IsA(clause, RestrictInfo))
-		clause = (Node *) ((RestrictInfo *) clause)->clause;
+    /* skip through RestrictInfo */
+    Assert(clause != NULL);
+    if (IsA(clause, RestrictInfo))
+        clause = (Node *) ((RestrictInfo *) clause)->clause;
 
-	pclass = predicate_classify(predicate, &pred_info);
+    pclass = predicate_classify(predicate, &pred_info);
 
-	switch (predicate_classify(clause, &clause_info))
-	{
-		case CLASS_AND:
-			switch (pclass)
-			{
-				case CLASS_AND:
+    switch (predicate_classify(clause, &clause_info)) {
+        case CLASS_AND:
+            switch (pclass) {
+                case CLASS_AND:
 
-					/*
+                    /*
 					 * AND-clause R=> AND-clause if A refutes any of B's items
 					 *
 					 * Needed to handle (x AND y) R=> ((!x OR !y) AND z)
 					 */
-					result = false;
-					iterate_begin(pitem, predicate, pred_info)
-					{
-						if (predicate_refuted_by_recurse(clause, pitem,
-														 weak))
-						{
-							result = true;
-							break;
-						}
-					}
-					iterate_end(pred_info);
-					if (result)
-						return result;
+                    result = false;
+                    iterate_begin(pitem, predicate, pred_info) {
+                            if (predicate_refuted_by_recurse(clause, pitem,
+                                                             weak)) {
+                                result = true;
+                                break;
+                            }
+                        }
+                    iterate_end(pred_info);
+                    if (result)
+                        return result;
 
-					/*
+                    /*
 					 * Also check if any of A's items refutes B
 					 *
 					 * Needed to handle ((x OR y) AND z) R=> (!x AND !y)
 					 */
-					iterate_begin(citem, clause, clause_info)
-					{
-						if (predicate_refuted_by_recurse(citem, predicate,
-														 weak))
-						{
-							result = true;
-							break;
-						}
-					}
-					iterate_end(clause_info);
-					return result;
+                    iterate_begin(citem, clause, clause_info) {
+                            if (predicate_refuted_by_recurse(citem, predicate,
+                                                             weak)) {
+                                result = true;
+                                break;
+                            }
+                        }
+                    iterate_end(clause_info);
+                    return result;
 
-				case CLASS_OR:
+                case CLASS_OR:
 
-					/*
+                    /*
 					 * AND-clause R=> OR-clause if A refutes each of B's items
 					 */
-					result = true;
-					iterate_begin(pitem, predicate, pred_info)
-					{
-						if (!predicate_refuted_by_recurse(clause, pitem,
-														  weak))
-						{
-							result = false;
-							break;
-						}
-					}
-					iterate_end(pred_info);
-					return result;
+                    result = true;
+                    iterate_begin(pitem, predicate, pred_info) {
+                            if (!predicate_refuted_by_recurse(clause, pitem,
+                                                              weak)) {
+                                result = false;
+                                break;
+                            }
+                        }
+                    iterate_end(pred_info);
+                    return result;
 
-				case CLASS_ATOM:
+                case CLASS_ATOM:
 
-					/*
+                    /*
 					 * If B is a NOT-type clause, A R=> B if A => B's arg
 					 *
 					 * Since, for either type of refutation, we are starting
@@ -617,115 +605,104 @@ predicate_refuted_by_recurse(Node *clause, Node *predicate,
 					 * B is a simple NOT, but it allows not worrying about
 					 * exactly which kind of negation clause we have.
 					 */
-					not_arg = extract_not_arg(predicate);
-					if (not_arg &&
-						predicate_implied_by_recurse(clause, not_arg,
-													 false))
-						return true;
+                    not_arg = extract_not_arg(predicate);
+                    if (not_arg &&
+                        predicate_implied_by_recurse(clause, not_arg,
+                                                     false))
+                        return true;
 
-					/*
+                    /*
 					 * AND-clause R=> atom if any of A's items refutes B
 					 */
-					result = false;
-					iterate_begin(citem, clause, clause_info)
-					{
-						if (predicate_refuted_by_recurse(citem, predicate,
-														 weak))
-						{
-							result = true;
-							break;
-						}
-					}
-					iterate_end(clause_info);
-					return result;
-			}
-			break;
+                    result = false;
+                    iterate_begin(citem, clause, clause_info) {
+                            if (predicate_refuted_by_recurse(citem, predicate,
+                                                             weak)) {
+                                result = true;
+                                break;
+                            }
+                        }
+                    iterate_end(clause_info);
+                    return result;
+            }
+            break;
 
-		case CLASS_OR:
-			switch (pclass)
-			{
-				case CLASS_OR:
+        case CLASS_OR:
+            switch (pclass) {
+                case CLASS_OR:
 
-					/*
+                    /*
 					 * OR-clause R=> OR-clause if A refutes each of B's items
 					 */
-					result = true;
-					iterate_begin(pitem, predicate, pred_info)
-					{
-						if (!predicate_refuted_by_recurse(clause, pitem,
-														  weak))
-						{
-							result = false;
-							break;
-						}
-					}
-					iterate_end(pred_info);
-					return result;
+                    result = true;
+                    iterate_begin(pitem, predicate, pred_info) {
+                            if (!predicate_refuted_by_recurse(clause, pitem,
+                                                              weak)) {
+                                result = false;
+                                break;
+                            }
+                        }
+                    iterate_end(pred_info);
+                    return result;
 
-				case CLASS_AND:
+                case CLASS_AND:
 
-					/*
+                    /*
 					 * OR-clause R=> AND-clause if each of A's items refutes
 					 * any of B's items.
 					 */
-					result = true;
-					iterate_begin(citem, clause, clause_info)
-					{
-						bool		presult = false;
+                    result = true;
+                    iterate_begin(citem, clause, clause_info) {
+                            bool presult = false;
 
-						iterate_begin(pitem, predicate, pred_info)
-						{
-							if (predicate_refuted_by_recurse(citem, pitem,
-															 weak))
-							{
-								presult = true;
-								break;
-							}
-						}
-						iterate_end(pred_info);
-						if (!presult)
-						{
-							result = false; /* citem refutes nothing */
-							break;
-						}
-					}
-					iterate_end(clause_info);
-					return result;
+                            iterate_begin(pitem, predicate, pred_info) {
+                                    if (predicate_refuted_by_recurse(citem, pitem,
+                                                                     weak)) {
+                                        presult = true;
+                                        break;
+                                    }
+                                }
+                            iterate_end(pred_info);
+                            if (!presult) {
+                                result = false; /* citem refutes nothing */
+                                break;
+                            }
+                        }
+                    iterate_end(clause_info);
+                    return result;
 
-				case CLASS_ATOM:
+                case CLASS_ATOM:
 
-					/*
+                    /*
 					 * If B is a NOT-type clause, A R=> B if A => B's arg
 					 *
 					 * Same logic as for the AND-clause case above.
 					 */
-					not_arg = extract_not_arg(predicate);
-					if (not_arg &&
-						predicate_implied_by_recurse(clause, not_arg,
-													 false))
-						return true;
+                    not_arg = extract_not_arg(predicate);
+                    if (not_arg &&
+                        predicate_implied_by_recurse(clause, not_arg,
+                                                     false))
+                        return true;
 
-					/*
+                    /*
 					 * OR-clause R=> atom if each of A's items refutes B
 					 */
-					result = true;
-					iterate_begin(citem, clause, clause_info)
-					{
-						if (!predicate_refuted_by_recurse(citem, predicate,
-														  weak))
-						{
-							result = false;
-							break;
-						}
-					}
-					iterate_end(clause_info);
-					return result;
-			}
-			break;
+                    result = true;
+                    iterate_begin(citem, clause, clause_info) {
+                            if (!predicate_refuted_by_recurse(citem, predicate,
+                                                              weak)) {
+                                result = false;
+                                break;
+                            }
+                        }
+                    iterate_end(clause_info);
+                    return result;
+            }
+            break;
 
-		case CLASS_ATOM:
+        case CLASS_ATOM:
 
-			/*
+            /*
 			 * If A is a strong NOT-clause, A R=> B if B => A's arg
 			 *
 			 * Since A is strong, we may assume A's arg is false (not just
@@ -734,77 +711,72 @@ predicate_refuted_by_recurse(Node *clause, Node *predicate,
 			 * strongly implies A's arg, then B cannot be true, so that weak
 			 * refutation is proven.
 			 */
-			not_arg = extract_strong_not_arg(clause);
-			if (not_arg &&
-				predicate_implied_by_recurse(predicate, not_arg,
-											 !weak))
-				return true;
+            not_arg = extract_strong_not_arg(clause);
+            if (not_arg &&
+                predicate_implied_by_recurse(predicate, not_arg,
+                                             !weak))
+                return true;
 
-			switch (pclass)
-			{
-				case CLASS_AND:
+            switch (pclass) {
+                case CLASS_AND:
 
-					/*
+                    /*
 					 * atom R=> AND-clause if A refutes any of B's items
 					 */
-					result = false;
-					iterate_begin(pitem, predicate, pred_info)
-					{
-						if (predicate_refuted_by_recurse(clause, pitem,
-														 weak))
-						{
-							result = true;
-							break;
-						}
-					}
-					iterate_end(pred_info);
-					return result;
+                    result = false;
+                    iterate_begin(pitem, predicate, pred_info) {
+                            if (predicate_refuted_by_recurse(clause, pitem,
+                                                             weak)) {
+                                result = true;
+                                break;
+                            }
+                        }
+                    iterate_end(pred_info);
+                    return result;
 
-				case CLASS_OR:
+                case CLASS_OR:
 
-					/*
+                    /*
 					 * atom R=> OR-clause if A refutes each of B's items
 					 */
-					result = true;
-					iterate_begin(pitem, predicate, pred_info)
-					{
-						if (!predicate_refuted_by_recurse(clause, pitem,
-														  weak))
-						{
-							result = false;
-							break;
-						}
-					}
-					iterate_end(pred_info);
-					return result;
+                    result = true;
+                    iterate_begin(pitem, predicate, pred_info) {
+                            if (!predicate_refuted_by_recurse(clause, pitem,
+                                                              weak)) {
+                                result = false;
+                                break;
+                            }
+                        }
+                    iterate_end(pred_info);
+                    return result;
 
-				case CLASS_ATOM:
+                case CLASS_ATOM:
 
-					/*
+                    /*
 					 * If B is a NOT-type clause, A R=> B if A => B's arg
 					 *
 					 * Same logic as for the AND-clause case above.
 					 */
-					not_arg = extract_not_arg(predicate);
-					if (not_arg &&
-						predicate_implied_by_recurse(clause, not_arg,
-													 false))
-						return true;
+                    not_arg = extract_not_arg(predicate);
+                    if (not_arg &&
+                        predicate_implied_by_recurse(clause, not_arg,
+                                                     false))
+                        return true;
 
-					/*
+                    /*
 					 * atom R=> atom is the base case
 					 */
-					return
-						predicate_refuted_by_simple_clause((Expr *) predicate,
-														   clause,
-														   weak);
-			}
-			break;
-	}
+                    return
+                            predicate_refuted_by_simple_clause((Expr *) predicate,
+                                                               clause,
+                                                               weak);
+            }
+            break;
+    }
 
-	/* can't get here */
-	elog(ERROR, "predicate_classify returned a bogus value");
-	return false;
+    /* can't get here */
+    elog(ERROR, "predicate_classify returned a bogus value");
+    return false;
 }
 
 
@@ -823,81 +795,72 @@ predicate_refuted_by_recurse(Node *clause, Node *predicate,
  * that would result in wrong proofs, rather than failing to prove anything.
  */
 static PredClass
-predicate_classify(Node *clause, PredIterInfo info)
-{
-	/* Caller should not pass us NULL, nor a RestrictInfo clause */
-	Assert(clause != NULL);
-	Assert(!IsA(clause, RestrictInfo));
+predicate_classify(Node *clause, PredIterInfo info) {
+    /* Caller should not pass us NULL, nor a RestrictInfo clause */
+    Assert(clause != NULL);
+    Assert(!IsA(clause, RestrictInfo));
 
-	/*
+    /*
 	 * If we see a List, assume it's an implicit-AND list; this is the correct
 	 * semantics for lists of RestrictInfo nodes.
 	 */
-	if (IsA(clause, List))
-	{
-		info->startup_fn = list_startup_fn;
-		info->next_fn = list_next_fn;
-		info->cleanup_fn = list_cleanup_fn;
-		return CLASS_AND;
-	}
+    if (IsA(clause, List)) {
+        info->startup_fn = list_startup_fn;
+        info->next_fn = list_next_fn;
+        info->cleanup_fn = list_cleanup_fn;
+        return CLASS_AND;
+    }
 
-	/* Handle normal AND and OR boolean clauses */
-	if (is_andclause(clause))
-	{
-		info->startup_fn = boolexpr_startup_fn;
-		info->next_fn = list_next_fn;
-		info->cleanup_fn = list_cleanup_fn;
-		return CLASS_AND;
-	}
-	if (is_orclause(clause))
-	{
-		info->startup_fn = boolexpr_startup_fn;
-		info->next_fn = list_next_fn;
-		info->cleanup_fn = list_cleanup_fn;
-		return CLASS_OR;
-	}
+    /* Handle normal AND and OR boolean clauses */
+    if (is_andclause(clause)) {
+        info->startup_fn = boolexpr_startup_fn;
+        info->next_fn = list_next_fn;
+        info->cleanup_fn = list_cleanup_fn;
+        return CLASS_AND;
+    }
+    if (is_orclause(clause)) {
+        info->startup_fn = boolexpr_startup_fn;
+        info->next_fn = list_next_fn;
+        info->cleanup_fn = list_cleanup_fn;
+        return CLASS_OR;
+    }
 
-	/* Handle ScalarArrayOpExpr */
-	if (IsA(clause, ScalarArrayOpExpr))
-	{
-		ScalarArrayOpExpr *saop = (ScalarArrayOpExpr *) clause;
-		Node	   *arraynode = (Node *) lsecond(saop->args);
+    /* Handle ScalarArrayOpExpr */
+    if (IsA(clause, ScalarArrayOpExpr)) {
+        ScalarArrayOpExpr *saop = (ScalarArrayOpExpr *) clause;
+        Node *arraynode = (Node *) lsecond(saop->args);
 
-		/*
+        /*
 		 * We can break this down into an AND or OR structure, but only if we
 		 * know how to iterate through expressions for the array's elements.
 		 * We can do that if the array operand is a non-null constant or a
 		 * simple ArrayExpr.
 		 */
-		if (arraynode && IsA(arraynode, Const) &&
-			!((Const *) arraynode)->constisnull)
-		{
-			ArrayType  *arrayval;
-			int			nelems;
+        if (arraynode && IsA(arraynode, Const) &&
+            !((Const *) arraynode)->constisnull) {
+            ArrayType *arrayval;
+            int nelems;
 
-			arrayval = DatumGetArrayTypeP(((Const *) arraynode)->constvalue);
-			nelems = ArrayGetNItems(ARR_NDIM(arrayval), ARR_DIMS(arrayval));
-			if (nelems <= MAX_SAOP_ARRAY_SIZE)
-			{
-				info->startup_fn = arrayconst_startup_fn;
-				info->next_fn = arrayconst_next_fn;
-				info->cleanup_fn = arrayconst_cleanup_fn;
-				return saop->useOr ? CLASS_OR : CLASS_AND;
-			}
-		}
-		else if (arraynode && IsA(arraynode, ArrayExpr) &&
-				 !((ArrayExpr *) arraynode)->multidims &&
-				 list_length(((ArrayExpr *) arraynode)->elements) <= MAX_SAOP_ARRAY_SIZE)
-		{
-			info->startup_fn = arrayexpr_startup_fn;
-			info->next_fn = arrayexpr_next_fn;
-			info->cleanup_fn = arrayexpr_cleanup_fn;
-			return saop->useOr ? CLASS_OR : CLASS_AND;
-		}
-	}
+            arrayval = DatumGetArrayTypeP(((Const *) arraynode)->constvalue);
+            nelems = ArrayGetNItems(ARR_NDIM(arrayval), ARR_DIMS(arrayval));
+            if (nelems <= MAX_SAOP_ARRAY_SIZE) {
+                info->startup_fn = arrayconst_startup_fn;
+                info->next_fn = arrayconst_next_fn;
+                info->cleanup_fn = arrayconst_cleanup_fn;
+                return saop->useOr ? CLASS_OR : CLASS_AND;
+            }
+        } else if (arraynode && IsA(arraynode, ArrayExpr) &&
+                   !((ArrayExpr *) arraynode)->multidims &&
+                   list_length(((ArrayExpr *) arraynode)->elements) <= MAX_SAOP_ARRAY_SIZE) {
+            info->startup_fn = arrayexpr_startup_fn;
+            info->next_fn = arrayexpr_next_fn;
+            info->cleanup_fn = arrayexpr_cleanup_fn;
+            return saop->useOr ? CLASS_OR : CLASS_AND;
+        }
+    }
 
-	/* None of the above, so it's an atom */
-	return CLASS_ATOM;
+    /* None of the above, so it's an atom */
+    return CLASS_ATOM;
 }
 
 /*
@@ -905,29 +868,26 @@ predicate_classify(Node *clause, PredIterInfo info)
  * state variable is the next ListCell to visit.
  */
 static void
-list_startup_fn(Node *clause, PredIterInfo info)
-{
-	info->state_list = (List *) clause;
-	info->state = (void *) list_head(info->state_list);
+list_startup_fn(Node *clause, PredIterInfo info) {
+    info->state_list = (List *) clause;
+    info->state = (void *) list_head(info->state_list);
 }
 
 static Node *
-list_next_fn(PredIterInfo info)
-{
-	ListCell   *l = (ListCell *) info->state;
-	Node	   *n;
+list_next_fn(PredIterInfo info) {
+    ListCell *l = (ListCell *) info->state;
+    Node *n;
 
-	if (l == NULL)
-		return NULL;
-	n = lfirst(l);
-	info->state = (void *) lnext(info->state_list, l);
-	return n;
+    if (l == NULL)
+        return NULL;
+    n = lfirst(l);
+    info->state = (void *) lnext(info->state_list, l);
+    return n;
 }
 
 static void
-list_cleanup_fn(PredIterInfo info)
-{
-	/* Nothing to clean up */
+list_cleanup_fn(PredIterInfo info) {
+    /* Nothing to clean up */
 }
 
 /*
@@ -935,155 +895,171 @@ list_cleanup_fn(PredIterInfo info)
  * list_cleanup_fn.
  */
 static void
-boolexpr_startup_fn(Node *clause, PredIterInfo info)
-{
-	info->state_list = ((BoolExpr *) clause)->args;
-	info->state = (void *) list_head(info->state_list);
+boolexpr_startup_fn(Node *clause, PredIterInfo info) {
+    info->state_list = ((BoolExpr *) clause)->args;
+    info->state = (void *) list_head(info->state_list);
 }
 
 /*
  * PredIterInfo routines for iterating over a ScalarArrayOpExpr with a
  * constant array operand.
  */
-typedef struct
-{
-	OpExpr		opexpr;
-	Const		constexpr;
-	int			next_elem;
-	int			num_elems;
-	Datum	   *elem_values;
-	bool	   *elem_nulls;
+typedef struct {
+    OpExpr opexpr;
+    Const constexpr;
+    int next_elem;
+    int num_elems;
+    Datum *elem_values;
+    bool *elem_nulls;
 } ArrayConstIterState;
 
 static void
-arrayconst_startup_fn(Node *clause, PredIterInfo info)
-{
-	ScalarArrayOpExpr *saop = (ScalarArrayOpExpr *) clause;
-	ArrayConstIterState *state;
-	Const	   *arrayconst;
-	ArrayType  *arrayval;
-	int16		elmlen;
-	bool		elmbyval;
-	char		elmalign;
+arrayconst_startup_fn(Node *clause, PredIterInfo info) {
+    ScalarArrayOpExpr *saop = (ScalarArrayOpExpr *) clause;
+    ArrayConstIterState *state;
+    Const *arrayconst;
+    ArrayType *arrayval;
+    int16 elmlen;
+    bool elmbyval;
+    char elmalign;
 
-	/* Create working state struct */
-	state = (ArrayConstIterState *) palloc(sizeof(ArrayConstIterState));
-	info->state = (void *) state;
+    /* Create working state struct */
+    state = (ArrayConstIterState *) palloc(sizeof(ArrayConstIterState));
+    info->state = (void *) state;
 
-	/* Deconstruct the array literal */
-	arrayconst = (Const *) lsecond(saop->args);
-	arrayval = DatumGetArrayTypeP(arrayconst->constvalue);
-	get_typlenbyvalalign(ARR_ELEMTYPE(arrayval),
-						 &elmlen, &elmbyval, &elmalign);
-	deconstruct_array(arrayval,
-					  ARR_ELEMTYPE(arrayval),
-					  elmlen, elmbyval, elmalign,
-					  &state->elem_values, &state->elem_nulls,
-					  &state->num_elems);
+    /* Deconstruct the array literal */
+    arrayconst = (Const *) lsecond(saop->args);
+    arrayval = DatumGetArrayTypeP(arrayconst->constvalue);
+    get_typlenbyvalalign(ARR_ELEMTYPE(arrayval),
+                         &elmlen, &elmbyval, &elmalign);
+    deconstruct_array(arrayval,
+                      ARR_ELEMTYPE(arrayval),
+                      elmlen, elmbyval, elmalign,
+                      &state->elem_values, &state->elem_nulls,
+                      &state->num_elems);
 
-	/* Set up a dummy OpExpr to return as the per-item node */
-	state->opexpr.xpr.type = T_OpExpr;
-	state->opexpr.opno = saop->opno;
-	state->opexpr.opfuncid = saop->opfuncid;
-	state->opexpr.opresulttype = BOOLOID;
-	state->opexpr.opretset = false;
-	state->opexpr.opcollid = InvalidOid;
-	state->opexpr.inputcollid = saop->inputcollid;
-	state->opexpr.args = list_copy(saop->args);
+    /* Set up a dummy OpExpr to return as the per-item node */
+    state->opexpr.xpr.type = T_OpExpr;
+    state->opexpr.opno = saop->opno;
+    state->opexpr.opfuncid = saop->opfuncid;
+    state->opexpr.opresulttype = BOOLOID;
+    state->opexpr.opretset = false;
+    state->opexpr.opcollid = InvalidOid;
+    state->opexpr.inputcollid = saop->inputcollid;
+    state->opexpr.args = list_copy(saop->args);
 
-	/* Set up a dummy Const node to hold the per-element values */
-	state->constexpr.xpr.type = T_Const;
-	state->constexpr.consttype = ARR_ELEMTYPE(arrayval);
-	state->constexpr.consttypmod = -1;
-	state->constexpr.constcollid = arrayconst->constcollid;
-	state->constexpr.constlen = elmlen;
-	state->constexpr.constbyval = elmbyval;
-	lsecond(state->opexpr.args) = &state->constexpr;
+    /* Set up a dummy Const node to hold the per-element values */
+    state->
+    constexpr
+    .
+    xpr.type = T_Const;
+    state->
+    constexpr
+    .
+    consttype = ARR_ELEMTYPE(arrayval);
+    state->
+    constexpr
+    .
+    consttypmod = -1;
+    state->
+    constexpr
+    .
+    constcollid = arrayconst->constcollid;
+    state->
+    constexpr
+    .
+    constlen = elmlen;
+    state->
+    constexpr
+    .
+    constbyval = elmbyval;
+    lsecond(state->opexpr.args) = &state->
+    constexpr;
 
-	/* Initialize iteration state */
-	state->next_elem = 0;
+    /* Initialize iteration state */
+    state->next_elem = 0;
 }
 
 static Node *
-arrayconst_next_fn(PredIterInfo info)
-{
-	ArrayConstIterState *state = (ArrayConstIterState *) info->state;
+arrayconst_next_fn(PredIterInfo info) {
+    ArrayConstIterState *state = (ArrayConstIterState *) info->state;
 
-	if (state->next_elem >= state->num_elems)
-		return NULL;
-	state->constexpr.constvalue = state->elem_values[state->next_elem];
-	state->constexpr.constisnull = state->elem_nulls[state->next_elem];
-	state->next_elem++;
-	return (Node *) &(state->opexpr);
+    if (state->next_elem >= state->num_elems)
+        return NULL;
+    state->
+    constexpr
+    .
+    constvalue = state->elem_values[state->next_elem];
+    state->
+    constexpr
+    .
+    constisnull = state->elem_nulls[state->next_elem];
+    state->next_elem++;
+    return (Node *) &(state->opexpr);
 }
 
 static void
-arrayconst_cleanup_fn(PredIterInfo info)
-{
-	ArrayConstIterState *state = (ArrayConstIterState *) info->state;
+arrayconst_cleanup_fn(PredIterInfo info) {
+    ArrayConstIterState *state = (ArrayConstIterState *) info->state;
 
-	pfree(state->elem_values);
-	pfree(state->elem_nulls);
-	list_free(state->opexpr.args);
-	pfree(state);
+    pfree(state->elem_values);
+    pfree(state->elem_nulls);
+    list_free(state->opexpr.args);
+    pfree(state);
 }
 
 /*
  * PredIterInfo routines for iterating over a ScalarArrayOpExpr with a
  * one-dimensional ArrayExpr array operand.
  */
-typedef struct
-{
-	OpExpr		opexpr;
-	ListCell   *next;
+typedef struct {
+    OpExpr opexpr;
+    ListCell *next;
 } ArrayExprIterState;
 
 static void
-arrayexpr_startup_fn(Node *clause, PredIterInfo info)
-{
-	ScalarArrayOpExpr *saop = (ScalarArrayOpExpr *) clause;
-	ArrayExprIterState *state;
-	ArrayExpr  *arrayexpr;
+arrayexpr_startup_fn(Node *clause, PredIterInfo info) {
+    ScalarArrayOpExpr *saop = (ScalarArrayOpExpr *) clause;
+    ArrayExprIterState *state;
+    ArrayExpr *arrayexpr;
 
-	/* Create working state struct */
-	state = (ArrayExprIterState *) palloc(sizeof(ArrayExprIterState));
-	info->state = (void *) state;
+    /* Create working state struct */
+    state = (ArrayExprIterState *) palloc(sizeof(ArrayExprIterState));
+    info->state = (void *) state;
 
-	/* Set up a dummy OpExpr to return as the per-item node */
-	state->opexpr.xpr.type = T_OpExpr;
-	state->opexpr.opno = saop->opno;
-	state->opexpr.opfuncid = saop->opfuncid;
-	state->opexpr.opresulttype = BOOLOID;
-	state->opexpr.opretset = false;
-	state->opexpr.opcollid = InvalidOid;
-	state->opexpr.inputcollid = saop->inputcollid;
-	state->opexpr.args = list_copy(saop->args);
+    /* Set up a dummy OpExpr to return as the per-item node */
+    state->opexpr.xpr.type = T_OpExpr;
+    state->opexpr.opno = saop->opno;
+    state->opexpr.opfuncid = saop->opfuncid;
+    state->opexpr.opresulttype = BOOLOID;
+    state->opexpr.opretset = false;
+    state->opexpr.opcollid = InvalidOid;
+    state->opexpr.inputcollid = saop->inputcollid;
+    state->opexpr.args = list_copy(saop->args);
 
-	/* Initialize iteration variable to first member of ArrayExpr */
-	arrayexpr = (ArrayExpr *) lsecond(saop->args);
-	info->state_list = arrayexpr->elements;
-	state->next = list_head(arrayexpr->elements);
+    /* Initialize iteration variable to first member of ArrayExpr */
+    arrayexpr = (ArrayExpr *) lsecond(saop->args);
+    info->state_list = arrayexpr->elements;
+    state->next = list_head(arrayexpr->elements);
 }
 
 static Node *
-arrayexpr_next_fn(PredIterInfo info)
-{
-	ArrayExprIterState *state = (ArrayExprIterState *) info->state;
+arrayexpr_next_fn(PredIterInfo info) {
+    ArrayExprIterState *state = (ArrayExprIterState *) info->state;
 
-	if (state->next == NULL)
-		return NULL;
-	lsecond(state->opexpr.args) = lfirst(state->next);
-	state->next = lnext(info->state_list, state->next);
-	return (Node *) &(state->opexpr);
+    if (state->next == NULL)
+        return NULL;
+    lsecond(state->opexpr.args) = lfirst(state->next);
+    state->next = lnext(info->state_list, state->next);
+    return (Node *) &(state->opexpr);
 }
 
 static void
-arrayexpr_cleanup_fn(PredIterInfo info)
-{
-	ArrayExprIterState *state = (ArrayExprIterState *) info->state;
+arrayexpr_cleanup_fn(PredIterInfo info) {
+    ArrayExprIterState *state = (ArrayExprIterState *) info->state;
 
-	list_free(state->opexpr.args);
-	pfree(state);
+    list_free(state->opexpr.args);
+    pfree(state);
 }
 
 
@@ -1122,71 +1098,63 @@ arrayexpr_cleanup_fn(PredIterInfo info)
  */
 static bool
 predicate_implied_by_simple_clause(Expr *predicate, Node *clause,
-								   bool weak)
-{
-	/* Allow interrupting long proof attempts */
-	CHECK_FOR_INTERRUPTS();
+                                   bool weak) {
+    /* Allow interrupting long proof attempts */
+    CHECK_FOR_INTERRUPTS();
 
-	/* First try the equal() test */
-	if (equal((Node *) predicate, clause))
-		return true;
+    /* First try the equal() test */
+    if (equal((Node *) predicate, clause))
+        return true;
 
-	/* Next see if clause is boolean equality to a constant */
-	if (is_opclause(clause) &&
-		((OpExpr *) clause)->opno == BooleanEqualOperator)
-	{
-		OpExpr	   *op = (OpExpr *) clause;
-		Node	   *rightop;
+    /* Next see if clause is boolean equality to a constant */
+    if (is_opclause(clause) &&
+        ((OpExpr *) clause)->opno == BooleanEqualOperator) {
+        OpExpr *op = (OpExpr *) clause;
+        Node *rightop;
 
-		Assert(list_length(op->args) == 2);
-		rightop = lsecond(op->args);
-		/* We might never see a null Const here, but better check anyway */
-		if (rightop && IsA(rightop, Const) &&
-			!((Const *) rightop)->constisnull)
-		{
-			Node	   *leftop = linitial(op->args);
+        Assert(list_length(op->args) == 2);
+        rightop = lsecond(op->args);
+        /* We might never see a null Const here, but better check anyway */
+        if (rightop && IsA(rightop, Const) &&
+            !((Const *) rightop)->constisnull) {
+            Node *leftop = linitial(op->args);
 
-			if (DatumGetBool(((Const *) rightop)->constvalue))
-			{
-				/* X = true implies X */
-				if (equal(predicate, leftop))
-					return true;
-			}
-			else
-			{
-				/* X = false implies NOT X */
-				if (is_notclause(predicate) &&
-					equal(get_notclausearg(predicate), leftop))
-					return true;
-			}
-		}
-	}
+            if (DatumGetBool(((Const *) rightop)->constvalue)) {
+                /* X = true implies X */
+                if (equal(predicate, leftop))
+                    return true;
+            } else {
+                /* X = false implies NOT X */
+                if (is_notclause(predicate) &&
+                    equal(get_notclausearg(predicate), leftop))
+                    return true;
+            }
+        }
+    }
 
-	/*
+    /*
 	 * We could likewise check whether the predicate is boolean equality to a
 	 * constant; but there are no known use-cases for that at the moment,
 	 * assuming that the predicate has been through constant-folding.
 	 */
 
-	/* Next try the IS NOT NULL case */
-	if (!weak &&
-		predicate && IsA(predicate, NullTest))
-	{
-		NullTest   *ntest = (NullTest *) predicate;
+    /* Next try the IS NOT NULL case */
+    if (!weak &&
+        predicate && IsA(predicate, NullTest)) {
+        NullTest *ntest = (NullTest *) predicate;
 
-		/* row IS NOT NULL does not act in the simple way we have in mind */
-		if (ntest->nulltesttype == IS_NOT_NULL &&
-			!ntest->argisrow)
-		{
-			/* strictness of clause for foo implies foo IS NOT NULL */
-			if (clause_is_strict_for(clause, (Node *) ntest->arg, true))
-				return true;
-		}
-		return false;			/* we can't succeed below... */
-	}
+        /* row IS NOT NULL does not act in the simple way we have in mind */
+        if (ntest->nulltesttype == IS_NOT_NULL &&
+            !ntest->argisrow) {
+            /* strictness of clause for foo implies foo IS NOT NULL */
+            if (clause_is_strict_for(clause, (Node *) ntest->arg, true))
+                return true;
+        }
+        return false; /* we can't succeed below... */
+    }
 
-	/* Else try operator-related knowledge */
-	return operator_predicate_proof(predicate, clause, false, weak);
+    /* Else try operator-related knowledge */
+    return operator_predicate_proof(predicate, clause, false, weak);
 }
 
 /*----------
@@ -1221,67 +1189,64 @@ predicate_implied_by_simple_clause(Expr *predicate, Node *clause,
  */
 static bool
 predicate_refuted_by_simple_clause(Expr *predicate, Node *clause,
-								   bool weak)
-{
-	/* Allow interrupting long proof attempts */
-	CHECK_FOR_INTERRUPTS();
+                                   bool weak) {
+    /* Allow interrupting long proof attempts */
+    CHECK_FOR_INTERRUPTS();
 
-	/* A simple clause can't refute itself */
-	/* Worth checking because of relation_excluded_by_constraints() */
-	if ((Node *) predicate == clause)
-		return false;
+    /* A simple clause can't refute itself */
+    /* Worth checking because of relation_excluded_by_constraints() */
+    if ((Node *) predicate == clause)
+        return false;
 
-	/* Try the predicate-IS-NULL case */
-	if (predicate && IsA(predicate, NullTest) &&
-		((NullTest *) predicate)->nulltesttype == IS_NULL)
-	{
-		Expr	   *isnullarg = ((NullTest *) predicate)->arg;
+    /* Try the predicate-IS-NULL case */
+    if (predicate && IsA(predicate, NullTest) &&
+        ((NullTest *) predicate)->nulltesttype == IS_NULL) {
+        Expr *isnullarg = ((NullTest *) predicate)->arg;
 
-		/* row IS NULL does not act in the simple way we have in mind */
-		if (((NullTest *) predicate)->argisrow)
-			return false;
+        /* row IS NULL does not act in the simple way we have in mind */
+        if (((NullTest *) predicate)->argisrow)
+            return false;
 
-		/* strictness of clause for foo refutes foo IS NULL */
-		if (clause_is_strict_for(clause, (Node *) isnullarg, true))
-			return true;
+        /* strictness of clause for foo refutes foo IS NULL */
+        if (clause_is_strict_for(clause, (Node *) isnullarg, true))
+            return true;
 
-		/* foo IS NOT NULL refutes foo IS NULL */
-		if (clause && IsA(clause, NullTest) &&
-			((NullTest *) clause)->nulltesttype == IS_NOT_NULL &&
-			!((NullTest *) clause)->argisrow &&
-			equal(((NullTest *) clause)->arg, isnullarg))
-			return true;
+        /* foo IS NOT NULL refutes foo IS NULL */
+        if (clause && IsA(clause, NullTest) &&
+            ((NullTest *) clause)->nulltesttype == IS_NOT_NULL &&
+            !((NullTest *) clause)->argisrow &&
+            equal(((NullTest *) clause)->arg, isnullarg))
+            return true;
 
-		return false;			/* we can't succeed below... */
-	}
+        return false; /* we can't succeed below... */
+    }
 
-	/* Try the clause-IS-NULL case */
-	if (clause && IsA(clause, NullTest) &&
-		((NullTest *) clause)->nulltesttype == IS_NULL)
-	{
-		Expr	   *isnullarg = ((NullTest *) clause)->arg;
+    /* Try the clause-IS-NULL case */
+    if (clause && IsA(clause, NullTest) &&
+        ((NullTest *) clause)->nulltesttype == IS_NULL) {
+        Expr *isnullarg = ((NullTest *) clause)->arg;
 
-		/* row IS NULL does not act in the simple way we have in mind */
-		if (((NullTest *) clause)->argisrow)
-			return false;
+        /* row IS NULL does not act in the simple way we have in mind */
+        if (((NullTest *) clause)->argisrow)
+            return false;
 
-		/* foo IS NULL refutes foo IS NOT NULL */
-		if (predicate && IsA(predicate, NullTest) &&
-			((NullTest *) predicate)->nulltesttype == IS_NOT_NULL &&
-			!((NullTest *) predicate)->argisrow &&
-			equal(((NullTest *) predicate)->arg, isnullarg))
-			return true;
+        /* foo IS NULL refutes foo IS NOT NULL */
+        if (predicate && IsA(predicate, NullTest) &&
+            ((NullTest *) predicate)->nulltesttype == IS_NOT_NULL &&
+            !((NullTest *) predicate)->argisrow &&
+            equal(((NullTest *) predicate)->arg, isnullarg))
+            return true;
 
-		/* foo IS NULL weakly refutes any predicate that is strict for foo */
-		if (weak &&
-			clause_is_strict_for((Node *) predicate, (Node *) isnullarg, true))
-			return true;
+        /* foo IS NULL weakly refutes any predicate that is strict for foo */
+        if (weak &&
+            clause_is_strict_for((Node *) predicate, (Node *) isnullarg, true))
+            return true;
 
-		return false;			/* we can't succeed below... */
-	}
+        return false; /* we can't succeed below... */
+    }
 
-	/* Else try operator-related knowledge */
-	return operator_predicate_proof(predicate, clause, true, weak);
+    /* Else try operator-related knowledge */
+    return operator_predicate_proof(predicate, clause, true, weak);
 }
 
 
@@ -1290,27 +1255,23 @@ predicate_refuted_by_simple_clause(Expr *predicate, Node *clause,
  * otherwise return NULL.
  */
 static Node *
-extract_not_arg(Node *clause)
-{
-	if (clause == NULL)
-		return NULL;
-	if (IsA(clause, BoolExpr))
-	{
-		BoolExpr   *bexpr = (BoolExpr *) clause;
+extract_not_arg(Node *clause) {
+    if (clause == NULL)
+        return NULL;
+    if (IsA(clause, BoolExpr)) {
+        BoolExpr *bexpr = (BoolExpr *) clause;
 
-		if (bexpr->boolop == NOT_EXPR)
-			return (Node *) linitial(bexpr->args);
-	}
-	else if (IsA(clause, BooleanTest))
-	{
-		BooleanTest *btest = (BooleanTest *) clause;
+        if (bexpr->boolop == NOT_EXPR)
+            return (Node *) linitial(bexpr->args);
+    } else if (IsA(clause, BooleanTest)) {
+        BooleanTest *btest = (BooleanTest *) clause;
 
-		if (btest->booltesttype == IS_NOT_TRUE ||
-			btest->booltesttype == IS_FALSE ||
-			btest->booltesttype == IS_UNKNOWN)
-			return (Node *) btest->arg;
-	}
-	return NULL;
+        if (btest->booltesttype == IS_NOT_TRUE ||
+            btest->booltesttype == IS_FALSE ||
+            btest->booltesttype == IS_UNKNOWN)
+            return (Node *) btest->arg;
+    }
+    return NULL;
 }
 
 /*
@@ -1318,25 +1279,21 @@ extract_not_arg(Node *clause)
  * otherwise return NULL.
  */
 static Node *
-extract_strong_not_arg(Node *clause)
-{
-	if (clause == NULL)
-		return NULL;
-	if (IsA(clause, BoolExpr))
-	{
-		BoolExpr   *bexpr = (BoolExpr *) clause;
+extract_strong_not_arg(Node *clause) {
+    if (clause == NULL)
+        return NULL;
+    if (IsA(clause, BoolExpr)) {
+        BoolExpr *bexpr = (BoolExpr *) clause;
 
-		if (bexpr->boolop == NOT_EXPR)
-			return (Node *) linitial(bexpr->args);
-	}
-	else if (IsA(clause, BooleanTest))
-	{
-		BooleanTest *btest = (BooleanTest *) clause;
+        if (bexpr->boolop == NOT_EXPR)
+            return (Node *) linitial(bexpr->args);
+    } else if (IsA(clause, BooleanTest)) {
+        BooleanTest *btest = (BooleanTest *) clause;
 
-		if (btest->booltesttype == IS_FALSE)
-			return (Node *) btest->arg;
-	}
-	return NULL;
+        if (btest->booltesttype == IS_FALSE)
+            return (Node *) btest->arg;
+    }
+    return NULL;
 }
 
 
@@ -1364,56 +1321,53 @@ extract_strong_not_arg(Node *clause)
  * of "clause" in a place where it'd force nullness of the overall result.
  */
 static bool
-clause_is_strict_for(Node *clause, Node *subexpr, bool allow_false)
-{
-	ListCell   *lc;
+clause_is_strict_for(Node *clause, Node *subexpr, bool allow_false) {
+    ListCell *lc;
 
-	/* safety checks */
-	if (clause == NULL || subexpr == NULL)
-		return false;
+    /* safety checks */
+    if (clause == NULL || subexpr == NULL)
+        return false;
 
-	/*
+    /*
 	 * Look through any RelabelType nodes, so that we can match, say,
 	 * varcharcol with lower(varcharcol::text).  (In general we could recurse
 	 * through any nullness-preserving, immutable operation.)  We should not
 	 * see stacked RelabelTypes here.
 	 */
-	if (IsA(clause, RelabelType))
-		clause = (Node *) ((RelabelType *) clause)->arg;
-	if (IsA(subexpr, RelabelType))
-		subexpr = (Node *) ((RelabelType *) subexpr)->arg;
+    if (IsA(clause, RelabelType))
+        clause = (Node *) ((RelabelType *) clause)->arg;
+    if (IsA(subexpr, RelabelType))
+        subexpr = (Node *) ((RelabelType *) subexpr)->arg;
 
-	/* Base case */
-	if (equal(clause, subexpr))
-		return true;
+    /* Base case */
+    if (equal(clause, subexpr))
+        return true;
 
-	/*
+    /*
 	 * If we have a strict operator or function, a NULL result is guaranteed
 	 * if any input is forced NULL by subexpr.  This is OK even if the op or
 	 * func isn't immutable, since it won't even be called on NULL input.
 	 */
-	if (is_opclause(clause) &&
-		op_strict(((OpExpr *) clause)->opno))
-	{
-		foreach(lc, ((OpExpr *) clause)->args)
-		{
-			if (clause_is_strict_for((Node *) lfirst(lc), subexpr, false))
-				return true;
-		}
-		return false;
-	}
-	if (is_funcclause(clause) &&
-		func_strict(((FuncExpr *) clause)->funcid))
-	{
-		foreach(lc, ((FuncExpr *) clause)->args)
-		{
-			if (clause_is_strict_for((Node *) lfirst(lc), subexpr, false))
-				return true;
-		}
-		return false;
-	}
+    if (is_opclause(clause) &&
+        op_strict(((OpExpr *) clause)->opno)) {
+        foreach(lc, ((OpExpr *) clause)->args)
+        {
+            if (clause_is_strict_for((Node *) lfirst(lc), subexpr, false))
+                return true;
+        }
+        return false;
+    }
+    if (is_funcclause(clause) &&
+        func_strict(((FuncExpr *) clause)->funcid)) {
+        foreach(lc, ((FuncExpr *) clause)->args)
+        {
+            if (clause_is_strict_for((Node *) lfirst(lc), subexpr, false))
+                return true;
+        }
+        return false;
+    }
 
-	/*
+    /*
 	 * CoerceViaIO is strict (whether or not the I/O functions it calls are).
 	 * Likewise, ArrayCoerceExpr is strict for its array argument (regardless
 	 * of what the per-element expression is), ConvertRowtypeExpr is strict at
@@ -1421,31 +1375,30 @@ clause_is_strict_for(Node *clause, Node *subexpr, bool allow_false)
 	 * checking mainly because it saves us having to explain to users why some
 	 * type coercions are known strict and others aren't.
 	 */
-	if (IsA(clause, CoerceViaIO))
-		return clause_is_strict_for((Node *) ((CoerceViaIO *) clause)->arg,
-									subexpr, false);
-	if (IsA(clause, ArrayCoerceExpr))
-		return clause_is_strict_for((Node *) ((ArrayCoerceExpr *) clause)->arg,
-									subexpr, false);
-	if (IsA(clause, ConvertRowtypeExpr))
-		return clause_is_strict_for((Node *) ((ConvertRowtypeExpr *) clause)->arg,
-									subexpr, false);
-	if (IsA(clause, CoerceToDomain))
-		return clause_is_strict_for((Node *) ((CoerceToDomain *) clause)->arg,
-									subexpr, false);
+    if (IsA(clause, CoerceViaIO))
+        return clause_is_strict_for((Node *) ((CoerceViaIO *) clause)->arg,
+                                    subexpr, false);
+    if (IsA(clause, ArrayCoerceExpr))
+        return clause_is_strict_for((Node *) ((ArrayCoerceExpr *) clause)->arg,
+                                    subexpr, false);
+    if (IsA(clause, ConvertRowtypeExpr))
+        return clause_is_strict_for((Node *) ((ConvertRowtypeExpr *) clause)->arg,
+                                    subexpr, false);
+    if (IsA(clause, CoerceToDomain))
+        return clause_is_strict_for((Node *) ((CoerceToDomain *) clause)->arg,
+                                    subexpr, false);
 
-	/*
+    /*
 	 * ScalarArrayOpExpr is a special case.  Note that we'd only reach here
 	 * with a ScalarArrayOpExpr clause if we failed to deconstruct it into an
 	 * AND or OR tree, as for example if it has too many array elements.
 	 */
-	if (IsA(clause, ScalarArrayOpExpr))
-	{
-		ScalarArrayOpExpr *saop = (ScalarArrayOpExpr *) clause;
-		Node	   *scalarnode = (Node *) linitial(saop->args);
-		Node	   *arraynode = (Node *) lsecond(saop->args);
+    if (IsA(clause, ScalarArrayOpExpr)) {
+        ScalarArrayOpExpr *saop = (ScalarArrayOpExpr *) clause;
+        Node *scalarnode = (Node *) linitial(saop->args);
+        Node *arraynode = (Node *) lsecond(saop->args);
 
-		/*
+        /*
 		 * If we can prove the scalar input to be null, and the operator is
 		 * strict, then the SAOP result has to be null --- unless the array is
 		 * empty.  For an empty array, we'd get either false (for ANY) or true
@@ -1453,61 +1406,57 @@ clause_is_strict_for(Node *clause, Node *subexpr, bool allow_false)
 		 * for the ANY case; otherwise we can only make the proof if we can
 		 * prove the array non-empty.
 		 */
-		if (clause_is_strict_for(scalarnode, subexpr, false) &&
-			op_strict(saop->opno))
-		{
-			int			nelems = 0;
+        if (clause_is_strict_for(scalarnode, subexpr, false) &&
+            op_strict(saop->opno)) {
+            int nelems = 0;
 
-			if (allow_false && saop->useOr)
-				return true;	/* can succeed even if array is empty */
+            if (allow_false && saop->useOr)
+                return true; /* can succeed even if array is empty */
 
-			if (arraynode && IsA(arraynode, Const))
-			{
-				Const	   *arrayconst = (Const *) arraynode;
-				ArrayType  *arrval;
+            if (arraynode && IsA(arraynode, Const)) {
+                Const *arrayconst = (Const *) arraynode;
+                ArrayType *arrval;
 
-				/*
+                /*
 				 * If array is constant NULL then we can succeed, as in the
 				 * case below.
 				 */
-				if (arrayconst->constisnull)
-					return true;
+                if (arrayconst->constisnull)
+                    return true;
 
-				/* Otherwise, we can compute the number of elements. */
-				arrval = DatumGetArrayTypeP(arrayconst->constvalue);
-				nelems = ArrayGetNItems(ARR_NDIM(arrval), ARR_DIMS(arrval));
-			}
-			else if (arraynode && IsA(arraynode, ArrayExpr) &&
-					 !((ArrayExpr *) arraynode)->multidims)
-			{
-				/*
+                /* Otherwise, we can compute the number of elements. */
+                arrval = DatumGetArrayTypeP(arrayconst->constvalue);
+                nelems = ArrayGetNItems(ARR_NDIM(arrval), ARR_DIMS(arrval));
+            } else if (arraynode && IsA(arraynode, ArrayExpr) &&
+                       !((ArrayExpr *) arraynode)->multidims) {
+                /*
 				 * We can also reliably count the number of array elements if
 				 * the input is a non-multidim ARRAY[] expression.
 				 */
-				nelems = list_length(((ArrayExpr *) arraynode)->elements);
-			}
+                nelems = list_length(((ArrayExpr *) arraynode)->elements);
+            }
 
-			/* Proof succeeds if array is definitely non-empty */
-			if (nelems > 0)
-				return true;
-		}
+            /* Proof succeeds if array is definitely non-empty */
+            if (nelems > 0)
+                return true;
+        }
 
-		/*
+        /*
 		 * If we can prove the array input to be null, the proof succeeds in
 		 * all cases, since ScalarArrayOpExpr will always return NULL for a
 		 * NULL array.  Otherwise, we're done here.
 		 */
-		return clause_is_strict_for(arraynode, subexpr, false);
-	}
+        return clause_is_strict_for(arraynode, subexpr, false);
+    }
 
-	/*
+    /*
 	 * When recursing into an expression, we might find a NULL constant.
 	 * That's certainly NULL, whether it matches subexpr or not.
 	 */
-	if (IsA(clause, Const))
-		return ((Const *) clause)->constisnull;
+    if (IsA(clause, Const))
+        return ((Const *) clause)->constisnull;
 
-	return false;
+    return false;
 }
 
 
@@ -1577,55 +1526,55 @@ clause_is_strict_for(Node *clause, Node *subexpr, bool allow_false)
 #define none 0
 
 static const bool BT_implies_table[6][6] = {
-/*
+    /*
  *			The predicate operator:
  *	 LT    LE	 EQ    GE	 GT    NE
  */
-	{true, true, none, none, none, true},	/* LT */
-	{none, true, none, none, none, none},	/* LE */
-	{none, true, true, true, none, none},	/* EQ */
-	{none, none, none, true, none, none},	/* GE */
-	{none, none, none, true, true, true},	/* GT */
-	{none, none, none, none, none, true}	/* NE */
+    {true, true, none, none, none, true}, /* LT */
+    {none, true, none, none, none, none}, /* LE */
+    {none, true, true, true, none, none}, /* EQ */
+    {none, none, none, true, none, none}, /* GE */
+    {none, none, none, true, true, true}, /* GT */
+    {none, none, none, none, none, true} /* NE */
 };
 
 static const bool BT_refutes_table[6][6] = {
-/*
+    /*
  *			The predicate operator:
  *	 LT    LE	 EQ    GE	 GT    NE
  */
-	{none, none, true, true, true, none},	/* LT */
-	{none, none, none, none, true, none},	/* LE */
-	{true, none, none, none, true, true},	/* EQ */
-	{true, none, none, none, none, none},	/* GE */
-	{true, true, true, none, none, none},	/* GT */
-	{none, none, true, none, none, none}	/* NE */
+    {none, none, true, true, true, none}, /* LT */
+    {none, none, none, none, true, none}, /* LE */
+    {true, none, none, none, true, true}, /* EQ */
+    {true, none, none, none, none, none}, /* GE */
+    {true, true, true, none, none, none}, /* GT */
+    {none, none, true, none, none, none} /* NE */
 };
 
 static const StrategyNumber BT_implic_table[6][6] = {
-/*
+    /*
  *			The predicate operator:
  *	 LT    LE	 EQ    GE	 GT    NE
  */
-	{BTGE, BTGE, none, none, none, BTGE},	/* LT */
-	{BTGT, BTGE, none, none, none, BTGT},	/* LE */
-	{BTGT, BTGE, BTEQ, BTLE, BTLT, BTNE},	/* EQ */
-	{none, none, none, BTLE, BTLT, BTLT},	/* GE */
-	{none, none, none, BTLE, BTLE, BTLE},	/* GT */
-	{none, none, none, none, none, BTEQ}	/* NE */
+    {BTGE, BTGE, none, none, none, BTGE}, /* LT */
+    {BTGT, BTGE, none, none, none, BTGT}, /* LE */
+    {BTGT, BTGE, BTEQ, BTLE, BTLT, BTNE}, /* EQ */
+    {none, none, none, BTLE, BTLT, BTLT}, /* GE */
+    {none, none, none, BTLE, BTLE, BTLE}, /* GT */
+    {none, none, none, none, none, BTEQ} /* NE */
 };
 
 static const StrategyNumber BT_refute_table[6][6] = {
-/*
+    /*
  *			The predicate operator:
  *	 LT    LE	 EQ    GE	 GT    NE
  */
-	{none, none, BTGE, BTGE, BTGE, none},	/* LT */
-	{none, none, BTGT, BTGT, BTGE, none},	/* LE */
-	{BTLE, BTLT, BTNE, BTGT, BTGE, BTEQ},	/* EQ */
-	{BTLE, BTLT, BTLT, none, none, none},	/* GE */
-	{BTLE, BTLE, BTLE, none, none, none},	/* GT */
-	{none, none, BTEQ, none, none, none}	/* NE */
+    {none, none, BTGE, BTGE, BTGE, none}, /* LT */
+    {none, none, BTGT, BTGT, BTGE, none}, /* LE */
+    {BTLE, BTLT, BTNE, BTGT, BTGE, BTEQ}, /* EQ */
+    {BTLE, BTLT, BTLT, none, none, none}, /* GE */
+    {BTLE, BTLE, BTLE, none, none, none}, /* GT */
+    {none, none, BTEQ, none, none, none} /* NE */
 };
 
 
@@ -1684,29 +1633,28 @@ static const StrategyNumber BT_refute_table[6][6] = {
  */
 static bool
 operator_predicate_proof(Expr *predicate, Node *clause,
-						 bool refute_it, bool weak)
-{
-	OpExpr	   *pred_opexpr,
-			   *clause_opexpr;
-	Oid			pred_collation,
-				clause_collation;
-	Oid			pred_op,
-				clause_op,
-				test_op;
-	Node	   *pred_leftop,
-			   *pred_rightop,
-			   *clause_leftop,
-			   *clause_rightop;
-	Const	   *pred_const,
-			   *clause_const;
-	Expr	   *test_expr;
-	ExprState  *test_exprstate;
-	Datum		test_result;
-	bool		isNull;
-	EState	   *estate;
-	MemoryContext oldcontext;
+                         bool refute_it, bool weak) {
+    OpExpr *pred_opexpr,
+            *clause_opexpr;
+    Oid pred_collation,
+            clause_collation;
+    Oid pred_op,
+            clause_op,
+            test_op;
+    Node *pred_leftop,
+            *pred_rightop,
+            *clause_leftop,
+            *clause_rightop;
+    Const *pred_const,
+            *clause_const;
+    Expr *test_expr;
+    ExprState *test_exprstate;
+    Datum test_result;
+    bool isNull;
+    EState *estate;
+    MemoryContext oldcontext;
 
-	/*
+    /*
 	 * Both expressions must be binary opclauses, else we can't do anything.
 	 *
 	 * Note: in future we might extend this logic to other operator-based
@@ -1714,217 +1662,198 @@ operator_predicate_proof(Expr *predicate, Node *clause,
 	 * about DistinctExpr in general, and this probably isn't the first place
 	 * to fix if you want to improve that.
 	 */
-	if (!is_opclause(predicate))
-		return false;
-	pred_opexpr = (OpExpr *) predicate;
-	if (list_length(pred_opexpr->args) != 2)
-		return false;
-	if (!is_opclause(clause))
-		return false;
-	clause_opexpr = (OpExpr *) clause;
-	if (list_length(clause_opexpr->args) != 2)
-		return false;
+    if (!is_opclause(predicate))
+        return false;
+    pred_opexpr = (OpExpr *) predicate;
+    if (list_length(pred_opexpr->args) != 2)
+        return false;
+    if (!is_opclause(clause))
+        return false;
+    clause_opexpr = (OpExpr *) clause;
+    if (list_length(clause_opexpr->args) != 2)
+        return false;
 
-	/*
+    /*
 	 * If they're marked with different collations then we can't do anything.
 	 * This is a cheap test so let's get it out of the way early.
 	 */
-	pred_collation = pred_opexpr->inputcollid;
-	clause_collation = clause_opexpr->inputcollid;
-	if (pred_collation != clause_collation)
-		return false;
+    pred_collation = pred_opexpr->inputcollid;
+    clause_collation = clause_opexpr->inputcollid;
+    if (pred_collation != clause_collation)
+        return false;
 
-	/* Grab the operator OIDs now too.  We may commute these below. */
-	pred_op = pred_opexpr->opno;
-	clause_op = clause_opexpr->opno;
+    /* Grab the operator OIDs now too.  We may commute these below. */
+    pred_op = pred_opexpr->opno;
+    clause_op = clause_opexpr->opno;
 
-	/*
+    /*
 	 * We have to match up at least one pair of input expressions.
 	 */
-	pred_leftop = (Node *) linitial(pred_opexpr->args);
-	pred_rightop = (Node *) lsecond(pred_opexpr->args);
-	clause_leftop = (Node *) linitial(clause_opexpr->args);
-	clause_rightop = (Node *) lsecond(clause_opexpr->args);
+    pred_leftop = (Node *) linitial(pred_opexpr->args);
+    pred_rightop = (Node *) lsecond(pred_opexpr->args);
+    clause_leftop = (Node *) linitial(clause_opexpr->args);
+    clause_rightop = (Node *) lsecond(clause_opexpr->args);
 
-	if (equal(pred_leftop, clause_leftop))
-	{
-		if (equal(pred_rightop, clause_rightop))
-		{
-			/* We have x op1 y and x op2 y */
-			return operator_same_subexprs_proof(pred_op, clause_op, refute_it);
-		}
-		else
-		{
-			/* Fail unless rightops are both Consts */
-			if (pred_rightop == NULL || !IsA(pred_rightop, Const))
-				return false;
-			pred_const = (Const *) pred_rightop;
-			if (clause_rightop == NULL || !IsA(clause_rightop, Const))
-				return false;
-			clause_const = (Const *) clause_rightop;
-		}
-	}
-	else if (equal(pred_rightop, clause_rightop))
-	{
-		/* Fail unless leftops are both Consts */
-		if (pred_leftop == NULL || !IsA(pred_leftop, Const))
-			return false;
-		pred_const = (Const *) pred_leftop;
-		if (clause_leftop == NULL || !IsA(clause_leftop, Const))
-			return false;
-		clause_const = (Const *) clause_leftop;
-		/* Commute both operators so we can assume Consts are on the right */
-		pred_op = get_commutator(pred_op);
-		if (!OidIsValid(pred_op))
-			return false;
-		clause_op = get_commutator(clause_op);
-		if (!OidIsValid(clause_op))
-			return false;
-	}
-	else if (equal(pred_leftop, clause_rightop))
-	{
-		if (equal(pred_rightop, clause_leftop))
-		{
-			/* We have x op1 y and y op2 x */
-			/* Commute pred_op that we can treat this like a straight match */
-			pred_op = get_commutator(pred_op);
-			if (!OidIsValid(pred_op))
-				return false;
-			return operator_same_subexprs_proof(pred_op, clause_op, refute_it);
-		}
-		else
-		{
-			/* Fail unless pred_rightop/clause_leftop are both Consts */
-			if (pred_rightop == NULL || !IsA(pred_rightop, Const))
-				return false;
-			pred_const = (Const *) pred_rightop;
-			if (clause_leftop == NULL || !IsA(clause_leftop, Const))
-				return false;
-			clause_const = (Const *) clause_leftop;
-			/* Commute clause_op so we can assume Consts are on the right */
-			clause_op = get_commutator(clause_op);
-			if (!OidIsValid(clause_op))
-				return false;
-		}
-	}
-	else if (equal(pred_rightop, clause_leftop))
-	{
-		/* Fail unless pred_leftop/clause_rightop are both Consts */
-		if (pred_leftop == NULL || !IsA(pred_leftop, Const))
-			return false;
-		pred_const = (Const *) pred_leftop;
-		if (clause_rightop == NULL || !IsA(clause_rightop, Const))
-			return false;
-		clause_const = (Const *) clause_rightop;
-		/* Commute pred_op so we can assume Consts are on the right */
-		pred_op = get_commutator(pred_op);
-		if (!OidIsValid(pred_op))
-			return false;
-	}
-	else
-	{
-		/* Failed to match up any of the subexpressions, so we lose */
-		return false;
-	}
+    if (equal(pred_leftop, clause_leftop)) {
+        if (equal(pred_rightop, clause_rightop)) {
+            /* We have x op1 y and x op2 y */
+            return operator_same_subexprs_proof(pred_op, clause_op, refute_it);
+        } else {
+            /* Fail unless rightops are both Consts */
+            if (pred_rightop == NULL || !IsA(pred_rightop, Const))
+                return false;
+            pred_const = (Const *) pred_rightop;
+            if (clause_rightop == NULL || !IsA(clause_rightop, Const))
+                return false;
+            clause_const = (Const *) clause_rightop;
+        }
+    } else if (equal(pred_rightop, clause_rightop)) {
+        /* Fail unless leftops are both Consts */
+        if (pred_leftop == NULL || !IsA(pred_leftop, Const))
+            return false;
+        pred_const = (Const *) pred_leftop;
+        if (clause_leftop == NULL || !IsA(clause_leftop, Const))
+            return false;
+        clause_const = (Const *) clause_leftop;
+        /* Commute both operators so we can assume Consts are on the right */
+        pred_op = get_commutator(pred_op);
+        if (!OidIsValid(pred_op))
+            return false;
+        clause_op = get_commutator(clause_op);
+        if (!OidIsValid(clause_op))
+            return false;
+    } else if (equal(pred_leftop, clause_rightop)) {
+        if (equal(pred_rightop, clause_leftop)) {
+            /* We have x op1 y and y op2 x */
+            /* Commute pred_op that we can treat this like a straight match */
+            pred_op = get_commutator(pred_op);
+            if (!OidIsValid(pred_op))
+                return false;
+            return operator_same_subexprs_proof(pred_op, clause_op, refute_it);
+        } else {
+            /* Fail unless pred_rightop/clause_leftop are both Consts */
+            if (pred_rightop == NULL || !IsA(pred_rightop, Const))
+                return false;
+            pred_const = (Const *) pred_rightop;
+            if (clause_leftop == NULL || !IsA(clause_leftop, Const))
+                return false;
+            clause_const = (Const *) clause_leftop;
+            /* Commute clause_op so we can assume Consts are on the right */
+            clause_op = get_commutator(clause_op);
+            if (!OidIsValid(clause_op))
+                return false;
+        }
+    } else if (equal(pred_rightop, clause_leftop)) {
+        /* Fail unless pred_leftop/clause_rightop are both Consts */
+        if (pred_leftop == NULL || !IsA(pred_leftop, Const))
+            return false;
+        pred_const = (Const *) pred_leftop;
+        if (clause_rightop == NULL || !IsA(clause_rightop, Const))
+            return false;
+        clause_const = (Const *) clause_rightop;
+        /* Commute pred_op so we can assume Consts are on the right */
+        pred_op = get_commutator(pred_op);
+        if (!OidIsValid(pred_op))
+            return false;
+    } else {
+        /* Failed to match up any of the subexpressions, so we lose */
+        return false;
+    }
 
-	/*
+    /*
 	 * We have two identical subexpressions, and two other subexpressions that
 	 * are not identical but are both Consts; and we have commuted the
 	 * operators if necessary so that the Consts are on the right.  We'll need
 	 * to compare the Consts' values.  If either is NULL, we can't do that, so
 	 * usually the proof fails ... but in some cases we can claim success.
 	 */
-	if (clause_const->constisnull)
-	{
-		/* If clause_op isn't strict, we can't prove anything */
-		if (!op_strict(clause_op))
-			return false;
+    if (clause_const->constisnull) {
+        /* If clause_op isn't strict, we can't prove anything */
+        if (!op_strict(clause_op))
+            return false;
 
-		/*
+        /*
 		 * At this point we know that the clause returns NULL.  For proof
 		 * types that assume truth of the clause, this means the proof is
 		 * vacuously true (a/k/a "false implies anything").  That's all proof
 		 * types except weak implication.
 		 */
-		if (!(weak && !refute_it))
-			return true;
+        if (!(weak && !refute_it))
+            return true;
 
-		/*
+        /*
 		 * For weak implication, it's still possible for the proof to succeed,
 		 * if the predicate can also be proven NULL.  In that case we've got
 		 * NULL => NULL which is valid for this proof type.
 		 */
-		if (pred_const->constisnull && op_strict(pred_op))
-			return true;
-		/* Else the proof fails */
-		return false;
-	}
-	if (pred_const->constisnull)
-	{
-		/*
+        if (pred_const->constisnull && op_strict(pred_op))
+            return true;
+        /* Else the proof fails */
+        return false;
+    }
+    if (pred_const->constisnull) {
+        /*
 		 * If the pred_op is strict, we know the predicate yields NULL, which
 		 * means the proof succeeds for either weak implication or weak
 		 * refutation.
 		 */
-		if (weak && op_strict(pred_op))
-			return true;
-		/* Else the proof fails */
-		return false;
-	}
+        if (weak && op_strict(pred_op))
+            return true;
+        /* Else the proof fails */
+        return false;
+    }
 
-	/*
+    /*
 	 * Lookup the constant-comparison operator using the system catalogs and
 	 * the operator implication tables.
 	 */
-	test_op = get_btree_test_op(pred_op, clause_op, refute_it);
+    test_op = get_btree_test_op(pred_op, clause_op, refute_it);
 
-	if (!OidIsValid(test_op))
-	{
-		/* couldn't find a suitable comparison operator */
-		return false;
-	}
+    if (!OidIsValid(test_op)) {
+        /* couldn't find a suitable comparison operator */
+        return false;
+    }
 
-	/*
+    /*
 	 * Evaluate the test.  For this we need an EState.
 	 */
-	estate = CreateExecutorState();
+    estate = CreateExecutorState();
 
-	/* We can use the estate's working context to avoid memory leaks. */
-	oldcontext = MemoryContextSwitchTo(estate->es_query_cxt);
+    /* We can use the estate's working context to avoid memory leaks. */
+    oldcontext = MemoryContextSwitchTo(estate->es_query_cxt);
 
-	/* Build expression tree */
-	test_expr = make_opclause(test_op,
-							  BOOLOID,
-							  false,
-							  (Expr *) pred_const,
-							  (Expr *) clause_const,
-							  InvalidOid,
-							  pred_collation);
+    /* Build expression tree */
+    test_expr = make_opclause(test_op,
+                              BOOLOID,
+                              false,
+                              (Expr *) pred_const,
+                              (Expr *) clause_const,
+                              InvalidOid,
+                              pred_collation);
 
-	/* Fill in opfuncids */
-	fix_opfuncids((Node *) test_expr);
+    /* Fill in opfuncids */
+    fix_opfuncids((Node *) test_expr);
 
-	/* Prepare it for execution */
-	test_exprstate = ExecInitExpr(test_expr, NULL);
+    /* Prepare it for execution */
+    test_exprstate = ExecInitExpr(test_expr, NULL);
 
-	/* And execute it. */
-	test_result = ExecEvalExprSwitchContext(test_exprstate,
-											GetPerTupleExprContext(estate),
-											&isNull);
+    /* And execute it. */
+    test_result = ExecEvalExprSwitchContext(test_exprstate,
+                                            GetPerTupleExprContext(estate),
+                                            &isNull);
 
-	/* Get back to outer memory context */
-	MemoryContextSwitchTo(oldcontext);
+    /* Get back to outer memory context */
+    MemoryContextSwitchTo(oldcontext);
 
-	/* Release all the junk we just created */
-	FreeExecutorState(estate);
+    /* Release all the junk we just created */
+    FreeExecutorState(estate);
 
-	if (isNull)
-	{
-		/* Treat a null result as non-proof ... but it's a tad fishy ... */
-		elog(DEBUG2, "null predicate test result");
-		return false;
-	}
-	return DatumGetBool(test_result);
+    if (isNull) {
+        /* Treat a null result as non-proof ... but it's a tad fishy ... */
+        elog(DEBUG2, "null predicate test result");
+        return false;
+    }
+    return DatumGetBool(test_result);
 }
 
 
@@ -1936,9 +1865,8 @@ operator_predicate_proof(Expr *predicate, Node *clause,
  * Return true if able to make the proof, false if not able to prove it.
  */
 static bool
-operator_same_subexprs_proof(Oid pred_op, Oid clause_op, bool refute_it)
-{
-	/*
+operator_same_subexprs_proof(Oid pred_op, Oid clause_op, bool refute_it) {
+    /*
 	 * A simple and general rule is that the predicate is proven if clause_op
 	 * and pred_op are the same, or refuted if they are each other's negators.
 	 * We need not check immutability since the pred_op is already known
@@ -1951,22 +1879,19 @@ operator_same_subexprs_proof(Oid pred_op, Oid clause_op, bool refute_it)
 	 * test in predicate_implied_by_simple_clause would have caught it.  But
 	 * we can see the same operator after having commuted the pred_op.
 	 */
-	if (refute_it)
-	{
-		if (get_negator(pred_op) == clause_op)
-			return true;
-	}
-	else
-	{
-		if (pred_op == clause_op)
-			return true;
-	}
+    if (refute_it) {
+        if (get_negator(pred_op) == clause_op)
+            return true;
+    } else {
+        if (pred_op == clause_op)
+            return true;
+    }
 
-	/*
+    /*
 	 * Otherwise, see if we can determine the implication by finding the
 	 * operators' relationship via some btree opfamily.
 	 */
-	return operator_same_subexprs_lookup(pred_op, clause_op, refute_it);
+    return operator_same_subexprs_lookup(pred_op, clause_op, refute_it);
 }
 
 
@@ -1978,23 +1903,21 @@ operator_same_subexprs_proof(Oid pred_op, Oid clause_op, bool refute_it)
  * results for a given pair of operators; but note we may have determined
  * only one of those sets of results as yet.
  */
-typedef struct OprProofCacheKey
-{
-	Oid			pred_op;		/* predicate operator */
-	Oid			clause_op;		/* clause operator */
+typedef struct OprProofCacheKey {
+    Oid pred_op; /* predicate operator */
+    Oid clause_op; /* clause operator */
 } OprProofCacheKey;
 
-typedef struct OprProofCacheEntry
-{
-	/* the hash lookup key MUST BE FIRST */
-	OprProofCacheKey key;
+typedef struct OprProofCacheEntry {
+    /* the hash lookup key MUST BE FIRST */
+    OprProofCacheKey key;
 
-	bool		have_implic;	/* do we know the implication result? */
-	bool		have_refute;	/* do we know the refutation result? */
-	bool		same_subexprs_implies;	/* X clause_op Y implies X pred_op Y? */
-	bool		same_subexprs_refutes;	/* X clause_op Y refutes X pred_op Y? */
-	Oid			implic_test_op; /* OID of the test operator, or 0 if none */
-	Oid			refute_test_op; /* OID of the test operator, or 0 if none */
+    bool have_implic; /* do we know the implication result? */
+    bool have_refute; /* do we know the refutation result? */
+    bool same_subexprs_implies; /* X clause_op Y implies X pred_op Y? */
+    bool same_subexprs_refutes; /* X clause_op Y refutes X pred_op Y? */
+    Oid implic_test_op; /* OID of the test operator, or 0 if none */
+    Oid refute_test_op; /* OID of the test operator, or 0 if none */
 } OprProofCacheEntry;
 
 static HTAB *OprProofCacheHash = NULL;
@@ -2005,57 +1928,52 @@ static HTAB *OprProofCacheHash = NULL;
  *	  Get, and fill in if necessary, the appropriate cache entry.
  */
 static OprProofCacheEntry *
-lookup_proof_cache(Oid pred_op, Oid clause_op, bool refute_it)
-{
-	OprProofCacheKey key;
-	OprProofCacheEntry *cache_entry;
-	bool		cfound;
-	bool		same_subexprs = false;
-	Oid			test_op = InvalidOid;
-	bool		found = false;
-	List	   *pred_op_infos,
-			   *clause_op_infos;
-	ListCell   *lcp,
-			   *lcc;
+lookup_proof_cache(Oid pred_op, Oid clause_op, bool refute_it) {
+    OprProofCacheKey key;
+    OprProofCacheEntry *cache_entry;
+    bool cfound;
+    bool same_subexprs = false;
+    Oid test_op = InvalidOid;
+    bool found = false;
+    List *pred_op_infos,
+            *clause_op_infos;
+    ListCell *lcp,
+            *lcc;
 
-	/*
+    /*
 	 * Find or make a cache entry for this pair of operators.
 	 */
-	if (OprProofCacheHash == NULL)
-	{
-		/* First time through: initialize the hash table */
-		HASHCTL		ctl;
+    if (OprProofCacheHash == NULL) {
+        /* First time through: initialize the hash table */
+        HASHCTL ctl;
 
-		ctl.keysize = sizeof(OprProofCacheKey);
-		ctl.entrysize = sizeof(OprProofCacheEntry);
-		OprProofCacheHash = hash_create("Btree proof lookup cache", 256,
-										&ctl, HASH_ELEM | HASH_BLOBS);
+        ctl.keysize = sizeof(OprProofCacheKey);
+        ctl.entrysize = sizeof(OprProofCacheEntry);
+        OprProofCacheHash = hash_create("Btree proof lookup cache", 256,
+                                        &ctl, HASH_ELEM | HASH_BLOBS);
 
-		/* Arrange to flush cache on pg_amop changes */
-		CacheRegisterSyscacheCallback(AMOPOPID,
-									  InvalidateOprProofCacheCallBack,
-									  (Datum) 0);
-	}
+        /* Arrange to flush cache on pg_amop changes */
+        CacheRegisterSyscacheCallback(AMOPOPID,
+                                      InvalidateOprProofCacheCallBack,
+                                      (Datum) 0);
+    }
 
-	key.pred_op = pred_op;
-	key.clause_op = clause_op;
-	cache_entry = (OprProofCacheEntry *) hash_search(OprProofCacheHash,
-													 &key,
-													 HASH_ENTER, &cfound);
-	if (!cfound)
-	{
-		/* new cache entry, set it invalid */
-		cache_entry->have_implic = false;
-		cache_entry->have_refute = false;
-	}
-	else
-	{
-		/* pre-existing cache entry, see if we know the answer yet */
-		if (refute_it ? cache_entry->have_refute : cache_entry->have_implic)
-			return cache_entry;
-	}
+    key.pred_op = pred_op;
+    key.clause_op = clause_op;
+    cache_entry = (OprProofCacheEntry *) hash_search(OprProofCacheHash,
+                                                     &key,
+                                                     HASH_ENTER, &cfound);
+    if (!cfound) {
+        /* new cache entry, set it invalid */
+        cache_entry->have_implic = false;
+        cache_entry->have_refute = false;
+    } else {
+        /* pre-existing cache entry, see if we know the answer yet */
+        if (refute_it ? cache_entry->have_refute : cache_entry->have_implic)
+            return cache_entry;
+    }
 
-	/*
+    /*
 	 * Try to find a btree opfamily containing the given operators.
 	 *
 	 * We must find a btree opfamily that contains both operators, else the
@@ -2072,81 +1990,77 @@ lookup_proof_cache(Oid pred_op, Oid clause_op, bool refute_it)
 	 * operator.  This can happen in cases with incomplete sets of cross-type
 	 * comparison operators.
 	 */
-	clause_op_infos = get_op_btree_interpretation(clause_op);
-	if (clause_op_infos)
-		pred_op_infos = get_op_btree_interpretation(pred_op);
-	else						/* no point in looking */
-		pred_op_infos = NIL;
+    clause_op_infos = get_op_btree_interpretation(clause_op);
+    if (clause_op_infos)
+        pred_op_infos = get_op_btree_interpretation(pred_op);
+    else /* no point in looking */
+        pred_op_infos = NIL;
 
-	foreach(lcp, pred_op_infos)
-	{
-		OpBtreeInterpretation *pred_op_info = lfirst(lcp);
-		Oid			opfamily_id = pred_op_info->opfamily_id;
+    foreach(lcp, pred_op_infos)
+    {
+        OpBtreeInterpretation *pred_op_info = lfirst(lcp);
+        Oid opfamily_id = pred_op_info->opfamily_id;
 
-		foreach(lcc, clause_op_infos)
-		{
-			OpBtreeInterpretation *clause_op_info = lfirst(lcc);
-			StrategyNumber pred_strategy,
-						clause_strategy,
-						test_strategy;
+        foreach(lcc, clause_op_infos)
+        {
+            OpBtreeInterpretation *clause_op_info = lfirst(lcc);
+            StrategyNumber pred_strategy,
+                    clause_strategy,
+                    test_strategy;
 
-			/* Must find them in same opfamily */
-			if (opfamily_id != clause_op_info->opfamily_id)
-				continue;
-			/* Lefttypes should match */
-			Assert(clause_op_info->oplefttype == pred_op_info->oplefttype);
+            /* Must find them in same opfamily */
+            if (opfamily_id != clause_op_info->opfamily_id)
+                continue;
+            /* Lefttypes should match */
+            Assert(clause_op_info->oplefttype == pred_op_info->oplefttype);
 
-			pred_strategy = pred_op_info->strategy;
-			clause_strategy = clause_op_info->strategy;
+            pred_strategy = pred_op_info->strategy;
+            clause_strategy = clause_op_info->strategy;
 
-			/*
+            /*
 			 * Check to see if we can make a proof for same-subexpressions
 			 * cases based on the operators' relationship in this opfamily.
 			 */
-			if (refute_it)
-				same_subexprs |= BT_refutes_table[clause_strategy - 1][pred_strategy - 1];
-			else
-				same_subexprs |= BT_implies_table[clause_strategy - 1][pred_strategy - 1];
+            if (refute_it)
+                same_subexprs |= BT_refutes_table[clause_strategy - 1][pred_strategy - 1];
+            else
+                same_subexprs |= BT_implies_table[clause_strategy - 1][pred_strategy - 1];
 
-			/*
+            /*
 			 * Look up the "test" strategy number in the implication table
 			 */
-			if (refute_it)
-				test_strategy = BT_refute_table[clause_strategy - 1][pred_strategy - 1];
-			else
-				test_strategy = BT_implic_table[clause_strategy - 1][pred_strategy - 1];
+            if (refute_it)
+                test_strategy = BT_refute_table[clause_strategy - 1][pred_strategy - 1];
+            else
+                test_strategy = BT_implic_table[clause_strategy - 1][pred_strategy - 1];
 
-			if (test_strategy == 0)
-			{
-				/* Can't determine implication using this interpretation */
-				continue;
-			}
+            if (test_strategy == 0) {
+                /* Can't determine implication using this interpretation */
+                continue;
+            }
 
-			/*
+            /*
 			 * See if opfamily has an operator for the test strategy and the
 			 * datatypes.
 			 */
-			if (test_strategy == BTNE)
-			{
-				test_op = get_opfamily_member(opfamily_id,
-											  pred_op_info->oprighttype,
-											  clause_op_info->oprighttype,
-											  BTEqualStrategyNumber);
-				if (OidIsValid(test_op))
-					test_op = get_negator(test_op);
-			}
-			else
-			{
-				test_op = get_opfamily_member(opfamily_id,
-											  pred_op_info->oprighttype,
-											  clause_op_info->oprighttype,
-											  test_strategy);
-			}
+            if (test_strategy == BTNE) {
+                test_op = get_opfamily_member(opfamily_id,
+                                              pred_op_info->oprighttype,
+                                              clause_op_info->oprighttype,
+                                              BTEqualStrategyNumber);
+                if (OidIsValid(test_op))
+                    test_op = get_negator(test_op);
+            } else {
+                test_op = get_opfamily_member(opfamily_id,
+                                              pred_op_info->oprighttype,
+                                              clause_op_info->oprighttype,
+                                              test_strategy);
+            }
 
-			if (!OidIsValid(test_op))
-				continue;
+            if (!OidIsValid(test_op))
+                continue;
 
-			/*
+            /*
 			 * Last check: test_op must be immutable.
 			 *
 			 * Note that we require only the test_op to be immutable, not the
@@ -2155,52 +2069,47 @@ lookup_proof_cache(Oid pred_op, Oid clause_op, bool refute_it)
 			 * opfamily is consistent even if it contains operators that are
 			 * merely stable.
 			 */
-			if (op_volatile(test_op) == PROVOLATILE_IMMUTABLE)
-			{
-				found = true;
-				break;
-			}
-		}
+            if (op_volatile(test_op) == PROVOLATILE_IMMUTABLE) {
+                found = true;
+                break;
+            }
+        }
 
-		if (found)
-			break;
-	}
+        if (found)
+            break;
+    }
 
-	list_free_deep(pred_op_infos);
-	list_free_deep(clause_op_infos);
+    list_free_deep(pred_op_infos);
+    list_free_deep(clause_op_infos);
 
-	if (!found)
-	{
-		/* couldn't find a suitable comparison operator */
-		test_op = InvalidOid;
-	}
+    if (!found) {
+        /* couldn't find a suitable comparison operator */
+        test_op = InvalidOid;
+    }
 
-	/*
+    /*
 	 * If we think we were able to prove something about same-subexpressions
 	 * cases, check to make sure the clause_op is immutable before believing
 	 * it completely.  (Usually, the clause_op would be immutable if the
 	 * pred_op is, but it's not entirely clear that this must be true in all
 	 * cases, so let's check.)
 	 */
-	if (same_subexprs &&
-		op_volatile(clause_op) != PROVOLATILE_IMMUTABLE)
-		same_subexprs = false;
+    if (same_subexprs &&
+        op_volatile(clause_op) != PROVOLATILE_IMMUTABLE)
+        same_subexprs = false;
 
-	/* Cache the results, whether positive or negative */
-	if (refute_it)
-	{
-		cache_entry->refute_test_op = test_op;
-		cache_entry->same_subexprs_refutes = same_subexprs;
-		cache_entry->have_refute = true;
-	}
-	else
-	{
-		cache_entry->implic_test_op = test_op;
-		cache_entry->same_subexprs_implies = same_subexprs;
-		cache_entry->have_implic = true;
-	}
+    /* Cache the results, whether positive or negative */
+    if (refute_it) {
+        cache_entry->refute_test_op = test_op;
+        cache_entry->same_subexprs_refutes = same_subexprs;
+        cache_entry->have_refute = true;
+    } else {
+        cache_entry->implic_test_op = test_op;
+        cache_entry->same_subexprs_implies = same_subexprs;
+        cache_entry->have_implic = true;
+    }
 
-	return cache_entry;
+    return cache_entry;
 }
 
 /*
@@ -2209,15 +2118,14 @@ lookup_proof_cache(Oid pred_op, Oid clause_op, bool refute_it)
  *	  same-subexpressions cases.
  */
 static bool
-operator_same_subexprs_lookup(Oid pred_op, Oid clause_op, bool refute_it)
-{
-	OprProofCacheEntry *cache_entry;
+operator_same_subexprs_lookup(Oid pred_op, Oid clause_op, bool refute_it) {
+    OprProofCacheEntry *cache_entry;
 
-	cache_entry = lookup_proof_cache(pred_op, clause_op, refute_it);
-	if (refute_it)
-		return cache_entry->same_subexprs_refutes;
-	else
-		return cache_entry->same_subexprs_implies;
+    cache_entry = lookup_proof_cache(pred_op, clause_op, refute_it);
+    if (refute_it)
+        return cache_entry->same_subexprs_refutes;
+    else
+        return cache_entry->same_subexprs_implies;
 }
 
 /*
@@ -2234,15 +2142,14 @@ operator_same_subexprs_lookup(Oid pred_op, Oid clause_op, bool refute_it)
  * possible.
  */
 static Oid
-get_btree_test_op(Oid pred_op, Oid clause_op, bool refute_it)
-{
-	OprProofCacheEntry *cache_entry;
+get_btree_test_op(Oid pred_op, Oid clause_op, bool refute_it) {
+    OprProofCacheEntry *cache_entry;
 
-	cache_entry = lookup_proof_cache(pred_op, clause_op, refute_it);
-	if (refute_it)
-		return cache_entry->refute_test_op;
-	else
-		return cache_entry->implic_test_op;
+    cache_entry = lookup_proof_cache(pred_op, clause_op, refute_it);
+    if (refute_it)
+        return cache_entry->refute_test_op;
+    else
+        return cache_entry->implic_test_op;
 }
 
 
@@ -2250,19 +2157,17 @@ get_btree_test_op(Oid pred_op, Oid clause_op, bool refute_it)
  * Callback for pg_amop inval events
  */
 static void
-InvalidateOprProofCacheCallBack(Datum arg, int cacheid, uint32 hashvalue)
-{
-	HASH_SEQ_STATUS status;
-	OprProofCacheEntry *hentry;
+InvalidateOprProofCacheCallBack(Datum arg, int cacheid, uint32 hashvalue) {
+    HASH_SEQ_STATUS status;
+    OprProofCacheEntry *hentry;
 
-	Assert(OprProofCacheHash != NULL);
+    Assert(OprProofCacheHash != NULL);
 
-	/* Currently we just reset all entries; hard to be smarter ... */
-	hash_seq_init(&status, OprProofCacheHash);
+    /* Currently we just reset all entries; hard to be smarter ... */
+    hash_seq_init(&status, OprProofCacheHash);
 
-	while ((hentry = (OprProofCacheEntry *) hash_seq_search(&status)) != NULL)
-	{
-		hentry->have_implic = false;
-		hentry->have_refute = false;
-	}
+    while ((hentry = (OprProofCacheEntry *) hash_seq_search(&status)) != NULL) {
+        hentry->have_implic = false;
+        hentry->have_refute = false;
+    }
 }

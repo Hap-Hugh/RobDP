@@ -24,10 +24,10 @@
 #include "optimizer/restrictinfo.h"
 
 
-static bool is_safe_restriction_clause_for(RestrictInfo *rinfo, RelOptInfo *rel);
-static Expr *extract_or_clause(RestrictInfo *or_rinfo, RelOptInfo *rel);
-static void consider_new_or_clause(PlannerInfo *root, RelOptInfo *rel,
-								   Expr *orclause, RestrictInfo *join_or_rinfo);
+static bool is_safe_restriction_clause_for(RestrictInfo * rinfo, RelOptInfo * rel);
+static Expr *extract_or_clause(RestrictInfo * or_rinfo, RelOptInfo * rel);
+static void consider_new_or_clause(PlannerInfo * root, RelOptInfo * rel,
+                                   Expr * orclause, RestrictInfo * join_or_rinfo);
 
 
 /*
@@ -73,74 +73,70 @@ static void consider_new_or_clause(PlannerInfo *root, RelOptInfo *rel,
  * cached selectivity may get updated multiple times.
  */
 void
-extract_restriction_or_clauses(PlannerInfo *root)
-{
-	Index		rti;
+extract_restriction_or_clauses(PlannerInfo *root) {
+    Index rti;
 
-	/* Examine each baserel for potential join OR clauses */
-	for (rti = 1; rti < root->simple_rel_array_size; rti++)
-	{
-		RelOptInfo *rel = root->simple_rel_array[rti];
-		ListCell   *lc;
+    /* Examine each baserel for potential join OR clauses */
+    for (rti = 1; rti < root->simple_rel_array_size; rti++) {
+        RelOptInfo *rel = root->simple_rel_array[rti];
+        ListCell *lc;
 
-		/* there may be empty slots corresponding to non-baserel RTEs */
-		if (rel == NULL)
-			continue;
+        /* there may be empty slots corresponding to non-baserel RTEs */
+        if (rel == NULL)
+            continue;
 
-		Assert(rel->relid == rti);	/* sanity check on array */
+        Assert(rel->relid == rti); /* sanity check on array */
 
-		/* ignore RTEs that are "other rels" */
-		if (rel->reloptkind != RELOPT_BASEREL)
-			continue;
+        /* ignore RTEs that are "other rels" */
+        if (rel->reloptkind != RELOPT_BASEREL)
+            continue;
 
-		/*
+        /*
 		 * Find potentially interesting OR joinclauses.  We can use any
 		 * joinclause that is considered safe to move to this rel by the
 		 * parameterized-path machinery, even though what we are going to do
 		 * with it is not exactly a parameterized path.
 		 */
-		foreach(lc, rel->joininfo)
-		{
-			RestrictInfo *rinfo = (RestrictInfo *) lfirst(lc);
+        foreach(lc, rel->joininfo)
+        {
+            RestrictInfo *rinfo = (RestrictInfo *) lfirst(lc);
 
-			if (restriction_is_or_clause(rinfo) &&
-				join_clause_is_movable_to(rinfo, rel))
-			{
-				/* Try to extract a qual for this rel only */
-				Expr	   *orclause = extract_or_clause(rinfo, rel);
+            if (restriction_is_or_clause(rinfo) &&
+                join_clause_is_movable_to(rinfo, rel)) {
+                /* Try to extract a qual for this rel only */
+                Expr *orclause = extract_or_clause(rinfo, rel);
 
-				/*
+                /*
 				 * If successful, decide whether we want to use the clause,
 				 * and insert it into the rel's restrictinfo list if so.
 				 */
-				if (orclause)
-					consider_new_or_clause(root, rel, orclause, rinfo);
-			}
-		}
-	}
+                if (orclause)
+                    consider_new_or_clause(root, rel, orclause, rinfo);
+            }
+        }
+    }
 }
 
 /*
  * Is the given primitive (non-OR) RestrictInfo safe to move to the rel?
  */
 static bool
-is_safe_restriction_clause_for(RestrictInfo *rinfo, RelOptInfo *rel)
-{
-	/*
+is_safe_restriction_clause_for(RestrictInfo *rinfo, RelOptInfo *rel) {
+    /*
 	 * We want clauses that mention the rel, and only the rel.  So in
 	 * particular pseudoconstant clauses can be rejected quickly.  Then check
 	 * the clause's Var membership.
 	 */
-	if (rinfo->pseudoconstant)
-		return false;
-	if (!bms_equal(rinfo->clause_relids, rel->relids))
-		return false;
+    if (rinfo->pseudoconstant)
+        return false;
+    if (!bms_equal(rinfo->clause_relids, rel->relids))
+        return false;
 
-	/* We don't want extra evaluations of any volatile functions */
-	if (contain_volatile_functions((Node *) rinfo->clause))
-		return false;
+    /* We don't want extra evaluations of any volatile functions */
+    if (contain_volatile_functions((Node *) rinfo->clause))
+        return false;
 
-	return true;
+    return true;
 }
 
 /*
@@ -154,12 +150,11 @@ is_safe_restriction_clause_for(RestrictInfo *rinfo, RelOptInfo *rel)
  * if no OR clause could be extracted.
  */
 static Expr *
-extract_or_clause(RestrictInfo *or_rinfo, RelOptInfo *rel)
-{
-	List	   *clauselist = NIL;
-	ListCell   *lc;
+extract_or_clause(RestrictInfo *or_rinfo, RelOptInfo *rel) {
+    List *clauselist = NIL;
+    ListCell *lc;
 
-	/*
+    /*
 	 * Scan each arm of the input OR clause.  Notice we descend into
 	 * or_rinfo->orclause, which has RestrictInfo nodes embedded below the
 	 * toplevel OR/AND structure.  This is useful because we can use the info
@@ -171,79 +166,74 @@ extract_or_clause(RestrictInfo *or_rinfo, RelOptInfo *rel)
 	 * selectivity and other cached data is computed exactly the same way for
 	 * a restriction clause as for a join clause, which seems undesirable.
 	 */
-	Assert(is_orclause(or_rinfo->orclause));
-	foreach(lc, ((BoolExpr *) or_rinfo->orclause)->args)
-	{
-		Node	   *orarg = (Node *) lfirst(lc);
-		List	   *subclauses = NIL;
-		Node	   *subclause;
+    Assert(is_orclause(or_rinfo->orclause));
+    foreach(lc, ((BoolExpr *) or_rinfo->orclause)->args)
+    {
+        Node *orarg = (Node *) lfirst(lc);
+        List *subclauses = NIL;
+        Node *subclause;
 
-		/* OR arguments should be ANDs or sub-RestrictInfos */
-		if (is_andclause(orarg))
-		{
-			List	   *andargs = ((BoolExpr *) orarg)->args;
-			ListCell   *lc2;
+        /* OR arguments should be ANDs or sub-RestrictInfos */
+        if (is_andclause(orarg)) {
+            List *andargs = ((BoolExpr *) orarg)->args;
+            ListCell *lc2;
 
-			foreach(lc2, andargs)
-			{
-				RestrictInfo *rinfo = lfirst_node(RestrictInfo, lc2);
+            foreach(lc2, andargs)
+            {
+                RestrictInfo *rinfo = lfirst_node(RestrictInfo, lc2);
 
-				if (restriction_is_or_clause(rinfo))
-				{
-					/*
+                if (restriction_is_or_clause(rinfo)) {
+                    /*
 					 * Recurse to deal with nested OR.  Note we *must* recurse
 					 * here, this isn't just overly-tense optimization: we
 					 * have to descend far enough to find and strip all
 					 * RestrictInfos in the expression.
 					 */
-					Expr	   *suborclause;
+                    Expr *suborclause;
 
-					suborclause = extract_or_clause(rinfo, rel);
-					if (suborclause)
-						subclauses = lappend(subclauses, suborclause);
-				}
-				else if (is_safe_restriction_clause_for(rinfo, rel))
-					subclauses = lappend(subclauses, rinfo->clause);
-			}
-		}
-		else
-		{
-			RestrictInfo *rinfo = castNode(RestrictInfo, orarg);
+                    suborclause = extract_or_clause(rinfo, rel);
+                    if (suborclause)
+                        subclauses = lappend(subclauses, suborclause);
+                } else if (is_safe_restriction_clause_for(rinfo, rel))
+                    subclauses = lappend(subclauses, rinfo->clause);
+            }
+        } else {
+            RestrictInfo *rinfo = castNode(RestrictInfo, orarg);
 
-			Assert(!restriction_is_or_clause(rinfo));
-			if (is_safe_restriction_clause_for(rinfo, rel))
-				subclauses = lappend(subclauses, rinfo->clause);
-		}
+            Assert(!restriction_is_or_clause(rinfo));
+            if (is_safe_restriction_clause_for(rinfo, rel))
+                subclauses = lappend(subclauses, rinfo->clause);
+        }
 
-		/*
+        /*
 		 * If nothing could be extracted from this arm, we can't do anything
 		 * with this OR clause.
 		 */
-		if (subclauses == NIL)
-			return NULL;
+        if (subclauses == NIL)
+            return NULL;
 
-		/*
+        /*
 		 * OK, add subclause(s) to the result OR.  If we found more than one,
 		 * we need an AND node.  But if we found only one, and it is itself an
 		 * OR node, add its subclauses to the result instead; this is needed
 		 * to preserve AND/OR flatness (ie, no OR directly underneath OR).
 		 */
-		subclause = (Node *) make_ands_explicit(subclauses);
-		if (is_orclause(subclause))
-			clauselist = list_concat(clauselist,
-									 ((BoolExpr *) subclause)->args);
-		else
-			clauselist = lappend(clauselist, subclause);
-	}
+        subclause = (Node *) make_ands_explicit(subclauses);
+        if (is_orclause(subclause))
+            clauselist = list_concat(clauselist,
+                                     ((BoolExpr *) subclause)->args);
+        else
+            clauselist = lappend(clauselist, subclause);
+    }
 
-	/*
+    /*
 	 * If we got a restriction clause from every arm, wrap them up in an OR
 	 * node.  (In theory the OR node might be unnecessary, if there was only
 	 * one arm --- but then the input OR node was also redundant.)
 	 */
-	if (clauselist != NIL)
-		return make_orclause(clauselist);
-	return NULL;
+    if (clauselist != NIL)
+        return make_orclause(clauselist);
+    return NULL;
 }
 
 /*
@@ -253,53 +243,52 @@ extract_or_clause(RestrictInfo *or_rinfo, RelOptInfo *rel)
  */
 static void
 consider_new_or_clause(PlannerInfo *root, RelOptInfo *rel,
-					   Expr *orclause, RestrictInfo *join_or_rinfo)
-{
-	RestrictInfo *or_rinfo;
-	Selectivity or_selec,
-				orig_selec;
+                       Expr *orclause, RestrictInfo *join_or_rinfo) {
+    RestrictInfo *or_rinfo;
+    Selectivity or_selec,
+            orig_selec;
 
-	/*
+    /*
 	 * Build a RestrictInfo from the new OR clause.  We can assume it's valid
 	 * as a base restriction clause.
 	 */
-	or_rinfo = make_restrictinfo(root,
-								 orclause,
-								 true,
-								 false,
-								 false,
-								 false,
-								 join_or_rinfo->security_level,
-								 NULL,
-								 NULL,
-								 NULL);
+    or_rinfo = make_restrictinfo(root,
+                                 orclause,
+                                 true,
+                                 false,
+                                 false,
+                                 false,
+                                 join_or_rinfo->security_level,
+                                 NULL,
+                                 NULL,
+                                 NULL);
 
-	/*
+    /*
 	 * Estimate its selectivity.  (We could have done this earlier, but doing
 	 * it on the RestrictInfo representation allows the result to get cached,
 	 * saving work later.)
 	 */
-	or_selec = clause_selectivity(root, (Node *) or_rinfo,
-								  0, JOIN_INNER, NULL);
+    or_selec = clause_selectivity(root, (Node *) or_rinfo,
+                                  0, JOIN_INNER, NULL);
 
-	/*
+    /*
 	 * The clause is only worth adding to the query if it rejects a useful
 	 * fraction of the base relation's rows; otherwise, it's just going to
 	 * cause duplicate computation (since we will still have to check the
 	 * original OR clause when the join is formed).  Somewhat arbitrarily, we
 	 * set the selectivity threshold at 0.9.
 	 */
-	if (or_selec > 0.9)
-		return;					/* forget it */
+    if (or_selec > 0.9)
+        return; /* forget it */
 
-	/*
+    /*
 	 * OK, add it to the rel's restriction-clause list.
 	 */
-	rel->baserestrictinfo = lappend(rel->baserestrictinfo, or_rinfo);
-	rel->baserestrict_min_security = Min(rel->baserestrict_min_security,
-										 or_rinfo->security_level);
+    rel->baserestrictinfo = lappend(rel->baserestrictinfo, or_rinfo);
+    rel->baserestrict_min_security = Min(rel->baserestrict_min_security,
+                                         or_rinfo->security_level);
 
-	/*
+    /*
 	 * Adjust the original join OR clause's cached selectivity to compensate
 	 * for the selectivity of the added (but redundant) lower-level qual. This
 	 * should result in the join rel getting approximately the same rows
@@ -319,42 +308,41 @@ consider_new_or_clause(PlannerInfo *root, RelOptInfo *rel,
 	 * how we ought to adjust outer_selec even if we could compute its
 	 * original value correctly.)
 	 */
-	if (or_selec > 0)
-	{
-		SpecialJoinInfo sjinfo;
+    if (or_selec > 0) {
+        SpecialJoinInfo sjinfo;
 
-		/*
+        /*
 		 * Make up a SpecialJoinInfo for JOIN_INNER semantics.  (Compare
 		 * approx_tuple_count() in costsize.c.)
 		 */
-		sjinfo.type = T_SpecialJoinInfo;
-		sjinfo.min_lefthand = bms_difference(join_or_rinfo->clause_relids,
-											 rel->relids);
-		sjinfo.min_righthand = rel->relids;
-		sjinfo.syn_lefthand = sjinfo.min_lefthand;
-		sjinfo.syn_righthand = sjinfo.min_righthand;
-		sjinfo.jointype = JOIN_INNER;
-		sjinfo.ojrelid = 0;
-		sjinfo.commute_above_l = NULL;
-		sjinfo.commute_above_r = NULL;
-		sjinfo.commute_below_l = NULL;
-		sjinfo.commute_below_r = NULL;
-		/* we don't bother trying to make the remaining fields valid */
-		sjinfo.lhs_strict = false;
-		sjinfo.semi_can_btree = false;
-		sjinfo.semi_can_hash = false;
-		sjinfo.semi_operators = NIL;
-		sjinfo.semi_rhs_exprs = NIL;
+        sjinfo.type = T_SpecialJoinInfo;
+        sjinfo.min_lefthand = bms_difference(join_or_rinfo->clause_relids,
+                                             rel->relids);
+        sjinfo.min_righthand = rel->relids;
+        sjinfo.syn_lefthand = sjinfo.min_lefthand;
+        sjinfo.syn_righthand = sjinfo.min_righthand;
+        sjinfo.jointype = JOIN_INNER;
+        sjinfo.ojrelid = 0;
+        sjinfo.commute_above_l = NULL;
+        sjinfo.commute_above_r = NULL;
+        sjinfo.commute_below_l = NULL;
+        sjinfo.commute_below_r = NULL;
+        /* we don't bother trying to make the remaining fields valid */
+        sjinfo.lhs_strict = false;
+        sjinfo.semi_can_btree = false;
+        sjinfo.semi_can_hash = false;
+        sjinfo.semi_operators = NIL;
+        sjinfo.semi_rhs_exprs = NIL;
 
-		/* Compute inner-join size */
-		orig_selec = clause_selectivity(root, (Node *) join_or_rinfo,
-										0, JOIN_INNER, &sjinfo);
+        /* Compute inner-join size */
+        orig_selec = clause_selectivity(root, (Node *) join_or_rinfo,
+                                        0, JOIN_INNER, &sjinfo);
 
-		/* And hack cached selectivity so join size remains the same */
-		join_or_rinfo->norm_selec = orig_selec / or_selec;
-		/* ensure result stays in sane range */
-		if (join_or_rinfo->norm_selec > 1)
-			join_or_rinfo->norm_selec = 1;
-		/* as explained above, we don't touch outer_selec */
-	}
+        /* And hack cached selectivity so join size remains the same */
+        join_or_rinfo->norm_selec = orig_selec / or_selec;
+        /* ensure result stays in sane range */
+        if (join_or_rinfo->norm_selec > 1)
+            join_or_rinfo->norm_selec = 1;
+        /* as explained above, we don't touch outer_selec */
+    }
 }

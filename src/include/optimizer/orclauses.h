@@ -16,6 +16,6 @@
 
 #include "nodes/pathnodes.h"
 
-extern void extract_restriction_or_clauses(PlannerInfo *root);
+extern void extract_restriction_or_clauses(PlannerInfo * root);
 
 #endif							/* ORCLAUSES_H */

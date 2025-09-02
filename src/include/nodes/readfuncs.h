@@ -27,7 +27,9 @@ extern PGDLLIMPORT bool restore_location_fields;
  * prototypes for functions in read.c (the lisp token parser)
  */
 extern const char *pg_strtok(int *length);
+
 extern char *debackslash(const char *token, int length);
+
 extern void *nodeRead(const char *token, int tok_len);
 
 /*

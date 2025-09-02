@@ -70,100 +70,91 @@
  */
 
 static Const *
-_copyConst(const Const *from)
-{
-	Const	   *newnode = makeNode(Const);
+_copyConst(const Const *from) {
+    Const *newnode = makeNode(Const);
 
-	COPY_SCALAR_FIELD(consttype);
-	COPY_SCALAR_FIELD(consttypmod);
-	COPY_SCALAR_FIELD(constcollid);
-	COPY_SCALAR_FIELD(constlen);
+    COPY_SCALAR_FIELD(consttype);
+    COPY_SCALAR_FIELD(consttypmod);
+    COPY_SCALAR_FIELD(constcollid);
+    COPY_SCALAR_FIELD(constlen);
 
-	if (from->constbyval || from->constisnull)
-	{
-		/*
+    if (from->constbyval || from->constisnull) {
+        /*
 		 * passed by value so just copy the datum. Also, don't try to copy
 		 * struct when value is null!
 		 */
-		newnode->constvalue = from->constvalue;
-	}
-	else
-	{
-		/*
+        newnode->constvalue = from->constvalue;
+    } else {
+        /*
 		 * passed by reference.  We need a palloc'd copy.
 		 */
-		newnode->constvalue = datumCopy(from->constvalue,
-										from->constbyval,
-										from->constlen);
-	}
+        newnode->constvalue = datumCopy(from->constvalue,
+                                        from->constbyval,
+                                        from->constlen);
+    }
 
-	COPY_SCALAR_FIELD(constisnull);
-	COPY_SCALAR_FIELD(constbyval);
-	COPY_LOCATION_FIELD(location);
+    COPY_SCALAR_FIELD(constisnull);
+    COPY_SCALAR_FIELD(constbyval);
+    COPY_LOCATION_FIELD(location);
 
-	return newnode;
+    return newnode;
 }
 
 static A_Const *
-_copyA_Const(const A_Const *from)
-{
-	A_Const    *newnode = makeNode(A_Const);
+_copyA_Const(const A_Const *from) {
+    A_Const *newnode = makeNode(A_Const);
 
-	COPY_SCALAR_FIELD(isnull);
-	if (!from->isnull)
-	{
-		/* This part must duplicate other _copy*() functions. */
-		COPY_SCALAR_FIELD(val.node.type);
-		switch (nodeTag(&from->val))
-		{
-			case T_Integer:
-				COPY_SCALAR_FIELD(val.ival.ival);
-				break;
-			case T_Float:
-				COPY_STRING_FIELD(val.fval.fval);
-				break;
-			case T_Boolean:
-				COPY_SCALAR_FIELD(val.boolval.boolval);
-				break;
-			case T_String:
-				COPY_STRING_FIELD(val.sval.sval);
-				break;
-			case T_BitString:
-				COPY_STRING_FIELD(val.bsval.bsval);
-				break;
-			default:
-				elog(ERROR, "unrecognized node type: %d",
-					 (int) nodeTag(&from->val));
-				break;
-		}
-	}
+    COPY_SCALAR_FIELD(isnull);
+    if (!from->isnull) {
+        /* This part must duplicate other _copy*() functions. */
+        COPY_SCALAR_FIELD(val.node.type);
+        switch (nodeTag(&from->val)) {
+            case T_Integer:
+                COPY_SCALAR_FIELD(val.ival.ival);
+                break;
+            case T_Float:
+                COPY_STRING_FIELD(val.fval.fval);
+                break;
+            case T_Boolean:
+                COPY_SCALAR_FIELD(val.boolval.boolval);
+                break;
+            case T_String:
+                COPY_STRING_FIELD(val.sval.sval);
+                break;
+            case T_BitString:
+                COPY_STRING_FIELD(val.bsval.bsval);
+                break;
+            default:
+                elog(ERROR, "unrecognized node type: %d",
+                     (int) nodeTag(&from->val));
+                break;
+        }
+    }
 
-	COPY_LOCATION_FIELD(location);
+    COPY_LOCATION_FIELD(location);
 
-	return newnode;
+    return newnode;
 }
 
 static ExtensibleNode *
-_copyExtensibleNode(const ExtensibleNode *from)
-{
-	ExtensibleNode *newnode;
-	const ExtensibleNodeMethods *methods;
+_copyExtensibleNode(const ExtensibleNode *from) {
+    ExtensibleNode *newnode;
+    const ExtensibleNodeMethods *methods;
 
-	methods = GetExtensibleNodeMethods(from->extnodename, false);
-	newnode = (ExtensibleNode *) newNode(methods->node_size,
-										 T_ExtensibleNode);
-	COPY_STRING_FIELD(extnodename);
+    methods = GetExtensibleNodeMethods(from->extnodename, false);
+    newnode = (ExtensibleNode *) newNode(methods->node_size,
+                                         T_ExtensibleNode);
+    COPY_STRING_FIELD(extnodename);
 
-	/* copy the private fields */
-	methods->nodeCopy(newnode, from);
+    /* copy the private fields */
+    methods->nodeCopy(newnode, from);
 
-	return newnode;
+    return newnode;
 }
 
 static Bitmapset *
-_copyBitmapset(const Bitmapset *from)
-{
-	return bms_copy(from);
+_copyBitmapset(const Bitmapset *from) {
+    return bms_copy(from);
 }
 
 
@@ -174,39 +165,45 @@ _copyBitmapset(const Bitmapset *from)
  * substructure is copied too, recursively.
  */
 void *
-copyObjectImpl(const void *from)
-{
-	void	   *retval;
+copyObjectImpl(const void *from) {
+    void *retval;
 
-	if (from == NULL)
-		return NULL;
+    if (from == NULL)
+        return NULL;
 
-	/* Guard against stack overflow due to overly complex expressions */
-	check_stack_depth();
+    /* Guard against stack overflow due to overly complex expressions */
+    check_stack_depth();
 
-	switch (nodeTag(from))
-	{
+    switch (nodeTag(from)) { 
+
 #include "copyfuncs.switch.c"
 
-		case T_List:
-			retval = list_copy_deep(from);
-			break;
+case
+T_List : retval
+=
+list_copy_deep (from);
+break;
 
-			/*
+/*
 			 * Lists of integers, OIDs and XIDs don't need to be deep-copied,
 			 * so we perform a shallow copy via list_copy()
 			 */
-		case T_IntList:
-		case T_OidList:
-		case T_XidList:
-			retval = list_copy(from);
-			break;
+case
+T_IntList : 
+case
+T_OidList : 
+case
+T_XidList : retval
+=
+list_copy (from);
+break;
 
-		default:
-			elog(ERROR, "unrecognized node type: %d", (int) nodeTag(from));
-			retval = 0;			/* keep compiler quiet */
-			break;
-	}
+default : elog(ERROR, "unrecognized node type: %d", (int) nodeTag(from));
+retval=
+0; /* keep compiler quiet */
+break;
+}
 
-	return retval;
+return
+retval;
 }

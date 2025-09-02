@@ -17,29 +17,35 @@
 
 
 void
-geqo_set_seed(PlannerInfo *root, double seed)
-{
-	GeqoPrivateData *private = (GeqoPrivateData *) root->join_search_private;
+geqo_set_seed(PlannerInfo *root, double seed) {
+    GeqoPrivateData *
+    private
+    =
+    (GeqoPrivateData *) root->join_search_private;
 
-	pg_prng_fseed(&private->random_state, seed);
+    pg_prng_fseed(&private->random_state, seed);
 }
 
 double
-geqo_rand(PlannerInfo *root)
-{
-	GeqoPrivateData *private = (GeqoPrivateData *) root->join_search_private;
+geqo_rand(PlannerInfo *root) {
+    GeqoPrivateData *
+    private
+    =
+    (GeqoPrivateData *) root->join_search_private;
 
-	return pg_prng_double(&private->random_state);
+    return pg_prng_double(&private->random_state);
 }
 
 int
-geqo_randint(PlannerInfo *root, int upper, int lower)
-{
-	GeqoPrivateData *private = (GeqoPrivateData *) root->join_search_private;
+geqo_randint(PlannerInfo *root, int upper, int lower) {
+    GeqoPrivateData *
+    private
+    =
+    (GeqoPrivateData *) root->join_search_private;
 
-	/*
+    /*
 	 * In current usage, "lower" is never negative so we can just use
 	 * pg_prng_uint64_range directly.
 	 */
-	return (int) pg_prng_uint64_range(&private->random_state, lower, upper);
+    return (int) pg_prng_uint64_range(&private->random_state, lower, upper);
 }

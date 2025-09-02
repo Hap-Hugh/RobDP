@@ -42,7 +42,7 @@
 #include "optimizer/geqo_random.h"
 #include "optimizer/geqo_selection.h"
 
-static int	linear_rand(PlannerInfo *root, int pool_size, double bias);
+static int linear_rand(PlannerInfo *root, int pool_size, double bias);
 
 
 /*
@@ -52,26 +52,24 @@ static int	linear_rand(PlannerInfo *root, int pool_size, double bias);
  */
 void
 geqo_selection(PlannerInfo *root, Chromosome *momma, Chromosome *daddy,
-			   Pool *pool, double bias)
-{
-	int			first,
-				second;
+               Pool *pool, double bias) {
+    int first,
+            second;
 
-	first = linear_rand(root, pool->size, bias);
-	second = linear_rand(root, pool->size, bias);
+    first = linear_rand(root, pool->size, bias);
+    second = linear_rand(root, pool->size, bias);
 
-	/*
+    /*
 	 * Ensure we have selected different genes, except if pool size is only
 	 * one, when we can't.
 	 */
-	if (pool->size > 1)
-	{
-		while (first == second)
-			second = linear_rand(root, pool->size, bias);
-	}
+    if (pool->size > 1) {
+        while (first == second)
+            second = linear_rand(root, pool->size, bias);
+    }
 
-	geqo_copy(root, momma, &pool->data[first], pool->string_length);
-	geqo_copy(root, daddy, &pool->data[second], pool->string_length);
+    geqo_copy(root, momma, &pool->data[first], pool->string_length);
+    geqo_copy(root, daddy, &pool->data[second], pool->string_length);
 }
 
 /*
@@ -85,27 +83,25 @@ geqo_selection(PlannerInfo *root, Chromosome *momma, Chromosome *daddy,
  *			 bias = (prob of first rule) / (prob of middle rule)
  */
 static int
-linear_rand(PlannerInfo *root, int pool_size, double bias)
-{
-	double		index;			/* index between 0 and pool_size */
-	double		max = (double) pool_size;
+linear_rand(PlannerInfo *root, int pool_size, double bias) {
+    double index; /* index between 0 and pool_size */
+    double max = (double) pool_size;
 
-	/*
+    /*
 	 * geqo_rand() is not supposed to return 1.0, but if it does then we will
 	 * get exactly max from this equation, whereas we need 0 <= index < max.
 	 * Also it seems possible that roundoff error might deliver values
 	 * slightly outside the range; in particular avoid passing a value
 	 * slightly less than 0 to sqrt().  If we get a bad value just try again.
 	 */
-	do
-	{
-		double		sqrtval;
+    do {
+        double sqrtval;
 
-		sqrtval = (bias * bias) - 4.0 * (bias - 1.0) * geqo_rand(root);
-		if (sqrtval > 0.0)
-			sqrtval = sqrt(sqrtval);
-		index = max * (bias - sqrtval) / 2.0 / (bias - 1.0);
-	} while (index < 0.0 || index >= max);
+        sqrtval = (bias * bias) - 4.0 * (bias - 1.0) * geqo_rand(root);
+        if (sqrtval > 0.0)
+            sqrtval = sqrt(sqrtval);
+        index = max * (bias - sqrtval) / 2.0 / (bias - 1.0);
+    } while (index < 0.0 || index >= max);
 
-	return (int) index;
+    return (int) index;
 }

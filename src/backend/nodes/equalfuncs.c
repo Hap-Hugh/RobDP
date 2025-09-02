@@ -93,125 +93,119 @@
  */
 
 static bool
-_equalConst(const Const *a, const Const *b)
-{
-	COMPARE_SCALAR_FIELD(consttype);
-	COMPARE_SCALAR_FIELD(consttypmod);
-	COMPARE_SCALAR_FIELD(constcollid);
-	COMPARE_SCALAR_FIELD(constlen);
-	COMPARE_SCALAR_FIELD(constisnull);
-	COMPARE_SCALAR_FIELD(constbyval);
-	COMPARE_LOCATION_FIELD(location);
+_equalConst(const Const *a, const Const *b) {
+    COMPARE_SCALAR_FIELD(consttype);
+    COMPARE_SCALAR_FIELD(consttypmod);
+    COMPARE_SCALAR_FIELD(constcollid);
+    COMPARE_SCALAR_FIELD(constlen);
+    COMPARE_SCALAR_FIELD(constisnull);
+    COMPARE_SCALAR_FIELD(constbyval);
+    COMPARE_LOCATION_FIELD(location);
 
-	/*
+    /*
 	 * We treat all NULL constants of the same type as equal. Someday this
 	 * might need to change?  But datumIsEqual doesn't work on nulls, so...
 	 */
-	if (a->constisnull)
-		return true;
-	return datumIsEqual(a->constvalue, b->constvalue,
-						a->constbyval, a->constlen);
+    if (a->constisnull)
+        return true;
+    return datumIsEqual(a->constvalue, b->constvalue,
+                        a->constbyval, a->constlen);
 }
 
 static bool
-_equalExtensibleNode(const ExtensibleNode *a, const ExtensibleNode *b)
-{
-	const ExtensibleNodeMethods *methods;
+_equalExtensibleNode(const ExtensibleNode *a, const ExtensibleNode *b) {
+    const ExtensibleNodeMethods *methods;
 
-	COMPARE_STRING_FIELD(extnodename);
+    COMPARE_STRING_FIELD(extnodename);
 
-	/* At this point, we know extnodename is the same for both nodes. */
-	methods = GetExtensibleNodeMethods(a->extnodename, false);
+    /* At this point, we know extnodename is the same for both nodes. */
+    methods = GetExtensibleNodeMethods(a->extnodename, false);
 
-	/* compare the private fields */
-	if (!methods->nodeEqual(a, b))
-		return false;
+    /* compare the private fields */
+    if (!methods->nodeEqual(a, b))
+        return false;
 
-	return true;
+    return true;
 }
 
 static bool
-_equalA_Const(const A_Const *a, const A_Const *b)
-{
-	COMPARE_SCALAR_FIELD(isnull);
-	/* Hack for in-line val field.  Also val is not valid if isnull is true */
-	if (!a->isnull &&
-		!equal(&a->val, &b->val))
-		return false;
-	COMPARE_LOCATION_FIELD(location);
+_equalA_Const(const A_Const *a, const A_Const *b) {
+    COMPARE_SCALAR_FIELD(isnull);
+    /* Hack for in-line val field.  Also val is not valid if isnull is true */
+    if (!a->isnull &&
+        !equal(&a->val, &b->val))
+        return false;
+    COMPARE_LOCATION_FIELD(location);
 
-	return true;
+    return true;
 }
 
 static bool
-_equalBitmapset(const Bitmapset *a, const Bitmapset *b)
-{
-	return bms_equal(a, b);
+_equalBitmapset(const Bitmapset *a, const Bitmapset *b) {
+    return bms_equal(a, b);
 }
 
 /*
  * Lists are handled specially
  */
 static bool
-_equalList(const List *a, const List *b)
-{
-	const ListCell *item_a;
-	const ListCell *item_b;
+_equalList(const List *a, const List *b) {
+    const ListCell *item_a;
+    const ListCell *item_b;
 
-	/*
+    /*
 	 * Try to reject by simple scalar checks before grovelling through all the
 	 * list elements...
 	 */
-	COMPARE_SCALAR_FIELD(type);
-	COMPARE_SCALAR_FIELD(length);
+    COMPARE_SCALAR_FIELD(type);
+    COMPARE_SCALAR_FIELD(length);
 
-	/*
+    /*
 	 * We place the switch outside the loop for the sake of efficiency; this
 	 * may not be worth doing...
 	 */
-	switch (a->type)
-	{
-		case T_List:
-			forboth(item_a, a, item_b, b)
-			{
-				if (!equal(lfirst(item_a), lfirst(item_b)))
-					return false;
-			}
-			break;
-		case T_IntList:
-			forboth(item_a, a, item_b, b)
-			{
-				if (lfirst_int(item_a) != lfirst_int(item_b))
-					return false;
-			}
-			break;
-		case T_OidList:
-			forboth(item_a, a, item_b, b)
-			{
-				if (lfirst_oid(item_a) != lfirst_oid(item_b))
-					return false;
-			}
-			break;
-		case T_XidList:
-			forboth(item_a, a, item_b, b)
-			{
-				if (lfirst_xid(item_a) != lfirst_xid(item_b))
-					return false;
-			}
-			break;
-		default:
-			elog(ERROR, "unrecognized list node type: %d",
-				 (int) a->type);
-			return false;		/* keep compiler quiet */
-	}
+    switch (a->type) {
+        case T_List:
+            forboth(item_a, a, item_b, b)
+            {
+                if (!equal(lfirst(item_a), lfirst(item_b)))
+                    return false;
+            }
+            break;
+        case T_IntList:
+            forboth(item_a, a, item_b, b)
+            {
+                if (lfirst_int(item_a) != lfirst_int(item_b))
+                    return false;
+            }
+            break;
+        case T_OidList:
+            forboth(item_a, a, item_b, b)
+            {
+                if (lfirst_oid(item_a) != lfirst_oid(item_b))
+                    return false;
+            }
+            break;
+        case T_XidList:
+            forboth(item_a, a, item_b, b)
+            {
+                if (lfirst_xid(item_a) != lfirst_xid(item_b))
+                    return false;
+            }
+            break;
+        default:
+            elog(ERROR, "unrecognized list node type: %d",
+                 (int) a->type);
+            return false; /* keep compiler quiet */
+    }
 
-	/*
+    /*
 	 * If we got here, we should have run out of elements of both lists
 	 */
-	Assert(item_a == NULL);
-	Assert(item_b == NULL);
+    Assert(item_a == NULL);
+    Assert(item_b == NULL);
 
-	return true;
+    return true;
 }
 
 
@@ -220,45 +214,50 @@ _equalList(const List *a, const List *b)
  *	  returns whether two nodes are equal
  */
 bool
-equal(const void *a, const void *b)
-{
-	bool		retval;
+equal(const void *a, const void *b) {
+    bool retval;
 
-	if (a == b)
-		return true;
+    if (a == b)
+        return true;
 
-	/*
+    /*
 	 * note that a!=b, so only one of them can be NULL
 	 */
-	if (a == NULL || b == NULL)
-		return false;
+    if (a == NULL || b == NULL)
+        return false;
 
-	/*
+    /*
 	 * are they the same type of nodes?
 	 */
-	if (nodeTag(a) != nodeTag(b))
-		return false;
+    if (nodeTag(a) != nodeTag(b))
+        return false;
 
-	/* Guard against stack overflow due to overly complex expressions */
-	check_stack_depth();
+    /* Guard against stack overflow due to overly complex expressions */
+    check_stack_depth();
 
-	switch (nodeTag(a))
-	{
+    switch (nodeTag(a)) { 
+
 #include "equalfuncs.switch.c"
 
-		case T_List:
-		case T_IntList:
-		case T_OidList:
-		case T_XidList:
-			retval = _equalList(a, b);
-			break;
+case
+T_List : 
+case
+T_IntList : 
+case
+T_OidList : 
+case
+T_XidList : retval
+=
+_equalList(a, b);
+break;
 
-		default:
-			elog(ERROR, "unrecognized node type: %d",
-				 (int) nodeTag(a));
-			retval = false;		/* keep compiler quiet */
-			break;
-	}
+default : elog(ERROR, "unrecognized node type: %d",
+               (int) nodeTag(a));
+retval=
+false; /* keep compiler quiet */
+break;
+}
 
-	return retval;
+return
+retval;
 }

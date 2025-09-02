@@ -26,6 +26,7 @@
 #include "utils/datum.h"
 
 static void outChar(StringInfo str, char c);
+
 static void outDouble(StringInfo str, double d);
 
 
@@ -143,40 +144,36 @@ static void outDouble(StringInfo str, double d);
  *	  strings beginning with '<' or '"' receive a leading backslash.
  */
 void
-outToken(StringInfo str, const char *s)
-{
-	if (s == NULL)
-	{
-		appendStringInfoString(str, "<>");
-		return;
-	}
-	if (*s == '\0')
-	{
-		appendStringInfoString(str, "\"\"");
-		return;
-	}
+outToken(StringInfo str, const char *s) {
+    if (s == NULL) {
+        appendStringInfoString(str, "<>");
+        return;
+    }
+    if (*s == '\0') {
+        appendStringInfoString(str, "\"\"");
+        return;
+    }
 
-	/*
+    /*
 	 * Look for characters or patterns that are treated specially by read.c
 	 * (either in pg_strtok() or in nodeRead()), and therefore need a
 	 * protective backslash.
 	 */
-	/* These characters only need to be quoted at the start of the string */
-	if (*s == '<' ||
-		*s == '"' ||
-		isdigit((unsigned char) *s) ||
-		((*s == '+' || *s == '-') &&
-		 (isdigit((unsigned char) s[1]) || s[1] == '.')))
-		appendStringInfoChar(str, '\\');
-	while (*s)
-	{
-		/* These chars must be backslashed anywhere in the string */
-		if (*s == ' ' || *s == '\n' || *s == '\t' ||
-			*s == '(' || *s == ')' || *s == '{' || *s == '}' ||
-			*s == '\\')
-			appendStringInfoChar(str, '\\');
-		appendStringInfoChar(str, *s++);
-	}
+    /* These characters only need to be quoted at the start of the string */
+    if (*s == '<' ||
+        *s == '"' ||
+        isdigit((unsigned char) *s) ||
+        ((*s == '+' || *s == '-') &&
+         (isdigit((unsigned char) s[1]) || s[1] == '.')))
+        appendStringInfoChar(str, '\\');
+    while (*s) {
+        /* These chars must be backslashed anywhere in the string */
+        if (*s == ' ' || *s == '\n' || *s == '\t' ||
+            *s == '(' || *s == ')' || *s == '{' || *s == '}' ||
+            *s == '\\')
+            appendStringInfoChar(str, '\\');
+        appendStringInfoChar(str, *s++);
+    }
 }
 
 /*
@@ -184,33 +181,30 @@ outToken(StringInfo str, const char *s)
  * escaped.
  */
 static void
-outChar(StringInfo str, char c)
-{
-	char		in[2];
+outChar(StringInfo str, char c) {
+    char in[2];
 
-	/* Traditionally, we've represented \0 as <>, so keep doing that */
-	if (c == '\0')
-	{
-		appendStringInfoString(str, "<>");
-		return;
-	}
+    /* Traditionally, we've represented \0 as <>, so keep doing that */
+    if (c == '\0') {
+        appendStringInfoString(str, "<>");
+        return;
+    }
 
-	in[0] = c;
-	in[1] = '\0';
+    in[0] = c;
+    in[1] = '\0';
 
-	outToken(str, in);
+    outToken(str, in);
 }
 
 /*
  * Convert a double value, attempting to ensure the value is preserved exactly.
  */
 static void
-outDouble(StringInfo str, double d)
-{
-	char		buf[DOUBLE_SHORTEST_DECIMAL_LEN];
+outDouble(StringInfo str, double d) {
+    char buf[DOUBLE_SHORTEST_DECIMAL_LEN];
 
-	double_to_shortest_decimal_buf(d, buf);
-	appendStringInfoString(str, buf);
+    double_to_shortest_decimal_buf(d, buf);
+    appendStringInfoString(str, buf);
 }
 
 /*
@@ -249,64 +243,57 @@ WRITE_SCALAR_ARRAY(writeBoolCols, bool, " %s", booltostr)
  * quite use appendStringInfo() in the loop.
  */
 static void
-writeNodeArray(StringInfo str, const Node *const *arr, int len)
-{
-	if (arr != NULL)
-	{
-		appendStringInfoChar(str, '(');
-		for (int i = 0; i < len; i++)
-		{
-			appendStringInfoChar(str, ' ');
-			outNode(str, arr[i]);
-		}
-		appendStringInfoChar(str, ')');
-	}
-	else
-		appendStringInfoString(str, "<>");
+writeNodeArray(StringInfo str, const Node *const *arr, int len) {
+    if (arr != NULL) {
+        appendStringInfoChar(str, '(');
+        for (int i = 0; i < len; i++) {
+            appendStringInfoChar(str, ' ');
+            outNode(str, arr[i]);
+        }
+        appendStringInfoChar(str, ')');
+    } else
+        appendStringInfoString(str, "<>");
 }
 
 /*
  * Print a List.
  */
 static void
-_outList(StringInfo str, const List *node)
-{
-	const ListCell *lc;
+_outList(StringInfo str, const List *node) {
+    const ListCell *lc;
 
-	appendStringInfoChar(str, '(');
+    appendStringInfoChar(str, '(');
 
-	if (IsA(node, IntList))
-		appendStringInfoChar(str, 'i');
-	else if (IsA(node, OidList))
-		appendStringInfoChar(str, 'o');
-	else if (IsA(node, XidList))
-		appendStringInfoChar(str, 'x');
+    if (IsA(node, IntList))
+        appendStringInfoChar(str, 'i');
+    else if (IsA(node, OidList))
+        appendStringInfoChar(str, 'o');
+    else if (IsA(node, XidList))
+        appendStringInfoChar(str, 'x');
 
-	foreach(lc, node)
-	{
-		/*
+    foreach(lc, node)
+    {
+        /*
 		 * For the sake of backward compatibility, we emit a slightly
 		 * different whitespace format for lists of nodes vs. other types of
 		 * lists. XXX: is this necessary?
 		 */
-		if (IsA(node, List))
-		{
-			outNode(str, lfirst(lc));
-			if (lnext(node, lc))
-				appendStringInfoChar(str, ' ');
-		}
-		else if (IsA(node, IntList))
-			appendStringInfo(str, " %d", lfirst_int(lc));
-		else if (IsA(node, OidList))
-			appendStringInfo(str, " %u", lfirst_oid(lc));
-		else if (IsA(node, XidList))
-			appendStringInfo(str, " %u", lfirst_xid(lc));
-		else
-			elog(ERROR, "unrecognized list node type: %d",
-				 (int) node->type);
-	}
+        if (IsA(node, List)) {
+            outNode(str, lfirst(lc));
+            if (lnext(node, lc))
+                appendStringInfoChar(str, ' ');
+        } else if (IsA(node, IntList))
+            appendStringInfo(str, " %d", lfirst_int(lc));
+        else if (IsA(node, OidList))
+            appendStringInfo(str, " %u", lfirst_oid(lc));
+        else if (IsA(node, XidList))
+            appendStringInfo(str, " %u", lfirst_xid(lc));
+        else
+            elog(ERROR, "unrecognized list node type: %d",
+                 (int) node->type);
+    }
 
-	appendStringInfoChar(str, ')');
+    appendStringInfoChar(str, ')');
 }
 
 /*
@@ -319,51 +306,45 @@ _outList(StringInfo str, const List *node)
  * That's somewhat historical, though, because calling outNode() will work.
  */
 void
-outBitmapset(StringInfo str, const Bitmapset *bms)
-{
-	int			x;
+outBitmapset(StringInfo str, const Bitmapset *bms) {
+    int x;
 
-	appendStringInfoChar(str, '(');
-	appendStringInfoChar(str, 'b');
-	x = -1;
-	while ((x = bms_next_member(bms, x)) >= 0)
-		appendStringInfo(str, " %d", x);
-	appendStringInfoChar(str, ')');
+    appendStringInfoChar(str, '(');
+    appendStringInfoChar(str, 'b');
+    x = -1;
+    while ((x = bms_next_member(bms, x)) >= 0)
+        appendStringInfo(str, " %d", x);
+    appendStringInfoChar(str, ')');
 }
 
 /*
  * Print the value of a Datum given its type.
  */
 void
-outDatum(StringInfo str, Datum value, int typlen, bool typbyval)
-{
-	Size		length,
-				i;
-	char	   *s;
+outDatum(StringInfo str, Datum value, int typlen, bool typbyval) {
+    Size length,
+            i;
+    char *s;
 
-	length = datumGetSize(value, typbyval, typlen);
+    length = datumGetSize(value, typbyval, typlen);
 
-	if (typbyval)
-	{
-		s = (char *) (&value);
-		appendStringInfo(str, "%u [ ", (unsigned int) length);
-		for (i = 0; i < (Size) sizeof(Datum); i++)
-			appendStringInfo(str, "%d ", (int) (s[i]));
-		appendStringInfoChar(str, ']');
-	}
-	else
-	{
-		s = (char *) DatumGetPointer(value);
-		if (!PointerIsValid(s))
-			appendStringInfoString(str, "0 [ ]");
-		else
-		{
-			appendStringInfo(str, "%u [ ", (unsigned int) length);
-			for (i = 0; i < length; i++)
-				appendStringInfo(str, "%d ", (int) (s[i]));
-			appendStringInfoChar(str, ']');
-		}
-	}
+    if (typbyval) {
+        s = (char *) (&value);
+        appendStringInfo(str, "%u [ ", (unsigned int) length);
+        for (i = 0; i < (Size) sizeof(Datum); i++)
+            appendStringInfo(str, "%d ", (int) (s[i]));
+        appendStringInfoChar(str, ']');
+    } else {
+        s = (char *) DatumGetPointer(value);
+        if (!PointerIsValid(s))
+            appendStringInfoString(str, "0 [ ]");
+        else {
+            appendStringInfo(str, "%u [ ", (unsigned int) length);
+            for (i = 0; i < length; i++)
+                appendStringInfo(str, "%d ", (int) (s[i]));
+            appendStringInfoChar(str, ']');
+        }
+    }
 }
 
 
@@ -376,448 +357,429 @@ outDatum(StringInfo str, Datum value, int typlen, bool typbyval)
  */
 
 static void
-_outConst(StringInfo str, const Const *node)
-{
-	WRITE_NODE_TYPE("CONST");
+_outConst(StringInfo str, const Const *node) {
+    WRITE_NODE_TYPE("CONST");
 
-	WRITE_OID_FIELD(consttype);
-	WRITE_INT_FIELD(consttypmod);
-	WRITE_OID_FIELD(constcollid);
-	WRITE_INT_FIELD(constlen);
-	WRITE_BOOL_FIELD(constbyval);
-	WRITE_BOOL_FIELD(constisnull);
-	WRITE_LOCATION_FIELD(location);
+    WRITE_OID_FIELD(consttype);
+    WRITE_INT_FIELD(consttypmod);
+    WRITE_OID_FIELD(constcollid);
+    WRITE_INT_FIELD(constlen);
+    WRITE_BOOL_FIELD(constbyval);
+    WRITE_BOOL_FIELD(constisnull);
+    WRITE_LOCATION_FIELD(location);
 
-	appendStringInfoString(str, " :constvalue ");
-	if (node->constisnull)
-		appendStringInfoString(str, "<>");
-	else
-		outDatum(str, node->constvalue, node->constlen, node->constbyval);
+    appendStringInfoString(str, " :constvalue ");
+    if (node->constisnull)
+        appendStringInfoString(str, "<>");
+    else
+        outDatum(str, node->constvalue, node->constlen, node->constbyval);
 }
 
 static void
-_outBoolExpr(StringInfo str, const BoolExpr *node)
-{
-	char	   *opstr = NULL;
+_outBoolExpr(StringInfo str, const BoolExpr *node) {
+    char *opstr = NULL;
 
-	WRITE_NODE_TYPE("BOOLEXPR");
+    WRITE_NODE_TYPE("BOOLEXPR");
 
-	/* do-it-yourself enum representation */
-	switch (node->boolop)
-	{
-		case AND_EXPR:
-			opstr = "and";
-			break;
-		case OR_EXPR:
-			opstr = "or";
-			break;
-		case NOT_EXPR:
-			opstr = "not";
-			break;
-	}
-	appendStringInfoString(str, " :boolop ");
-	outToken(str, opstr);
+    /* do-it-yourself enum representation */
+    switch (node->boolop) {
+        case AND_EXPR:
+            opstr = "and";
+            break;
+        case OR_EXPR:
+            opstr = "or";
+            break;
+        case NOT_EXPR:
+            opstr = "not";
+            break;
+    }
+    appendStringInfoString(str, " :boolop ");
+    outToken(str, opstr);
 
-	WRITE_NODE_FIELD(args);
-	WRITE_LOCATION_FIELD(location);
+    WRITE_NODE_FIELD(args);
+    WRITE_LOCATION_FIELD(location);
 }
 
 static void
-_outForeignKeyOptInfo(StringInfo str, const ForeignKeyOptInfo *node)
-{
-	int			i;
+_outForeignKeyOptInfo(StringInfo str, const ForeignKeyOptInfo *node) {
+    int i;
 
-	WRITE_NODE_TYPE("FOREIGNKEYOPTINFO");
+    WRITE_NODE_TYPE("FOREIGNKEYOPTINFO");
 
-	WRITE_UINT_FIELD(con_relid);
-	WRITE_UINT_FIELD(ref_relid);
-	WRITE_INT_FIELD(nkeys);
-	WRITE_ATTRNUMBER_ARRAY(conkey, node->nkeys);
-	WRITE_ATTRNUMBER_ARRAY(confkey, node->nkeys);
-	WRITE_OID_ARRAY(conpfeqop, node->nkeys);
-	WRITE_INT_FIELD(nmatched_ec);
-	WRITE_INT_FIELD(nconst_ec);
-	WRITE_INT_FIELD(nmatched_rcols);
-	WRITE_INT_FIELD(nmatched_ri);
-	/* for compactness, just print the number of matches per column: */
-	appendStringInfoString(str, " :eclass");
-	for (i = 0; i < node->nkeys; i++)
-		appendStringInfo(str, " %d", (node->eclass[i] != NULL));
-	appendStringInfoString(str, " :rinfos");
-	for (i = 0; i < node->nkeys; i++)
-		appendStringInfo(str, " %d", list_length(node->rinfos[i]));
+    WRITE_UINT_FIELD(con_relid);
+    WRITE_UINT_FIELD(ref_relid);
+    WRITE_INT_FIELD(nkeys);
+    WRITE_ATTRNUMBER_ARRAY(conkey, node->nkeys);
+    WRITE_ATTRNUMBER_ARRAY(confkey, node->nkeys);
+    WRITE_OID_ARRAY(conpfeqop, node->nkeys);
+    WRITE_INT_FIELD(nmatched_ec);
+    WRITE_INT_FIELD(nconst_ec);
+    WRITE_INT_FIELD(nmatched_rcols);
+    WRITE_INT_FIELD(nmatched_ri);
+    /* for compactness, just print the number of matches per column: */
+    appendStringInfoString(str, " :eclass");
+    for (i = 0; i < node->nkeys; i++)
+        appendStringInfo(str, " %d", (node->eclass[i] != NULL));
+    appendStringInfoString(str, " :rinfos");
+    for (i = 0; i < node->nkeys; i++)
+        appendStringInfo(str, " %d", list_length(node->rinfos[i]));
 }
 
 static void
-_outEquivalenceClass(StringInfo str, const EquivalenceClass *node)
-{
-	/*
+_outEquivalenceClass(StringInfo str, const EquivalenceClass *node) {
+    /*
 	 * To simplify reading, we just chase up to the topmost merged EC and
 	 * print that, without bothering to show the merge-ees separately.
 	 */
-	while (node->ec_merged)
-		node = node->ec_merged;
+    while (node->ec_merged)
+        node = node->ec_merged;
 
-	WRITE_NODE_TYPE("EQUIVALENCECLASS");
+    WRITE_NODE_TYPE("EQUIVALENCECLASS");
 
-	WRITE_NODE_FIELD(ec_opfamilies);
-	WRITE_OID_FIELD(ec_collation);
-	WRITE_NODE_FIELD(ec_members);
-	WRITE_NODE_FIELD(ec_sources);
-	WRITE_NODE_FIELD(ec_derives);
-	WRITE_BITMAPSET_FIELD(ec_relids);
-	WRITE_BOOL_FIELD(ec_has_const);
-	WRITE_BOOL_FIELD(ec_has_volatile);
-	WRITE_BOOL_FIELD(ec_broken);
-	WRITE_UINT_FIELD(ec_sortref);
-	WRITE_UINT_FIELD(ec_min_security);
-	WRITE_UINT_FIELD(ec_max_security);
+    WRITE_NODE_FIELD(ec_opfamilies);
+    WRITE_OID_FIELD(ec_collation);
+    WRITE_NODE_FIELD(ec_members);
+    WRITE_NODE_FIELD(ec_sources);
+    WRITE_NODE_FIELD(ec_derives);
+    WRITE_BITMAPSET_FIELD(ec_relids);
+    WRITE_BOOL_FIELD(ec_has_const);
+    WRITE_BOOL_FIELD(ec_has_volatile);
+    WRITE_BOOL_FIELD(ec_broken);
+    WRITE_UINT_FIELD(ec_sortref);
+    WRITE_UINT_FIELD(ec_min_security);
+    WRITE_UINT_FIELD(ec_max_security);
 }
 
 static void
-_outExtensibleNode(StringInfo str, const ExtensibleNode *node)
-{
-	const ExtensibleNodeMethods *methods;
+_outExtensibleNode(StringInfo str, const ExtensibleNode *node) {
+    const ExtensibleNodeMethods *methods;
 
-	methods = GetExtensibleNodeMethods(node->extnodename, false);
+    methods = GetExtensibleNodeMethods(node->extnodename, false);
 
-	WRITE_NODE_TYPE("EXTENSIBLENODE");
+    WRITE_NODE_TYPE("EXTENSIBLENODE");
 
-	WRITE_STRING_FIELD(extnodename);
+    WRITE_STRING_FIELD(extnodename);
 
-	/* serialize the private fields */
-	methods->nodeOut(str, node);
+    /* serialize the private fields */
+    methods->nodeOut(str, node);
 }
 
 static void
-_outRangeTblEntry(StringInfo str, const RangeTblEntry *node)
-{
-	WRITE_NODE_TYPE("RANGETBLENTRY");
+_outRangeTblEntry(StringInfo str, const RangeTblEntry *node) {
+    WRITE_NODE_TYPE("RANGETBLENTRY");
 
-	/* put alias + eref first to make dump more legible */
-	WRITE_NODE_FIELD(alias);
-	WRITE_NODE_FIELD(eref);
-	WRITE_ENUM_FIELD(rtekind, RTEKind);
+    /* put alias + eref first to make dump more legible */
+    WRITE_NODE_FIELD(alias);
+    WRITE_NODE_FIELD(eref);
+    WRITE_ENUM_FIELD(rtekind, RTEKind);
 
-	switch (node->rtekind)
-	{
-		case RTE_RELATION:
-			WRITE_OID_FIELD(relid);
-			WRITE_CHAR_FIELD(relkind);
-			WRITE_INT_FIELD(rellockmode);
-			WRITE_NODE_FIELD(tablesample);
-			WRITE_UINT_FIELD(perminfoindex);
-			break;
-		case RTE_SUBQUERY:
-			WRITE_NODE_FIELD(subquery);
-			WRITE_BOOL_FIELD(security_barrier);
-			/* we re-use these RELATION fields, too: */
-			WRITE_OID_FIELD(relid);
-			WRITE_CHAR_FIELD(relkind);
-			WRITE_INT_FIELD(rellockmode);
-			WRITE_UINT_FIELD(perminfoindex);
-			break;
-		case RTE_JOIN:
-			WRITE_ENUM_FIELD(jointype, JoinType);
-			WRITE_INT_FIELD(joinmergedcols);
-			WRITE_NODE_FIELD(joinaliasvars);
-			WRITE_NODE_FIELD(joinleftcols);
-			WRITE_NODE_FIELD(joinrightcols);
-			WRITE_NODE_FIELD(join_using_alias);
-			break;
-		case RTE_FUNCTION:
-			WRITE_NODE_FIELD(functions);
-			WRITE_BOOL_FIELD(funcordinality);
-			break;
-		case RTE_TABLEFUNC:
-			WRITE_NODE_FIELD(tablefunc);
-			break;
-		case RTE_VALUES:
-			WRITE_NODE_FIELD(values_lists);
-			WRITE_NODE_FIELD(coltypes);
-			WRITE_NODE_FIELD(coltypmods);
-			WRITE_NODE_FIELD(colcollations);
-			break;
-		case RTE_CTE:
-			WRITE_STRING_FIELD(ctename);
-			WRITE_UINT_FIELD(ctelevelsup);
-			WRITE_BOOL_FIELD(self_reference);
-			WRITE_NODE_FIELD(coltypes);
-			WRITE_NODE_FIELD(coltypmods);
-			WRITE_NODE_FIELD(colcollations);
-			break;
-		case RTE_NAMEDTUPLESTORE:
-			WRITE_STRING_FIELD(enrname);
-			WRITE_FLOAT_FIELD(enrtuples);
-			WRITE_NODE_FIELD(coltypes);
-			WRITE_NODE_FIELD(coltypmods);
-			WRITE_NODE_FIELD(colcollations);
-			/* we re-use these RELATION fields, too: */
-			WRITE_OID_FIELD(relid);
-			break;
-		case RTE_RESULT:
-			/* no extra fields */
-			break;
-		default:
-			elog(ERROR, "unrecognized RTE kind: %d", (int) node->rtekind);
-			break;
-	}
+    switch (node->rtekind) {
+        case RTE_RELATION:
+            WRITE_OID_FIELD(relid);
+            WRITE_CHAR_FIELD(relkind);
+            WRITE_INT_FIELD(rellockmode);
+            WRITE_NODE_FIELD(tablesample);
+            WRITE_UINT_FIELD(perminfoindex);
+            break;
+        case RTE_SUBQUERY:
+            WRITE_NODE_FIELD(subquery);
+            WRITE_BOOL_FIELD(security_barrier);
+            /* we re-use these RELATION fields, too: */
+            WRITE_OID_FIELD(relid);
+            WRITE_CHAR_FIELD(relkind);
+            WRITE_INT_FIELD(rellockmode);
+            WRITE_UINT_FIELD(perminfoindex);
+            break;
+        case RTE_JOIN:
+            WRITE_ENUM_FIELD(jointype, JoinType);
+            WRITE_INT_FIELD(joinmergedcols);
+            WRITE_NODE_FIELD(joinaliasvars);
+            WRITE_NODE_FIELD(joinleftcols);
+            WRITE_NODE_FIELD(joinrightcols);
+            WRITE_NODE_FIELD(join_using_alias);
+            break;
+        case RTE_FUNCTION:
+            WRITE_NODE_FIELD(functions);
+            WRITE_BOOL_FIELD(funcordinality);
+            break;
+        case RTE_TABLEFUNC:
+            WRITE_NODE_FIELD(tablefunc);
+            break;
+        case RTE_VALUES:
+            WRITE_NODE_FIELD(values_lists);
+            WRITE_NODE_FIELD(coltypes);
+            WRITE_NODE_FIELD(coltypmods);
+            WRITE_NODE_FIELD(colcollations);
+            break;
+        case RTE_CTE:
+            WRITE_STRING_FIELD(ctename);
+            WRITE_UINT_FIELD(ctelevelsup);
+            WRITE_BOOL_FIELD(self_reference);
+            WRITE_NODE_FIELD(coltypes);
+            WRITE_NODE_FIELD(coltypmods);
+            WRITE_NODE_FIELD(colcollations);
+            break;
+        case RTE_NAMEDTUPLESTORE:
+            WRITE_STRING_FIELD(enrname);
+            WRITE_FLOAT_FIELD(enrtuples);
+            WRITE_NODE_FIELD(coltypes);
+            WRITE_NODE_FIELD(coltypmods);
+            WRITE_NODE_FIELD(colcollations);
+            /* we re-use these RELATION fields, too: */
+            WRITE_OID_FIELD(relid);
+            break;
+        case RTE_RESULT:
+            /* no extra fields */
+            break;
+        default:
+            elog(ERROR, "unrecognized RTE kind: %d", (int) node->rtekind);
+            break;
+    }
 
-	WRITE_BOOL_FIELD(lateral);
-	WRITE_BOOL_FIELD(inh);
-	WRITE_BOOL_FIELD(inFromCl);
-	WRITE_NODE_FIELD(securityQuals);
+    WRITE_BOOL_FIELD(lateral);
+    WRITE_BOOL_FIELD(inh);
+    WRITE_BOOL_FIELD(inFromCl);
+    WRITE_NODE_FIELD(securityQuals);
 }
 
 static void
-_outA_Expr(StringInfo str, const A_Expr *node)
-{
-	WRITE_NODE_TYPE("A_EXPR");
+_outA_Expr(StringInfo str, const A_Expr *node) {
+    WRITE_NODE_TYPE("A_EXPR");
 
-	switch (node->kind)
-	{
-		case AEXPR_OP:
-			WRITE_NODE_FIELD(name);
-			break;
-		case AEXPR_OP_ANY:
-			appendStringInfoString(str, " ANY");
-			WRITE_NODE_FIELD(name);
-			break;
-		case AEXPR_OP_ALL:
-			appendStringInfoString(str, " ALL");
-			WRITE_NODE_FIELD(name);
-			break;
-		case AEXPR_DISTINCT:
-			appendStringInfoString(str, " DISTINCT");
-			WRITE_NODE_FIELD(name);
-			break;
-		case AEXPR_NOT_DISTINCT:
-			appendStringInfoString(str, " NOT_DISTINCT");
-			WRITE_NODE_FIELD(name);
-			break;
-		case AEXPR_NULLIF:
-			appendStringInfoString(str, " NULLIF");
-			WRITE_NODE_FIELD(name);
-			break;
-		case AEXPR_IN:
-			appendStringInfoString(str, " IN");
-			WRITE_NODE_FIELD(name);
-			break;
-		case AEXPR_LIKE:
-			appendStringInfoString(str, " LIKE");
-			WRITE_NODE_FIELD(name);
-			break;
-		case AEXPR_ILIKE:
-			appendStringInfoString(str, " ILIKE");
-			WRITE_NODE_FIELD(name);
-			break;
-		case AEXPR_SIMILAR:
-			appendStringInfoString(str, " SIMILAR");
-			WRITE_NODE_FIELD(name);
-			break;
-		case AEXPR_BETWEEN:
-			appendStringInfoString(str, " BETWEEN");
-			WRITE_NODE_FIELD(name);
-			break;
-		case AEXPR_NOT_BETWEEN:
-			appendStringInfoString(str, " NOT_BETWEEN");
-			WRITE_NODE_FIELD(name);
-			break;
-		case AEXPR_BETWEEN_SYM:
-			appendStringInfoString(str, " BETWEEN_SYM");
-			WRITE_NODE_FIELD(name);
-			break;
-		case AEXPR_NOT_BETWEEN_SYM:
-			appendStringInfoString(str, " NOT_BETWEEN_SYM");
-			WRITE_NODE_FIELD(name);
-			break;
-		default:
-			elog(ERROR, "unrecognized A_Expr_Kind: %d", (int) node->kind);
-			break;
-	}
+    switch (node->kind) {
+        case AEXPR_OP:
+            WRITE_NODE_FIELD(name);
+            break;
+        case AEXPR_OP_ANY:
+            appendStringInfoString(str, " ANY");
+            WRITE_NODE_FIELD(name);
+            break;
+        case AEXPR_OP_ALL:
+            appendStringInfoString(str, " ALL");
+            WRITE_NODE_FIELD(name);
+            break;
+        case AEXPR_DISTINCT:
+            appendStringInfoString(str, " DISTINCT");
+            WRITE_NODE_FIELD(name);
+            break;
+        case AEXPR_NOT_DISTINCT:
+            appendStringInfoString(str, " NOT_DISTINCT");
+            WRITE_NODE_FIELD(name);
+            break;
+        case AEXPR_NULLIF:
+            appendStringInfoString(str, " NULLIF");
+            WRITE_NODE_FIELD(name);
+            break;
+        case AEXPR_IN:
+            appendStringInfoString(str, " IN");
+            WRITE_NODE_FIELD(name);
+            break;
+        case AEXPR_LIKE:
+            appendStringInfoString(str, " LIKE");
+            WRITE_NODE_FIELD(name);
+            break;
+        case AEXPR_ILIKE:
+            appendStringInfoString(str, " ILIKE");
+            WRITE_NODE_FIELD(name);
+            break;
+        case AEXPR_SIMILAR:
+            appendStringInfoString(str, " SIMILAR");
+            WRITE_NODE_FIELD(name);
+            break;
+        case AEXPR_BETWEEN:
+            appendStringInfoString(str, " BETWEEN");
+            WRITE_NODE_FIELD(name);
+            break;
+        case AEXPR_NOT_BETWEEN:
+            appendStringInfoString(str, " NOT_BETWEEN");
+            WRITE_NODE_FIELD(name);
+            break;
+        case AEXPR_BETWEEN_SYM:
+            appendStringInfoString(str, " BETWEEN_SYM");
+            WRITE_NODE_FIELD(name);
+            break;
+        case AEXPR_NOT_BETWEEN_SYM:
+            appendStringInfoString(str, " NOT_BETWEEN_SYM");
+            WRITE_NODE_FIELD(name);
+            break;
+        default:
+            elog(ERROR, "unrecognized A_Expr_Kind: %d", (int) node->kind);
+            break;
+    }
 
-	WRITE_NODE_FIELD(lexpr);
-	WRITE_NODE_FIELD(rexpr);
-	WRITE_LOCATION_FIELD(location);
+    WRITE_NODE_FIELD(lexpr);
+    WRITE_NODE_FIELD(rexpr);
+    WRITE_LOCATION_FIELD(location);
 }
 
 static void
-_outInteger(StringInfo str, const Integer *node)
-{
-	appendStringInfo(str, "%d", node->ival);
+_outInteger(StringInfo str, const Integer *node) {
+    appendStringInfo(str, "%d", node->ival);
 }
 
 static void
-_outFloat(StringInfo str, const Float *node)
-{
-	/*
+_outFloat(StringInfo str, const Float *node) {
+    /*
 	 * We assume the value is a valid numeric literal and so does not need
 	 * quoting.
 	 */
-	appendStringInfoString(str, node->fval);
+    appendStringInfoString(str, node->fval);
 }
 
 static void
-_outBoolean(StringInfo str, const Boolean *node)
-{
-	appendStringInfoString(str, node->boolval ? "true" : "false");
+_outBoolean(StringInfo str, const Boolean *node) {
+    appendStringInfoString(str, node->boolval ? "true" : "false");
 }
 
 static void
-_outString(StringInfo str, const String *node)
-{
-	/*
+_outString(StringInfo str, const String *node) {
+    /*
 	 * We use outToken to provide escaping of the string's content, but we
 	 * don't want it to convert an empty string to '""', because we're putting
 	 * double quotes around the string already.
 	 */
-	appendStringInfoChar(str, '"');
-	if (node->sval[0] != '\0')
-		outToken(str, node->sval);
-	appendStringInfoChar(str, '"');
+    appendStringInfoChar(str, '"');
+    if (node->sval[0] != '\0')
+        outToken(str, node->sval);
+    appendStringInfoChar(str, '"');
 }
 
 static void
-_outBitString(StringInfo str, const BitString *node)
-{
-	/* internal representation already has leading 'b' */
-	appendStringInfoString(str, node->bsval);
+_outBitString(StringInfo str, const BitString *node) {
+    /* internal representation already has leading 'b' */
+    appendStringInfoString(str, node->bsval);
 }
 
 static void
-_outA_Const(StringInfo str, const A_Const *node)
-{
-	WRITE_NODE_TYPE("A_CONST");
+_outA_Const(StringInfo str, const A_Const *node) {
+    WRITE_NODE_TYPE("A_CONST");
 
-	if (node->isnull)
-		appendStringInfoString(str, " NULL");
-	else
-	{
-		appendStringInfoString(str, " :val ");
-		outNode(str, &node->val);
-	}
-	WRITE_LOCATION_FIELD(location);
+    if (node->isnull)
+        appendStringInfoString(str, " NULL");
+    else {
+        appendStringInfoString(str, " :val ");
+        outNode(str, &node->val);
+    }
+    WRITE_LOCATION_FIELD(location);
 }
 
 static void
-_outConstraint(StringInfo str, const Constraint *node)
-{
-	WRITE_NODE_TYPE("CONSTRAINT");
+_outConstraint(StringInfo str, const Constraint *node) {
+    WRITE_NODE_TYPE("CONSTRAINT");
 
-	WRITE_STRING_FIELD(conname);
-	WRITE_BOOL_FIELD(deferrable);
-	WRITE_BOOL_FIELD(initdeferred);
-	WRITE_LOCATION_FIELD(location);
+    WRITE_STRING_FIELD(conname);
+    WRITE_BOOL_FIELD(deferrable);
+    WRITE_BOOL_FIELD(initdeferred);
+    WRITE_LOCATION_FIELD(location);
 
-	appendStringInfoString(str, " :contype ");
-	switch (node->contype)
-	{
-		case CONSTR_NULL:
-			appendStringInfoString(str, "NULL");
-			break;
+    appendStringInfoString(str, " :contype ");
+    switch (node->contype) {
+        case CONSTR_NULL:
+            appendStringInfoString(str, "NULL");
+            break;
 
-		case CONSTR_NOTNULL:
-			appendStringInfoString(str, "NOT_NULL");
-			break;
+        case CONSTR_NOTNULL:
+            appendStringInfoString(str, "NOT_NULL");
+            break;
 
-		case CONSTR_DEFAULT:
-			appendStringInfoString(str, "DEFAULT");
-			WRITE_NODE_FIELD(raw_expr);
-			WRITE_STRING_FIELD(cooked_expr);
-			break;
+        case CONSTR_DEFAULT:
+            appendStringInfoString(str, "DEFAULT");
+            WRITE_NODE_FIELD(raw_expr);
+            WRITE_STRING_FIELD(cooked_expr);
+            break;
 
-		case CONSTR_IDENTITY:
-			appendStringInfoString(str, "IDENTITY");
-			WRITE_NODE_FIELD(options);
-			WRITE_CHAR_FIELD(generated_when);
-			break;
+        case CONSTR_IDENTITY:
+            appendStringInfoString(str, "IDENTITY");
+            WRITE_NODE_FIELD(options);
+            WRITE_CHAR_FIELD(generated_when);
+            break;
 
-		case CONSTR_GENERATED:
-			appendStringInfoString(str, "GENERATED");
-			WRITE_NODE_FIELD(raw_expr);
-			WRITE_STRING_FIELD(cooked_expr);
-			WRITE_CHAR_FIELD(generated_when);
-			break;
+        case CONSTR_GENERATED:
+            appendStringInfoString(str, "GENERATED");
+            WRITE_NODE_FIELD(raw_expr);
+            WRITE_STRING_FIELD(cooked_expr);
+            WRITE_CHAR_FIELD(generated_when);
+            break;
 
-		case CONSTR_CHECK:
-			appendStringInfoString(str, "CHECK");
-			WRITE_BOOL_FIELD(is_no_inherit);
-			WRITE_NODE_FIELD(raw_expr);
-			WRITE_STRING_FIELD(cooked_expr);
-			WRITE_BOOL_FIELD(skip_validation);
-			WRITE_BOOL_FIELD(initially_valid);
-			break;
+        case CONSTR_CHECK:
+            appendStringInfoString(str, "CHECK");
+            WRITE_BOOL_FIELD(is_no_inherit);
+            WRITE_NODE_FIELD(raw_expr);
+            WRITE_STRING_FIELD(cooked_expr);
+            WRITE_BOOL_FIELD(skip_validation);
+            WRITE_BOOL_FIELD(initially_valid);
+            break;
 
-		case CONSTR_PRIMARY:
-			appendStringInfoString(str, "PRIMARY_KEY");
-			WRITE_NODE_FIELD(keys);
-			WRITE_NODE_FIELD(including);
-			WRITE_NODE_FIELD(options);
-			WRITE_STRING_FIELD(indexname);
-			WRITE_STRING_FIELD(indexspace);
-			WRITE_BOOL_FIELD(reset_default_tblspc);
-			/* access_method and where_clause not currently used */
-			break;
+        case CONSTR_PRIMARY:
+            appendStringInfoString(str, "PRIMARY_KEY");
+            WRITE_NODE_FIELD(keys);
+            WRITE_NODE_FIELD(including);
+            WRITE_NODE_FIELD(options);
+            WRITE_STRING_FIELD(indexname);
+            WRITE_STRING_FIELD(indexspace);
+            WRITE_BOOL_FIELD(reset_default_tblspc);
+            /* access_method and where_clause not currently used */
+            break;
 
-		case CONSTR_UNIQUE:
-			appendStringInfoString(str, "UNIQUE");
-			WRITE_BOOL_FIELD(nulls_not_distinct);
-			WRITE_NODE_FIELD(keys);
-			WRITE_NODE_FIELD(including);
-			WRITE_NODE_FIELD(options);
-			WRITE_STRING_FIELD(indexname);
-			WRITE_STRING_FIELD(indexspace);
-			WRITE_BOOL_FIELD(reset_default_tblspc);
-			/* access_method and where_clause not currently used */
-			break;
+        case CONSTR_UNIQUE:
+            appendStringInfoString(str, "UNIQUE");
+            WRITE_BOOL_FIELD(nulls_not_distinct);
+            WRITE_NODE_FIELD(keys);
+            WRITE_NODE_FIELD(including);
+            WRITE_NODE_FIELD(options);
+            WRITE_STRING_FIELD(indexname);
+            WRITE_STRING_FIELD(indexspace);
+            WRITE_BOOL_FIELD(reset_default_tblspc);
+            /* access_method and where_clause not currently used */
+            break;
 
-		case CONSTR_EXCLUSION:
-			appendStringInfoString(str, "EXCLUSION");
-			WRITE_NODE_FIELD(exclusions);
-			WRITE_NODE_FIELD(including);
-			WRITE_NODE_FIELD(options);
-			WRITE_STRING_FIELD(indexname);
-			WRITE_STRING_FIELD(indexspace);
-			WRITE_BOOL_FIELD(reset_default_tblspc);
-			WRITE_STRING_FIELD(access_method);
-			WRITE_NODE_FIELD(where_clause);
-			break;
+        case CONSTR_EXCLUSION:
+            appendStringInfoString(str, "EXCLUSION");
+            WRITE_NODE_FIELD(exclusions);
+            WRITE_NODE_FIELD(including);
+            WRITE_NODE_FIELD(options);
+            WRITE_STRING_FIELD(indexname);
+            WRITE_STRING_FIELD(indexspace);
+            WRITE_BOOL_FIELD(reset_default_tblspc);
+            WRITE_STRING_FIELD(access_method);
+            WRITE_NODE_FIELD(where_clause);
+            break;
 
-		case CONSTR_FOREIGN:
-			appendStringInfoString(str, "FOREIGN_KEY");
-			WRITE_NODE_FIELD(pktable);
-			WRITE_NODE_FIELD(fk_attrs);
-			WRITE_NODE_FIELD(pk_attrs);
-			WRITE_CHAR_FIELD(fk_matchtype);
-			WRITE_CHAR_FIELD(fk_upd_action);
-			WRITE_CHAR_FIELD(fk_del_action);
-			WRITE_NODE_FIELD(fk_del_set_cols);
-			WRITE_NODE_FIELD(old_conpfeqop);
-			WRITE_OID_FIELD(old_pktable_oid);
-			WRITE_BOOL_FIELD(skip_validation);
-			WRITE_BOOL_FIELD(initially_valid);
-			break;
+        case CONSTR_FOREIGN:
+            appendStringInfoString(str, "FOREIGN_KEY");
+            WRITE_NODE_FIELD(pktable);
+            WRITE_NODE_FIELD(fk_attrs);
+            WRITE_NODE_FIELD(pk_attrs);
+            WRITE_CHAR_FIELD(fk_matchtype);
+            WRITE_CHAR_FIELD(fk_upd_action);
+            WRITE_CHAR_FIELD(fk_del_action);
+            WRITE_NODE_FIELD(fk_del_set_cols);
+            WRITE_NODE_FIELD(old_conpfeqop);
+            WRITE_OID_FIELD(old_pktable_oid);
+            WRITE_BOOL_FIELD(skip_validation);
+            WRITE_BOOL_FIELD(initially_valid);
+            break;
 
-		case CONSTR_ATTR_DEFERRABLE:
-			appendStringInfoString(str, "ATTR_DEFERRABLE");
-			break;
+        case CONSTR_ATTR_DEFERRABLE:
+            appendStringInfoString(str, "ATTR_DEFERRABLE");
+            break;
 
-		case CONSTR_ATTR_NOT_DEFERRABLE:
-			appendStringInfoString(str, "ATTR_NOT_DEFERRABLE");
-			break;
+        case CONSTR_ATTR_NOT_DEFERRABLE:
+            appendStringInfoString(str, "ATTR_NOT_DEFERRABLE");
+            break;
 
-		case CONSTR_ATTR_DEFERRED:
-			appendStringInfoString(str, "ATTR_DEFERRED");
-			break;
+        case CONSTR_ATTR_DEFERRED:
+            appendStringInfoString(str, "ATTR_DEFERRED");
+            break;
 
-		case CONSTR_ATTR_IMMEDIATE:
-			appendStringInfoString(str, "ATTR_IMMEDIATE");
-			break;
+        case CONSTR_ATTR_IMMEDIATE:
+            appendStringInfoString(str, "ATTR_IMMEDIATE");
+            break;
 
-		default:
-			elog(ERROR, "unrecognized ConstrType: %d", (int) node->contype);
-			break;
-	}
+        default:
+            elog(ERROR, "unrecognized ConstrType: %d", (int) node->contype);
+            break;
+    }
 }
 
 
@@ -826,48 +788,46 @@ _outConstraint(StringInfo str, const Constraint *node)
  *	  converts a Node into ascii string and append it to 'str'
  */
 void
-outNode(StringInfo str, const void *obj)
-{
-	/* Guard against stack overflow due to overly complex expressions */
-	check_stack_depth();
+outNode(StringInfo str, const void *obj) {
+    /* Guard against stack overflow due to overly complex expressions */
+    check_stack_depth();
 
-	if (obj == NULL)
-		appendStringInfoString(str, "<>");
-	else if (IsA(obj, List) || IsA(obj, IntList) || IsA(obj, OidList) ||
-			 IsA(obj, XidList))
-		_outList(str, obj);
-	/* nodeRead does not want to see { } around these! */
-	else if (IsA(obj, Integer))
-		_outInteger(str, (Integer *) obj);
-	else if (IsA(obj, Float))
-		_outFloat(str, (Float *) obj);
-	else if (IsA(obj, Boolean))
-		_outBoolean(str, (Boolean *) obj);
-	else if (IsA(obj, String))
-		_outString(str, (String *) obj);
-	else if (IsA(obj, BitString))
-		_outBitString(str, (BitString *) obj);
-	else if (IsA(obj, Bitmapset))
-		outBitmapset(str, (Bitmapset *) obj);
-	else
-	{
-		appendStringInfoChar(str, '{');
-		switch (nodeTag(obj))
-		{
+    if (obj == NULL)
+        appendStringInfoString(str, "<>");
+    else if (IsA(obj, List) || IsA(obj, IntList) || IsA(obj, OidList) ||
+             IsA(obj, XidList))
+        _outList(str, obj);
+        /* nodeRead does not want to see { } around these! */
+    else if (IsA(obj, Integer))
+        _outInteger(str, (Integer *) obj);
+    else if (IsA(obj, Float))
+        _outFloat(str, (Float *) obj);
+    else if (IsA(obj, Boolean))
+        _outBoolean(str, (Boolean *) obj);
+    else if (IsA(obj, String))
+        _outString(str, (String *) obj);
+    else if (IsA(obj, BitString))
+        _outBitString(str, (BitString *) obj);
+    else if (IsA(obj, Bitmapset))
+        outBitmapset(str, (Bitmapset *) obj);
+    else {
+        appendStringInfoChar(str, '{');
+        switch (nodeTag(obj)) { 
+
 #include "outfuncs.switch.c"
 
-			default:
+default :
 
-				/*
+    /*
 				 * This should be an ERROR, but it's too useful to be able to
 				 * dump structures that outNode only understands part of.
 				 */
-				elog(WARNING, "could not dump unrecognized node type: %d",
-					 (int) nodeTag(obj));
-				break;
-		}
-		appendStringInfoChar(str, '}');
-	}
+    elog(WARNING, "could not dump unrecognized node type: %d",
+         (int) nodeTag(obj));
+break;
+}
+appendStringInfoChar(str, '}');
+}
 }
 
 /*
@@ -875,14 +835,13 @@ outNode(StringInfo str, const void *obj)
  *	   returns the ascii representation of the Node as a palloc'd string
  */
 char *
-nodeToString(const void *obj)
-{
-	StringInfoData str;
+nodeToString(const void *obj) {
+    StringInfoData str;
 
-	/* see stringinfo.h for an explanation of this maneuver */
-	initStringInfo(&str);
-	outNode(&str, obj);
-	return str.data;
+    /* see stringinfo.h for an explanation of this maneuver */
+    initStringInfo(&str);
+    outNode(&str, obj);
+    return str.data;
 }
 
 /*
@@ -890,12 +849,11 @@ nodeToString(const void *obj)
  *	   returns the ascii representation of the Bitmapset as a palloc'd string
  */
 char *
-bmsToString(const Bitmapset *bms)
-{
-	StringInfoData str;
+bmsToString(const Bitmapset *bms) {
+    StringInfoData str;
 
-	/* see stringinfo.h for an explanation of this maneuver */
-	initStringInfo(&str);
-	outBitmapset(&str, bms);
-	return str.data;
+    /* see stringinfo.h for an explanation of this maneuver */
+    initStringInfo(&str);
+    outBitmapset(&str, bms);
+    return str.data;
 }

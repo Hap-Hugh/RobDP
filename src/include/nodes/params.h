@@ -87,43 +87,41 @@ struct ParseState;
 
 #define PARAM_FLAG_CONST	0x0001	/* parameter is constant */
 
-typedef struct ParamExternData
-{
-	Datum		value;			/* parameter value */
-	bool		isnull;			/* is it NULL? */
-	uint16		pflags;			/* flag bits, see above */
-	Oid			ptype;			/* parameter's datatype, or 0 */
+typedef struct ParamExternData {
+    Datum value; /* parameter value */
+    bool isnull; /* is it NULL? */
+    uint16 pflags; /* flag bits, see above */
+    Oid ptype; /* parameter's datatype, or 0 */
 } ParamExternData;
 
 typedef struct ParamListInfoData *ParamListInfo;
 
-typedef ParamExternData *(*ParamFetchHook) (ParamListInfo params,
-											int paramid, bool speculative,
-											ParamExternData *workspace);
+typedef ParamExternData *(*ParamFetchHook)(ParamListInfo params,
+                                           int paramid, bool speculative,
+                                           ParamExternData *workspace);
 
-typedef void (*ParamCompileHook) (ParamListInfo params, struct Param *param,
-								  struct ExprState *state,
-								  Datum *resv, bool *resnull);
+typedef void (*ParamCompileHook)(ParamListInfo params, struct Param *param,
+                                 struct ExprState *state,
+                                 Datum *resv, bool *resnull);
 
-typedef void (*ParserSetupHook) (struct ParseState *pstate, void *arg);
+typedef void (*ParserSetupHook)(struct ParseState *pstate, void *arg);
 
-typedef struct ParamListInfoData
-{
-	ParamFetchHook paramFetch;	/* parameter fetch hook */
-	void	   *paramFetchArg;
-	ParamCompileHook paramCompile;	/* parameter compile hook */
-	void	   *paramCompileArg;
-	ParserSetupHook parserSetup;	/* parser setup hook */
-	void	   *parserSetupArg;
-	char	   *paramValuesStr; /* params as a single string for errors */
-	int			numParams;		/* nominal/maximum # of Params represented */
+typedef struct ParamListInfoData {
+    ParamFetchHook paramFetch; /* parameter fetch hook */
+    void *paramFetchArg;
+    ParamCompileHook paramCompile; /* parameter compile hook */
+    void *paramCompileArg;
+    ParserSetupHook parserSetup; /* parser setup hook */
+    void *parserSetupArg;
+    char *paramValuesStr; /* params as a single string for errors */
+    int numParams; /* nominal/maximum # of Params represented */
 
-	/*
+    /*
 	 * params[] may be of length zero if paramFetch is supplied; otherwise it
 	 * must be of length numParams.
 	 */
-	ParamExternData params[FLEXIBLE_ARRAY_MEMBER];
-}			ParamListInfoData;
+    ParamExternData params[FLEXIBLE_ARRAY_MEMBER];
+} ParamListInfoData;
 
 
 /* ----------------
@@ -143,28 +141,32 @@ typedef struct ParamListInfoData
  * ----------------
  */
 
-typedef struct ParamExecData
-{
-	void	   *execPlan;		/* should be "SubPlanState *" */
-	Datum		value;
-	bool		isnull;
+typedef struct ParamExecData {
+    void *execPlan; /* should be "SubPlanState *" */
+    Datum value;
+    bool isnull;
 } ParamExecData;
 
 /* type of argument for ParamsErrorCallback */
-typedef struct ParamsErrorCbData
-{
-	const char *portalName;
-	ParamListInfo params;
+typedef struct ParamsErrorCbData {
+    const char *portalName;
+    ParamListInfo params;
 } ParamsErrorCbData;
 
 /* Functions found in src/backend/nodes/params.c */
 extern ParamListInfo makeParamList(int numParams);
+
 extern ParamListInfo copyParamList(ParamListInfo from);
+
 extern Size EstimateParamListSpace(ParamListInfo paramLI);
+
 extern void SerializeParamList(ParamListInfo paramLI, char **start_address);
+
 extern ParamListInfo RestoreParamList(char **start_address);
+
 extern char *BuildParamLogString(ParamListInfo params, char **knownTextValues,
-								 int maxlen);
+                                 int maxlen);
+
 extern void ParamsErrorCallback(void *arg);
 
 #endif							/* PARAMS_H */

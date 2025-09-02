@@ -20,12 +20,11 @@
  *	makeInteger
  */
 Integer *
-makeInteger(int i)
-{
-	Integer    *v = makeNode(Integer);
+makeInteger(int i) {
+    Integer *v = makeNode(Integer);
 
-	v->ival = i;
-	return v;
+    v->ival = i;
+    return v;
 }
 
 /*
@@ -34,24 +33,22 @@ makeInteger(int i)
  * Caller is responsible for passing a palloc'd string.
  */
 Float *
-makeFloat(char *numericStr)
-{
-	Float	   *v = makeNode(Float);
+makeFloat(char *numericStr) {
+    Float *v = makeNode(Float);
 
-	v->fval = numericStr;
-	return v;
+    v->fval = numericStr;
+    return v;
 }
 
 /*
  *	makeBoolean
  */
 Boolean *
-makeBoolean(bool val)
-{
-	Boolean    *v = makeNode(Boolean);
+makeBoolean(bool val) {
+    Boolean *v = makeNode(Boolean);
 
-	v->boolval = val;
-	return v;
+    v->boolval = val;
+    return v;
 }
 
 /*
@@ -60,12 +57,11 @@ makeBoolean(bool val)
  * Caller is responsible for passing a palloc'd string.
  */
 String *
-makeString(char *str)
-{
-	String	   *v = makeNode(String);
+makeString(char *str) {
+    String *v = makeNode(String);
 
-	v->sval = str;
-	return v;
+    v->sval = str;
+    return v;
 }
 
 /*
@@ -74,10 +70,9 @@ makeString(char *str)
  * Caller is responsible for passing a palloc'd string.
  */
 BitString *
-makeBitString(char *str)
-{
-	BitString  *v = makeNode(BitString);
+makeBitString(char *str) {
+    BitString *v = makeNode(BitString);
 
-	v->bsval = str;
-	return v;
+    v->bsval = str;
+    return v;
 }

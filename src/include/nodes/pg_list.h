@@ -42,23 +42,21 @@
 #include "nodes/nodes.h"
 
 
-typedef union ListCell
-{
-	void	   *ptr_value;
-	int			int_value;
-	Oid			oid_value;
-	TransactionId xid_value;
+typedef union ListCell {
+    void *ptr_value;
+    int int_value;
+    Oid oid_value;
+    TransactionId xid_value;
 } ListCell;
 
-typedef struct List
-{
-	NodeTag		type;			/* T_List, T_IntList, T_OidList, or T_XidList */
-	int			length;			/* number of elements currently present */
-	int			max_length;		/* allocated length of elements[] */
-	ListCell   *elements;		/* re-allocatable array of cells */
-	/* We may allocate some cells along with the List header: */
-	ListCell	initial_elements[FLEXIBLE_ARRAY_MEMBER];
-	/* If elements == initial_elements, it's not a separate allocation */
+typedef struct List {
+    NodeTag type; /* T_List, T_IntList, T_OidList, or T_XidList */
+    int length; /* number of elements currently present */
+    int max_length; /* allocated length of elements[] */
+    ListCell *elements; /* re-allocatable array of cells */
+    /* We may allocate some cells along with the List header: */
+    ListCell initial_elements[FLEXIBLE_ARRAY_MEMBER];
+    /* If elements == initial_elements, it's not a separate allocation */
 } List;
 
 /*
@@ -70,52 +68,46 @@ typedef struct List
 /*
  * State structs for various looping macros below.
  */
-typedef struct ForEachState
-{
-	const List *l;				/* list we're looping through */
-	int			i;				/* current element index */
+typedef struct ForEachState {
+    const List *l; /* list we're looping through */
+    int i; /* current element index */
 } ForEachState;
 
-typedef struct ForBothState
-{
-	const List *l1;				/* lists we're looping through */
-	const List *l2;
-	int			i;				/* common element index */
+typedef struct ForBothState {
+    const List *l1; /* lists we're looping through */
+    const List *l2;
+    int i; /* common element index */
 } ForBothState;
 
-typedef struct ForBothCellState
-{
-	const List *l1;				/* lists we're looping through */
-	const List *l2;
-	int			i1;				/* current element indexes */
-	int			i2;
+typedef struct ForBothCellState {
+    const List *l1; /* lists we're looping through */
+    const List *l2;
+    int i1; /* current element indexes */
+    int i2;
 } ForBothCellState;
 
-typedef struct ForThreeState
-{
-	const List *l1;				/* lists we're looping through */
-	const List *l2;
-	const List *l3;
-	int			i;				/* common element index */
+typedef struct ForThreeState {
+    const List *l1; /* lists we're looping through */
+    const List *l2;
+    const List *l3;
+    int i; /* common element index */
 } ForThreeState;
 
-typedef struct ForFourState
-{
-	const List *l1;				/* lists we're looping through */
-	const List *l2;
-	const List *l3;
-	const List *l4;
-	int			i;				/* common element index */
+typedef struct ForFourState {
+    const List *l1; /* lists we're looping through */
+    const List *l2;
+    const List *l3;
+    const List *l4;
+    int i; /* common element index */
 } ForFourState;
 
-typedef struct ForFiveState
-{
-	const List *l1;				/* lists we're looping through */
-	const List *l2;
-	const List *l3;
-	const List *l4;
-	const List *l5;
-	int			i;				/* common element index */
+typedef struct ForFiveState {
+    const List *l1; /* lists we're looping through */
+    const List *l2;
+    const List *l3;
+    const List *l4;
+    const List *l5;
+    int i; /* common element index */
 } ForFiveState;
 
 /*
@@ -125,33 +117,29 @@ typedef struct ForFiveState
 
 /* Fetch address of list's first cell; NULL if empty list */
 static inline ListCell *
-list_head(const List *l)
-{
-	return l ? &l->elements[0] : NULL;
+list_head(const List *l) {
+    return l ? &l->elements[0] : NULL;
 }
 
 /* Fetch address of list's last cell; NULL if empty list */
 static inline ListCell *
-list_tail(const List *l)
-{
-	return l ? &l->elements[l->length - 1] : NULL;
+list_tail(const List *l) {
+    return l ? &l->elements[l->length - 1] : NULL;
 }
 
 /* Fetch address of list's second cell, if it has one, else NULL */
 static inline ListCell *
-list_second_cell(const List *l)
-{
-	if (l && l->length >= 2)
-		return &l->elements[1];
-	else
-		return NULL;
+list_second_cell(const List *l) {
+    if (l && l->length >= 2)
+        return &l->elements[1];
+    else
+        return NULL;
 }
 
 /* Fetch list's length */
 static inline int
-list_length(const List *l)
-{
-	return l ? l->length : 0;
+list_length(const List *l) {
+    return l ? l->length : 0;
 }
 
 /*
@@ -274,21 +262,19 @@ list_length(const List *l)
  * It is an assertion failure if there is no such cell.
  */
 static inline ListCell *
-list_nth_cell(const List *list, int n)
-{
-	Assert(list != NIL);
-	Assert(n >= 0 && n < list->length);
-	return &list->elements[n];
+list_nth_cell(const List *list, int n) {
+    Assert(list != NIL);
+    Assert(n >= 0 && n < list->length);
+    return &list->elements[n];
 }
 
 /*
  * Return the last cell in a non-NIL List.
  */
 static inline ListCell *
-list_last_cell(const List *list)
-{
-	Assert(list != NIL);
-	return &list->elements[list->length - 1];
+list_last_cell(const List *list) {
+    Assert(list != NIL);
+    return &list->elements[list->length - 1];
 }
 
 /*
@@ -296,10 +282,9 @@ list_last_cell(const List *list)
  * specified list. (List elements begin at 0.)
  */
 static inline void *
-list_nth(const List *list, int n)
-{
-	Assert(IsA(list, List));
-	return lfirst(list_nth_cell(list, n));
+list_nth(const List *list, int n) {
+    Assert(IsA(list, List));
+    return lfirst(list_nth_cell(list, n));
 }
 
 /*
@@ -307,10 +292,9 @@ list_nth(const List *list, int n)
  * specified list.
  */
 static inline int
-list_nth_int(const List *list, int n)
-{
-	Assert(IsA(list, IntList));
-	return lfirst_int(list_nth_cell(list, n));
+list_nth_int(const List *list, int n) {
+    Assert(IsA(list, IntList));
+    return lfirst_int(list_nth_cell(list, n));
 }
 
 /*
@@ -318,10 +302,9 @@ list_nth_int(const List *list, int n)
  * list.
  */
 static inline Oid
-list_nth_oid(const List *list, int n)
-{
-	Assert(IsA(list, OidList));
-	return lfirst_oid(list_nth_cell(list, n));
+list_nth_oid(const List *list, int n) {
+    Assert(IsA(list, OidList));
+    return lfirst_oid(list_nth_cell(list, n));
 }
 
 #define list_nth_node(type,list,n)	castNode(type, list_nth(list, n))
@@ -330,24 +313,22 @@ list_nth_oid(const List *list, int n)
  * Get the given ListCell's index (from 0) in the given List.
  */
 static inline int
-list_cell_number(const List *l, const ListCell *c)
-{
-	Assert(c >= &l->elements[0] && c < &l->elements[l->length]);
-	return c - l->elements;
+list_cell_number(const List *l, const ListCell *c) {
+    Assert(c >= &l->elements[0] && c < &l->elements[l->length]);
+    return c - l->elements;
 }
 
 /*
  * Get the address of the next cell after "c" within list "l", or NULL if none.
  */
 static inline ListCell *
-lnext(const List *l, const ListCell *c)
-{
-	Assert(c >= &l->elements[0] && c < &l->elements[l->length]);
-	c++;
-	if (c < &l->elements[l->length])
-		return (ListCell *) c;
-	else
-		return NULL;
+lnext(const List *l, const ListCell *c) {
+    Assert(c >= &l->elements[0] && c < &l->elements[l->length]);
+    c++;
+    if (c < &l->elements[l->length])
+        return (ListCell *) c;
+    else
+        return NULL;
 }
 
 /*
@@ -420,12 +401,11 @@ lnext(const List *l, const ListCell *c)
 		 cell##__state.i++)
 
 static inline ForEachState
-for_each_from_setup(const List *lst, int N)
-{
-	ForEachState r = {lst, N};
+for_each_from_setup(const List *lst, int N) {
+    ForEachState r = {lst, N};
 
-	Assert(N >= 0);
-	return r;
+    Assert(N >= 0);
+    return r;
 }
 
 /*
@@ -444,12 +424,13 @@ for_each_from_setup(const List *lst, int N)
 		 cell##__state.i++)
 
 static inline ForEachState
-for_each_cell_setup(const List *lst, const ListCell *initcell)
-{
-	ForEachState r = {lst,
-	initcell ? list_cell_number(lst, initcell) : list_length(lst)};
+for_each_cell_setup(const List *lst, const ListCell *initcell) {
+    ForEachState r = {
+        lst,
+        initcell ? list_cell_number(lst, initcell) : list_length(lst)
+    };
 
-	return r;
+    return r;
 }
 
 /*
@@ -496,13 +477,14 @@ for_each_cell_setup(const List *lst, const ListCell *initcell)
 
 static inline ForBothCellState
 for_both_cell_setup(const List *list1, const ListCell *initcell1,
-					const List *list2, const ListCell *initcell2)
-{
-	ForBothCellState r = {list1, list2,
-		initcell1 ? list_cell_number(list1, initcell1) : list_length(list1),
-	initcell2 ? list_cell_number(list2, initcell2) : list_length(list2)};
+                    const List *list2, const ListCell *initcell2) {
+    ForBothCellState r = {
+        list1, list2,
+        initcell1 ? list_cell_number(list1, initcell1) : list_length(list1),
+        initcell2 ? list_cell_number(list2, initcell2) : list_length(list2)
+    };
 
-	return r;
+    return r;
 }
 
 /*
@@ -548,88 +530,131 @@ for_both_cell_setup(const List *list1, const ListCell *initcell1,
 /* Functions in src/backend/nodes/list.c */
 
 extern List *list_make1_impl(NodeTag t, ListCell datum1);
+
 extern List *list_make2_impl(NodeTag t, ListCell datum1, ListCell datum2);
+
 extern List *list_make3_impl(NodeTag t, ListCell datum1, ListCell datum2,
-							 ListCell datum3);
+                             ListCell datum3);
+
 extern List *list_make4_impl(NodeTag t, ListCell datum1, ListCell datum2,
-							 ListCell datum3, ListCell datum4);
+                             ListCell datum3, ListCell datum4);
+
 extern List *list_make5_impl(NodeTag t, ListCell datum1, ListCell datum2,
-							 ListCell datum3, ListCell datum4,
-							 ListCell datum5);
+                             ListCell datum3, ListCell datum4,
+                             ListCell datum5);
 
 extern pg_nodiscard List *lappend(List *list, void *datum);
+
 extern pg_nodiscard List *lappend_int(List *list, int datum);
+
 extern pg_nodiscard List *lappend_oid(List *list, Oid datum);
+
 extern pg_nodiscard List *lappend_xid(List *list, TransactionId datum);
 
 extern pg_nodiscard List *list_insert_nth(List *list, int pos, void *datum);
+
 extern pg_nodiscard List *list_insert_nth_int(List *list, int pos, int datum);
+
 extern pg_nodiscard List *list_insert_nth_oid(List *list, int pos, Oid datum);
 
 extern pg_nodiscard List *lcons(void *datum, List *list);
+
 extern pg_nodiscard List *lcons_int(int datum, List *list);
+
 extern pg_nodiscard List *lcons_oid(Oid datum, List *list);
 
 extern pg_nodiscard List *list_concat(List *list1, const List *list2);
+
 extern pg_nodiscard List *list_concat_copy(const List *list1, const List *list2);
 
 extern pg_nodiscard List *list_truncate(List *list, int new_size);
 
 extern bool list_member(const List *list, const void *datum);
+
 extern bool list_member_ptr(const List *list, const void *datum);
+
 extern bool list_member_int(const List *list, int datum);
+
 extern bool list_member_oid(const List *list, Oid datum);
+
 extern bool list_member_xid(const List *list, TransactionId datum);
 
 extern pg_nodiscard List *list_delete(List *list, void *datum);
+
 extern pg_nodiscard List *list_delete_ptr(List *list, void *datum);
+
 extern pg_nodiscard List *list_delete_int(List *list, int datum);
+
 extern pg_nodiscard List *list_delete_oid(List *list, Oid datum);
+
 extern pg_nodiscard List *list_delete_first(List *list);
+
 extern pg_nodiscard List *list_delete_last(List *list);
+
 extern pg_nodiscard List *list_delete_first_n(List *list, int n);
+
 extern pg_nodiscard List *list_delete_nth_cell(List *list, int n);
+
 extern pg_nodiscard List *list_delete_cell(List *list, ListCell *cell);
 
 extern List *list_union(const List *list1, const List *list2);
+
 extern List *list_union_ptr(const List *list1, const List *list2);
+
 extern List *list_union_int(const List *list1, const List *list2);
+
 extern List *list_union_oid(const List *list1, const List *list2);
 
 extern List *list_intersection(const List *list1, const List *list2);
+
 extern List *list_intersection_int(const List *list1, const List *list2);
 
 /* currently, there's no need for list_intersection_ptr etc */
 
 extern List *list_difference(const List *list1, const List *list2);
+
 extern List *list_difference_ptr(const List *list1, const List *list2);
+
 extern List *list_difference_int(const List *list1, const List *list2);
+
 extern List *list_difference_oid(const List *list1, const List *list2);
 
 extern pg_nodiscard List *list_append_unique(List *list, void *datum);
+
 extern pg_nodiscard List *list_append_unique_ptr(List *list, void *datum);
+
 extern pg_nodiscard List *list_append_unique_int(List *list, int datum);
+
 extern pg_nodiscard List *list_append_unique_oid(List *list, Oid datum);
 
 extern pg_nodiscard List *list_concat_unique(List *list1, const List *list2);
+
 extern pg_nodiscard List *list_concat_unique_ptr(List *list1, const List *list2);
+
 extern pg_nodiscard List *list_concat_unique_int(List *list1, const List *list2);
+
 extern pg_nodiscard List *list_concat_unique_oid(List *list1, const List *list2);
 
 extern void list_deduplicate_oid(List *list);
 
 extern void list_free(List *list);
+
 extern void list_free_deep(List *list);
 
 extern pg_nodiscard List *list_copy(const List *oldlist);
+
 extern pg_nodiscard List *list_copy_head(const List *oldlist, int len);
+
 extern pg_nodiscard List *list_copy_tail(const List *oldlist, int nskip);
+
 extern pg_nodiscard List *list_copy_deep(const List *oldlist);
 
-typedef int (*list_sort_comparator) (const ListCell *a, const ListCell *b);
+typedef int (*list_sort_comparator)(const ListCell *a, const ListCell *b);
+
 extern void list_sort(List *list, list_sort_comparator cmp);
 
-extern int	list_int_cmp(const ListCell *p1, const ListCell *p2);
-extern int	list_oid_cmp(const ListCell *p1, const ListCell *p2);
+extern int list_int_cmp(const ListCell *p1, const ListCell *p2);
+
+extern int list_oid_cmp(const ListCell *p1, const ListCell *p2);
 
 #endif							/* PG_LIST_H */

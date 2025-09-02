@@ -63,52 +63,50 @@
  * Record the need for the Var in the proper upper-level root->plan_params.
  */
 static int
-assign_param_for_var(PlannerInfo *root, Var *var)
-{
-	ListCell   *ppl;
-	PlannerParamItem *pitem;
-	Index		levelsup;
+assign_param_for_var(PlannerInfo *root, Var *var) {
+    ListCell *ppl;
+    PlannerParamItem *pitem;
+    Index levelsup;
 
-	/* Find the query level the Var belongs to */
-	for (levelsup = var->varlevelsup; levelsup > 0; levelsup--)
-		root = root->parent_root;
+    /* Find the query level the Var belongs to */
+    for (levelsup = var->varlevelsup; levelsup > 0; levelsup--)
+        root = root->parent_root;
 
-	/* If there's already a matching PlannerParamItem there, just use it */
-	foreach(ppl, root->plan_params)
-	{
-		pitem = (PlannerParamItem *) lfirst(ppl);
-		if (IsA(pitem->item, Var))
-		{
-			Var		   *pvar = (Var *) pitem->item;
+    /* If there's already a matching PlannerParamItem there, just use it */
+    foreach(ppl, root->plan_params)
+    {
+        pitem = (PlannerParamItem *) lfirst(ppl);
+        if (IsA(pitem->item, Var)) {
+            Var *pvar = (Var *) pitem->item;
 
-			/*
+            /*
 			 * This comparison must match _equalVar(), except for ignoring
 			 * varlevelsup.  Note that _equalVar() ignores varnosyn,
 			 * varattnosyn, and location, so this does too.
 			 */
-			if (pvar->varno == var->varno &&
-				pvar->varattno == var->varattno &&
-				pvar->vartype == var->vartype &&
-				pvar->vartypmod == var->vartypmod &&
-				pvar->varcollid == var->varcollid &&
-				bms_equal(pvar->varnullingrels, var->varnullingrels))
-				return pitem->paramId;
-		}
-	}
+            if (pvar->varno == var->varno &&
+                pvar->varattno == var->varattno &&
+                pvar->vartype == var->vartype &&
+                pvar->vartypmod == var->vartypmod &&
+                pvar->varcollid == var->varcollid &&
+                bms_equal(pvar->varnullingrels, var->varnullingrels))
+                return pitem->paramId;
+        }
+    }
 
-	/* Nope, so make a new one */
-	var = copyObject(var);
-	var->varlevelsup = 0;
+    /* Nope, so make a new one */
+    var = copyObject(var);
+    var->varlevelsup = 0;
 
-	pitem = makeNode(PlannerParamItem);
-	pitem->item = (Node *) var;
-	pitem->paramId = list_length(root->glob->paramExecTypes);
-	root->glob->paramExecTypes = lappend_oid(root->glob->paramExecTypes,
-											 var->vartype);
+    pitem = makeNode(PlannerParamItem);
+    pitem->item = (Node *) var;
+    pitem->paramId = list_length(root->glob->paramExecTypes);
+    root->glob->paramExecTypes = lappend_oid(root->glob->paramExecTypes,
+                                             var->vartype);
 
-	root->plan_params = lappend(root->plan_params, pitem);
+    root->plan_params = lappend(root->plan_params, pitem);
 
-	return pitem->paramId;
+    return pitem->paramId;
 }
 
 /*
@@ -117,25 +115,24 @@ assign_param_for_var(PlannerInfo *root, Var *var)
  * Record the need for the Var in the proper upper-level root->plan_params.
  */
 Param *
-replace_outer_var(PlannerInfo *root, Var *var)
-{
-	Param	   *retval;
-	int			i;
+replace_outer_var(PlannerInfo *root, Var *var) {
+    Param *retval;
+    int i;
 
-	Assert(var->varlevelsup > 0 && var->varlevelsup < root->query_level);
+    Assert(var->varlevelsup > 0 && var->varlevelsup < root->query_level);
 
-	/* Find the Var in the appropriate plan_params, or add it if not present */
-	i = assign_param_for_var(root, var);
+    /* Find the Var in the appropriate plan_params, or add it if not present */
+    i = assign_param_for_var(root, var);
 
-	retval = makeNode(Param);
-	retval->paramkind = PARAM_EXEC;
-	retval->paramid = i;
-	retval->paramtype = var->vartype;
-	retval->paramtypmod = var->vartypmod;
-	retval->paramcollid = var->varcollid;
-	retval->location = var->location;
+    retval = makeNode(Param);
+    retval->paramkind = PARAM_EXEC;
+    retval->paramid = i;
+    retval->paramtype = var->vartype;
+    retval->paramtypmod = var->vartypmod;
+    retval->paramcollid = var->varcollid;
+    retval->location = var->location;
 
-	return retval;
+    return retval;
 }
 
 /*
@@ -146,44 +143,42 @@ replace_outer_var(PlannerInfo *root, Var *var)
  * This is just like assign_param_for_var, except for PlaceHolderVars.
  */
 static int
-assign_param_for_placeholdervar(PlannerInfo *root, PlaceHolderVar *phv)
-{
-	ListCell   *ppl;
-	PlannerParamItem *pitem;
-	Index		levelsup;
+assign_param_for_placeholdervar(PlannerInfo *root, PlaceHolderVar *phv) {
+    ListCell *ppl;
+    PlannerParamItem *pitem;
+    Index levelsup;
 
-	/* Find the query level the PHV belongs to */
-	for (levelsup = phv->phlevelsup; levelsup > 0; levelsup--)
-		root = root->parent_root;
+    /* Find the query level the PHV belongs to */
+    for (levelsup = phv->phlevelsup; levelsup > 0; levelsup--)
+        root = root->parent_root;
 
-	/* If there's already a matching PlannerParamItem there, just use it */
-	foreach(ppl, root->plan_params)
-	{
-		pitem = (PlannerParamItem *) lfirst(ppl);
-		if (IsA(pitem->item, PlaceHolderVar))
-		{
-			PlaceHolderVar *pphv = (PlaceHolderVar *) pitem->item;
+    /* If there's already a matching PlannerParamItem there, just use it */
+    foreach(ppl, root->plan_params)
+    {
+        pitem = (PlannerParamItem *) lfirst(ppl);
+        if (IsA(pitem->item, PlaceHolderVar)) {
+            PlaceHolderVar *pphv = (PlaceHolderVar *) pitem->item;
 
-			/* We assume comparing the PHIDs is sufficient */
-			if (pphv->phid == phv->phid)
-				return pitem->paramId;
-		}
-	}
+            /* We assume comparing the PHIDs is sufficient */
+            if (pphv->phid == phv->phid)
+                return pitem->paramId;
+        }
+    }
 
-	/* Nope, so make a new one */
-	phv = copyObject(phv);
-	IncrementVarSublevelsUp((Node *) phv, -((int) phv->phlevelsup), 0);
-	Assert(phv->phlevelsup == 0);
+    /* Nope, so make a new one */
+    phv = copyObject(phv);
+    IncrementVarSublevelsUp((Node *) phv, -((int) phv->phlevelsup), 0);
+    Assert(phv->phlevelsup == 0);
 
-	pitem = makeNode(PlannerParamItem);
-	pitem->item = (Node *) phv;
-	pitem->paramId = list_length(root->glob->paramExecTypes);
-	root->glob->paramExecTypes = lappend_oid(root->glob->paramExecTypes,
-											 exprType((Node *) phv->phexpr));
+    pitem = makeNode(PlannerParamItem);
+    pitem->item = (Node *) phv;
+    pitem->paramId = list_length(root->glob->paramExecTypes);
+    root->glob->paramExecTypes = lappend_oid(root->glob->paramExecTypes,
+                                             exprType((Node *) phv->phexpr));
 
-	root->plan_params = lappend(root->plan_params, pitem);
+    root->plan_params = lappend(root->plan_params, pitem);
 
-	return pitem->paramId;
+    return pitem->paramId;
 }
 
 /*
@@ -194,25 +189,24 @@ assign_param_for_placeholdervar(PlannerInfo *root, PlaceHolderVar *phv)
  * This is just like replace_outer_var, except for PlaceHolderVars.
  */
 Param *
-replace_outer_placeholdervar(PlannerInfo *root, PlaceHolderVar *phv)
-{
-	Param	   *retval;
-	int			i;
+replace_outer_placeholdervar(PlannerInfo *root, PlaceHolderVar *phv) {
+    Param *retval;
+    int i;
 
-	Assert(phv->phlevelsup > 0 && phv->phlevelsup < root->query_level);
+    Assert(phv->phlevelsup > 0 && phv->phlevelsup < root->query_level);
 
-	/* Find the PHV in the appropriate plan_params, or add it if not present */
-	i = assign_param_for_placeholdervar(root, phv);
+    /* Find the PHV in the appropriate plan_params, or add it if not present */
+    i = assign_param_for_placeholdervar(root, phv);
 
-	retval = makeNode(Param);
-	retval->paramkind = PARAM_EXEC;
-	retval->paramid = i;
-	retval->paramtype = exprType((Node *) phv->phexpr);
-	retval->paramtypmod = exprTypmod((Node *) phv->phexpr);
-	retval->paramcollid = exprCollation((Node *) phv->phexpr);
-	retval->location = -1;
+    retval = makeNode(Param);
+    retval->paramkind = PARAM_EXEC;
+    retval->paramid = i;
+    retval->paramtype = exprType((Node *) phv->phexpr);
+    retval->paramtypmod = exprTypmod((Node *) phv->phexpr);
+    retval->paramcollid = exprCollation((Node *) phv->phexpr);
+    retval->location = -1;
 
-	return retval;
+    return retval;
 }
 
 /*
@@ -221,43 +215,42 @@ replace_outer_placeholdervar(PlannerInfo *root, PlaceHolderVar *phv)
  * Record the need for the Aggref in the proper upper-level root->plan_params.
  */
 Param *
-replace_outer_agg(PlannerInfo *root, Aggref *agg)
-{
-	Param	   *retval;
-	PlannerParamItem *pitem;
-	Index		levelsup;
+replace_outer_agg(PlannerInfo *root, Aggref *agg) {
+    Param *retval;
+    PlannerParamItem *pitem;
+    Index levelsup;
 
-	Assert(agg->agglevelsup > 0 && agg->agglevelsup < root->query_level);
+    Assert(agg->agglevelsup > 0 && agg->agglevelsup < root->query_level);
 
-	/* Find the query level the Aggref belongs to */
-	for (levelsup = agg->agglevelsup; levelsup > 0; levelsup--)
-		root = root->parent_root;
+    /* Find the query level the Aggref belongs to */
+    for (levelsup = agg->agglevelsup; levelsup > 0; levelsup--)
+        root = root->parent_root;
 
-	/*
+    /*
 	 * It does not seem worthwhile to try to de-duplicate references to outer
 	 * aggs.  Just make a new slot every time.
 	 */
-	agg = copyObject(agg);
-	IncrementVarSublevelsUp((Node *) agg, -((int) agg->agglevelsup), 0);
-	Assert(agg->agglevelsup == 0);
+    agg = copyObject(agg);
+    IncrementVarSublevelsUp((Node *) agg, -((int) agg->agglevelsup), 0);
+    Assert(agg->agglevelsup == 0);
 
-	pitem = makeNode(PlannerParamItem);
-	pitem->item = (Node *) agg;
-	pitem->paramId = list_length(root->glob->paramExecTypes);
-	root->glob->paramExecTypes = lappend_oid(root->glob->paramExecTypes,
-											 agg->aggtype);
+    pitem = makeNode(PlannerParamItem);
+    pitem->item = (Node *) agg;
+    pitem->paramId = list_length(root->glob->paramExecTypes);
+    root->glob->paramExecTypes = lappend_oid(root->glob->paramExecTypes,
+                                             agg->aggtype);
 
-	root->plan_params = lappend(root->plan_params, pitem);
+    root->plan_params = lappend(root->plan_params, pitem);
 
-	retval = makeNode(Param);
-	retval->paramkind = PARAM_EXEC;
-	retval->paramid = pitem->paramId;
-	retval->paramtype = agg->aggtype;
-	retval->paramtypmod = -1;
-	retval->paramcollid = agg->aggcollid;
-	retval->location = agg->location;
+    retval = makeNode(Param);
+    retval->paramkind = PARAM_EXEC;
+    retval->paramid = pitem->paramId;
+    retval->paramtype = agg->aggtype;
+    retval->paramtypmod = -1;
+    retval->paramcollid = agg->aggcollid;
+    retval->location = agg->location;
 
-	return retval;
+    return retval;
 }
 
 /*
@@ -267,44 +260,43 @@ replace_outer_agg(PlannerInfo *root, Aggref *agg)
  * root->plan_params.
  */
 Param *
-replace_outer_grouping(PlannerInfo *root, GroupingFunc *grp)
-{
-	Param	   *retval;
-	PlannerParamItem *pitem;
-	Index		levelsup;
-	Oid			ptype = exprType((Node *) grp);
+replace_outer_grouping(PlannerInfo *root, GroupingFunc *grp) {
+    Param *retval;
+    PlannerParamItem *pitem;
+    Index levelsup;
+    Oid ptype = exprType((Node *) grp);
 
-	Assert(grp->agglevelsup > 0 && grp->agglevelsup < root->query_level);
+    Assert(grp->agglevelsup > 0 && grp->agglevelsup < root->query_level);
 
-	/* Find the query level the GroupingFunc belongs to */
-	for (levelsup = grp->agglevelsup; levelsup > 0; levelsup--)
-		root = root->parent_root;
+    /* Find the query level the GroupingFunc belongs to */
+    for (levelsup = grp->agglevelsup; levelsup > 0; levelsup--)
+        root = root->parent_root;
 
-	/*
+    /*
 	 * It does not seem worthwhile to try to de-duplicate references to outer
 	 * aggs.  Just make a new slot every time.
 	 */
-	grp = copyObject(grp);
-	IncrementVarSublevelsUp((Node *) grp, -((int) grp->agglevelsup), 0);
-	Assert(grp->agglevelsup == 0);
+    grp = copyObject(grp);
+    IncrementVarSublevelsUp((Node *) grp, -((int) grp->agglevelsup), 0);
+    Assert(grp->agglevelsup == 0);
 
-	pitem = makeNode(PlannerParamItem);
-	pitem->item = (Node *) grp;
-	pitem->paramId = list_length(root->glob->paramExecTypes);
-	root->glob->paramExecTypes = lappend_oid(root->glob->paramExecTypes,
-											 ptype);
+    pitem = makeNode(PlannerParamItem);
+    pitem->item = (Node *) grp;
+    pitem->paramId = list_length(root->glob->paramExecTypes);
+    root->glob->paramExecTypes = lappend_oid(root->glob->paramExecTypes,
+                                             ptype);
 
-	root->plan_params = lappend(root->plan_params, pitem);
+    root->plan_params = lappend(root->plan_params, pitem);
 
-	retval = makeNode(Param);
-	retval->paramkind = PARAM_EXEC;
-	retval->paramid = pitem->paramId;
-	retval->paramtype = ptype;
-	retval->paramtypmod = -1;
-	retval->paramcollid = InvalidOid;
-	retval->location = grp->location;
+    retval = makeNode(Param);
+    retval->paramkind = PARAM_EXEC;
+    retval->paramid = pitem->paramId;
+    retval->paramtype = ptype;
+    retval->paramtypmod = -1;
+    retval->paramcollid = InvalidOid;
+    retval->location = grp->location;
 
-	return retval;
+    return retval;
 }
 
 /*
@@ -313,45 +305,43 @@ replace_outer_grouping(PlannerInfo *root, GroupingFunc *grp)
  * Record the need for the Var in root->curOuterParams.
  */
 Param *
-replace_nestloop_param_var(PlannerInfo *root, Var *var)
-{
-	Param	   *param;
-	NestLoopParam *nlp;
-	ListCell   *lc;
+replace_nestloop_param_var(PlannerInfo *root, Var *var) {
+    Param *param;
+    NestLoopParam *nlp;
+    ListCell *lc;
 
-	/* Is this Var already listed in root->curOuterParams? */
-	foreach(lc, root->curOuterParams)
-	{
-		nlp = (NestLoopParam *) lfirst(lc);
-		if (equal(var, nlp->paramval))
-		{
-			/* Yes, so just make a Param referencing this NLP's slot */
-			param = makeNode(Param);
-			param->paramkind = PARAM_EXEC;
-			param->paramid = nlp->paramno;
-			param->paramtype = var->vartype;
-			param->paramtypmod = var->vartypmod;
-			param->paramcollid = var->varcollid;
-			param->location = var->location;
-			return param;
-		}
-	}
+    /* Is this Var already listed in root->curOuterParams? */
+    foreach(lc, root->curOuterParams)
+    {
+        nlp = (NestLoopParam *) lfirst(lc);
+        if (equal(var, nlp->paramval)) {
+            /* Yes, so just make a Param referencing this NLP's slot */
+            param = makeNode(Param);
+            param->paramkind = PARAM_EXEC;
+            param->paramid = nlp->paramno;
+            param->paramtype = var->vartype;
+            param->paramtypmod = var->vartypmod;
+            param->paramcollid = var->varcollid;
+            param->location = var->location;
+            return param;
+        }
+    }
 
-	/* No, so assign a PARAM_EXEC slot for a new NLP */
-	param = generate_new_exec_param(root,
-									var->vartype,
-									var->vartypmod,
-									var->varcollid);
-	param->location = var->location;
+    /* No, so assign a PARAM_EXEC slot for a new NLP */
+    param = generate_new_exec_param(root,
+                                    var->vartype,
+                                    var->vartypmod,
+                                    var->varcollid);
+    param->location = var->location;
 
-	/* Add it to the list of required NLPs */
-	nlp = makeNode(NestLoopParam);
-	nlp->paramno = param->paramid;
-	nlp->paramval = copyObject(var);
-	root->curOuterParams = lappend(root->curOuterParams, nlp);
+    /* Add it to the list of required NLPs */
+    nlp = makeNode(NestLoopParam);
+    nlp->paramno = param->paramid;
+    nlp->paramval = copyObject(var);
+    root->curOuterParams = lappend(root->curOuterParams, nlp);
 
-	/* And return the replacement Param */
-	return param;
+    /* And return the replacement Param */
+    return param;
 }
 
 /*
@@ -362,44 +352,42 @@ replace_nestloop_param_var(PlannerInfo *root, Var *var)
  * This is just like replace_nestloop_param_var, except for PlaceHolderVars.
  */
 Param *
-replace_nestloop_param_placeholdervar(PlannerInfo *root, PlaceHolderVar *phv)
-{
-	Param	   *param;
-	NestLoopParam *nlp;
-	ListCell   *lc;
+replace_nestloop_param_placeholdervar(PlannerInfo *root, PlaceHolderVar *phv) {
+    Param *param;
+    NestLoopParam *nlp;
+    ListCell *lc;
 
-	/* Is this PHV already listed in root->curOuterParams? */
-	foreach(lc, root->curOuterParams)
-	{
-		nlp = (NestLoopParam *) lfirst(lc);
-		if (equal(phv, nlp->paramval))
-		{
-			/* Yes, so just make a Param referencing this NLP's slot */
-			param = makeNode(Param);
-			param->paramkind = PARAM_EXEC;
-			param->paramid = nlp->paramno;
-			param->paramtype = exprType((Node *) phv->phexpr);
-			param->paramtypmod = exprTypmod((Node *) phv->phexpr);
-			param->paramcollid = exprCollation((Node *) phv->phexpr);
-			param->location = -1;
-			return param;
-		}
-	}
+    /* Is this PHV already listed in root->curOuterParams? */
+    foreach(lc, root->curOuterParams)
+    {
+        nlp = (NestLoopParam *) lfirst(lc);
+        if (equal(phv, nlp->paramval)) {
+            /* Yes, so just make a Param referencing this NLP's slot */
+            param = makeNode(Param);
+            param->paramkind = PARAM_EXEC;
+            param->paramid = nlp->paramno;
+            param->paramtype = exprType((Node *) phv->phexpr);
+            param->paramtypmod = exprTypmod((Node *) phv->phexpr);
+            param->paramcollid = exprCollation((Node *) phv->phexpr);
+            param->location = -1;
+            return param;
+        }
+    }
 
-	/* No, so assign a PARAM_EXEC slot for a new NLP */
-	param = generate_new_exec_param(root,
-									exprType((Node *) phv->phexpr),
-									exprTypmod((Node *) phv->phexpr),
-									exprCollation((Node *) phv->phexpr));
+    /* No, so assign a PARAM_EXEC slot for a new NLP */
+    param = generate_new_exec_param(root,
+                                    exprType((Node *) phv->phexpr),
+                                    exprTypmod((Node *) phv->phexpr),
+                                    exprCollation((Node *) phv->phexpr));
 
-	/* Add it to the list of required NLPs */
-	nlp = makeNode(NestLoopParam);
-	nlp->paramno = param->paramid;
-	nlp->paramval = (Var *) copyObject(phv);
-	root->curOuterParams = lappend(root->curOuterParams, nlp);
+    /* Add it to the list of required NLPs */
+    nlp = makeNode(NestLoopParam);
+    nlp->paramno = param->paramid;
+    nlp->paramval = (Var *) copyObject(phv);
+    root->curOuterParams = lappend(root->curOuterParams, nlp);
 
-	/* And return the replacement Param */
-	return param;
+    /* And return the replacement Param */
+    return param;
 }
 
 /*
@@ -426,78 +414,69 @@ replace_nestloop_param_placeholdervar(PlannerInfo *root, PlaceHolderVar *phv)
  * sanity checks.
  */
 void
-process_subquery_nestloop_params(PlannerInfo *root, List *subplan_params)
-{
-	ListCell   *lc;
+process_subquery_nestloop_params(PlannerInfo *root, List *subplan_params) {
+    ListCell *lc;
 
-	foreach(lc, subplan_params)
-	{
-		PlannerParamItem *pitem = lfirst_node(PlannerParamItem, lc);
+    foreach(lc, subplan_params)
+    {
+        PlannerParamItem *pitem = lfirst_node(PlannerParamItem, lc);
 
-		if (IsA(pitem->item, Var))
-		{
-			Var		   *var = (Var *) pitem->item;
-			NestLoopParam *nlp;
-			ListCell   *lc2;
+        if (IsA(pitem->item, Var)) {
+            Var *var = (Var *) pitem->item;
+            NestLoopParam *nlp;
+            ListCell *lc2;
 
-			/* If not from a nestloop outer rel, complain */
-			if (!bms_is_member(var->varno, root->curOuterRels))
-				elog(ERROR, "non-LATERAL parameter required by subquery");
+            /* If not from a nestloop outer rel, complain */
+            if (!bms_is_member(var->varno, root->curOuterRels))
+                elog(ERROR, "non-LATERAL parameter required by subquery");
 
-			/* Is this param already listed in root->curOuterParams? */
-			foreach(lc2, root->curOuterParams)
-			{
-				nlp = (NestLoopParam *) lfirst(lc2);
-				if (nlp->paramno == pitem->paramId)
-				{
-					Assert(equal(var, nlp->paramval));
-					/* Present, so nothing to do */
-					break;
-				}
-			}
-			if (lc2 == NULL)
-			{
-				/* No, so add it */
-				nlp = makeNode(NestLoopParam);
-				nlp->paramno = pitem->paramId;
-				nlp->paramval = copyObject(var);
-				root->curOuterParams = lappend(root->curOuterParams, nlp);
-			}
-		}
-		else if (IsA(pitem->item, PlaceHolderVar))
-		{
-			PlaceHolderVar *phv = (PlaceHolderVar *) pitem->item;
-			NestLoopParam *nlp;
-			ListCell   *lc2;
+            /* Is this param already listed in root->curOuterParams? */
+            foreach(lc2, root->curOuterParams)
+            {
+                nlp = (NestLoopParam *) lfirst(lc2);
+                if (nlp->paramno == pitem->paramId) {
+                    Assert(equal(var, nlp->paramval));
+                    /* Present, so nothing to do */
+                    break;
+                }
+            }
+            if (lc2 == NULL) {
+                /* No, so add it */
+                nlp = makeNode(NestLoopParam);
+                nlp->paramno = pitem->paramId;
+                nlp->paramval = copyObject(var);
+                root->curOuterParams = lappend(root->curOuterParams, nlp);
+            }
+        } else if (IsA(pitem->item, PlaceHolderVar)) {
+            PlaceHolderVar *phv = (PlaceHolderVar *) pitem->item;
+            NestLoopParam *nlp;
+            ListCell *lc2;
 
-			/* If not from a nestloop outer rel, complain */
-			if (!bms_is_subset(find_placeholder_info(root, phv)->ph_eval_at,
-							   root->curOuterRels))
-				elog(ERROR, "non-LATERAL parameter required by subquery");
+            /* If not from a nestloop outer rel, complain */
+            if (!bms_is_subset(find_placeholder_info(root, phv)->ph_eval_at,
+                               root->curOuterRels))
+                elog(ERROR, "non-LATERAL parameter required by subquery");
 
-			/* Is this param already listed in root->curOuterParams? */
-			foreach(lc2, root->curOuterParams)
-			{
-				nlp = (NestLoopParam *) lfirst(lc2);
-				if (nlp->paramno == pitem->paramId)
-				{
-					Assert(equal(phv, nlp->paramval));
-					/* Present, so nothing to do */
-					break;
-				}
-			}
-			if (lc2 == NULL)
-			{
-				/* No, so add it */
-				nlp = makeNode(NestLoopParam);
-				nlp->paramno = pitem->paramId;
-				nlp->paramval = (Var *) copyObject(phv);
-				root->curOuterParams = lappend(root->curOuterParams, nlp);
-			}
-		}
-		else
-			elog(ERROR, "unexpected type of subquery parameter");
-	}
+            /* Is this param already listed in root->curOuterParams? */
+            foreach(lc2, root->curOuterParams)
+            {
+                nlp = (NestLoopParam *) lfirst(lc2);
+                if (nlp->paramno == pitem->paramId) {
+                    Assert(equal(phv, nlp->paramval));
+                    /* Present, so nothing to do */
+                    break;
+                }
+            }
+            if (lc2 == NULL) {
+                /* No, so add it */
+                nlp = makeNode(NestLoopParam);
+                nlp->paramno = pitem->paramId;
+                nlp->paramval = (Var *) copyObject(phv);
+                root->curOuterParams = lappend(root->curOuterParams, nlp);
+            }
+        } else
+            elog(ERROR, "unexpected type of subquery parameter");
+    }
 }
 
 /*
@@ -528,48 +507,44 @@ process_subquery_nestloop_params(PlannerInfo *root, List *subplan_params)
  * subquery, which'd be unduly expensive.
  */
 List *
-identify_current_nestloop_params(PlannerInfo *root, Relids leftrelids)
-{
-	List	   *result;
-	ListCell   *cell;
+identify_current_nestloop_params(PlannerInfo *root, Relids leftrelids) {
+    List *result;
+    ListCell *cell;
 
-	result = NIL;
-	foreach(cell, root->curOuterParams)
-	{
-		NestLoopParam *nlp = (NestLoopParam *) lfirst(cell);
+    result = NIL;
+    foreach(cell, root->curOuterParams)
+    {
+        NestLoopParam *nlp = (NestLoopParam *) lfirst(cell);
 
-		/*
+        /*
 		 * We are looking for Vars and PHVs that can be supplied by the
 		 * lefthand rels.  When we find one, it's okay to modify it in-place
 		 * because all the routines above make a fresh copy to put into
 		 * curOuterParams.
 		 */
-		if (IsA(nlp->paramval, Var) &&
-			bms_is_member(nlp->paramval->varno, leftrelids))
-		{
-			Var		   *var = (Var *) nlp->paramval;
+        if (IsA(nlp->paramval, Var) &&
+            bms_is_member(nlp->paramval->varno, leftrelids)) {
+            Var *var = (Var *) nlp->paramval;
 
-			root->curOuterParams = foreach_delete_current(root->curOuterParams,
-														  cell);
-			var->varnullingrels = bms_intersect(var->varnullingrels,
-												leftrelids);
-			result = lappend(result, nlp);
-		}
-		else if (IsA(nlp->paramval, PlaceHolderVar) &&
-				 bms_is_subset(find_placeholder_info(root,
-													 (PlaceHolderVar *) nlp->paramval)->ph_eval_at,
-							   leftrelids))
-		{
-			PlaceHolderVar *phv = (PlaceHolderVar *) nlp->paramval;
+            root->curOuterParams = foreach_delete_current(root->curOuterParams,
+                                                          cell);
+            var->varnullingrels = bms_intersect(var->varnullingrels,
+                                                leftrelids);
+            result = lappend(result, nlp);
+        } else if (IsA(nlp->paramval, PlaceHolderVar) &&
+                   bms_is_subset(find_placeholder_info(root,
+                                                       (PlaceHolderVar *) nlp->paramval)->ph_eval_at,
+                                 leftrelids)) {
+            PlaceHolderVar *phv = (PlaceHolderVar *) nlp->paramval;
 
-			root->curOuterParams = foreach_delete_current(root->curOuterParams,
-														  cell);
-			phv->phnullingrels = bms_intersect(phv->phnullingrels,
-											   leftrelids);
-			result = lappend(result, nlp);
-		}
-	}
-	return result;
+            root->curOuterParams = foreach_delete_current(root->curOuterParams,
+                                                          cell);
+            phv->phnullingrels = bms_intersect(phv->phnullingrels,
+                                               leftrelids);
+            result = lappend(result, nlp);
+        }
+    }
+    return result;
 }
 
 /*
@@ -584,21 +559,20 @@ identify_current_nestloop_params(PlannerInfo *root, Relids leftrelids)
  */
 Param *
 generate_new_exec_param(PlannerInfo *root, Oid paramtype, int32 paramtypmod,
-						Oid paramcollation)
-{
-	Param	   *retval;
+                        Oid paramcollation) {
+    Param *retval;
 
-	retval = makeNode(Param);
-	retval->paramkind = PARAM_EXEC;
-	retval->paramid = list_length(root->glob->paramExecTypes);
-	root->glob->paramExecTypes = lappend_oid(root->glob->paramExecTypes,
-											 paramtype);
-	retval->paramtype = paramtype;
-	retval->paramtypmod = paramtypmod;
-	retval->paramcollid = paramcollation;
-	retval->location = -1;
+    retval = makeNode(Param);
+    retval->paramkind = PARAM_EXEC;
+    retval->paramid = list_length(root->glob->paramExecTypes);
+    root->glob->paramExecTypes = lappend_oid(root->glob->paramExecTypes,
+                                             paramtype);
+    retval->paramtype = paramtype;
+    retval->paramtypmod = paramtypmod;
+    retval->paramcollid = paramcollation;
+    retval->location = -1;
 
-	return retval;
+    return retval;
 }
 
 /*
@@ -610,11 +584,10 @@ generate_new_exec_param(PlannerInfo *root, Oid paramtype, int32 paramtypmod,
  * exists with this ID, however.
  */
 int
-assign_special_exec_param(PlannerInfo *root)
-{
-	int			paramId = list_length(root->glob->paramExecTypes);
+assign_special_exec_param(PlannerInfo *root) {
+    int paramId = list_length(root->glob->paramExecTypes);
 
-	root->glob->paramExecTypes = lappend_oid(root->glob->paramExecTypes,
-											 InvalidOid);
-	return paramId;
+    root->glob->paramExecTypes = lappend_oid(root->glob->paramExecTypes,
+                                             InvalidOid);
+    return paramId;
 }

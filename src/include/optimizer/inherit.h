@@ -18,12 +18,12 @@
 
 
 extern void expand_inherited_rtentry(PlannerInfo *root, RelOptInfo *rel,
-									 RangeTblEntry *rte, Index rti);
+                                     RangeTblEntry *rte, Index rti);
 
-extern Bitmapset *get_rel_all_updated_cols(PlannerInfo *root, RelOptInfo *rel);
+extern Bitmapset *get_rel_all_updated_cols(PlannerInfo * root, RelOptInfo * rel);
 
-extern bool apply_child_basequals(PlannerInfo *root, RelOptInfo *parentrel,
-								  RelOptInfo *childrel, RangeTblEntry *childRTE,
-								  AppendRelInfo *appinfo);
+extern bool apply_child_basequals(PlannerInfo * root, RelOptInfo * parentrel,
+                                  RelOptInfo * childrel, RangeTblEntry * childRTE,
+                                  AppendRelInfo * appinfo);
 
 #endif							/* INHERIT_H */

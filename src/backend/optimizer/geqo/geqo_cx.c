@@ -46,78 +46,70 @@
  */
 int
 cx(PlannerInfo *root, Gene *tour1, Gene *tour2, Gene *offspring,
-   int num_gene, City * city_table)
-{
-	int			i,
-				start_pos,
-				curr_pos;
-	int			count = 0;
-	int			num_diffs = 0;
+   int num_gene, City *city_table) {
+    int i,
+            start_pos,
+            curr_pos;
+    int count = 0;
+    int num_diffs = 0;
 
-	/* initialize city table */
-	for (i = 1; i <= num_gene; i++)
-	{
-		city_table[i].used = 0;
-		city_table[tour2[i - 1]].tour2_position = i - 1;
-		city_table[tour1[i - 1]].tour1_position = i - 1;
-	}
+    /* initialize city table */
+    for (i = 1; i <= num_gene; i++) {
+        city_table[i].used = 0;
+        city_table[tour2[i - 1]].tour2_position = i - 1;
+        city_table[tour1[i - 1]].tour1_position = i - 1;
+    }
 
-	/* choose random cycle starting position */
-	start_pos = geqo_randint(root, num_gene - 1, 0);
+    /* choose random cycle starting position */
+    start_pos = geqo_randint(root, num_gene - 1, 0);
 
-	/* child inherits first city  */
-	offspring[start_pos] = tour1[start_pos];
+    /* child inherits first city  */
+    offspring[start_pos] = tour1[start_pos];
 
-	/* begin cycle with tour1 */
-	curr_pos = start_pos;
-	city_table[(int) tour1[start_pos]].used = 1;
+    /* begin cycle with tour1 */
+    curr_pos = start_pos;
+    city_table[(int) tour1[start_pos]].used = 1;
 
-	count++;
+    count++;
 
-	/* cx main part */
+    /* cx main part */
 
 
-/* STEP 1 */
+    /* STEP 1 */
 
-	while (tour2[curr_pos] != tour1[start_pos])
-	{
-		city_table[(int) tour2[curr_pos]].used = 1;
-		curr_pos = city_table[(int) tour2[curr_pos]].tour1_position;
-		offspring[curr_pos] = tour1[curr_pos];
-		count++;
-	}
-
-
-/* STEP 2 */
-
-	/* failed to create a complete tour */
-	if (count < num_gene)
-	{
-		for (i = 1; i <= num_gene; i++)
-		{
-			if (!city_table[i].used)
-			{
-				offspring[city_table[i].tour2_position] =
-					tour2[(int) city_table[i].tour2_position];
-				count++;
-			}
-		}
-	}
+    while (tour2[curr_pos] != tour1[start_pos]) {
+        city_table[(int) tour2[curr_pos]].used = 1;
+        curr_pos = city_table[(int) tour2[curr_pos]].tour1_position;
+        offspring[curr_pos] = tour1[curr_pos];
+        count++;
+    }
 
 
-/* STEP 3 */
+    /* STEP 2 */
 
-	/* still failed to create a complete tour */
-	if (count < num_gene)
-	{
+    /* failed to create a complete tour */
+    if (count < num_gene) {
+        for (i = 1; i <= num_gene; i++) {
+            if (!city_table[i].used) {
+                offspring[city_table[i].tour2_position] =
+                        tour2[(int) city_table[i].tour2_position];
+                count++;
+            }
+        }
+    }
 
-		/* count the number of differences between mom and offspring */
-		for (i = 0; i < num_gene; i++)
-			if (tour1[i] != offspring[i])
-				num_diffs++;
-	}
 
-	return num_diffs;
+    /* STEP 3 */
+
+    /* still failed to create a complete tour */
+    if (count < num_gene) {
+        /* count the number of differences between mom and offspring */
+        for (i = 0; i < num_gene; i++)
+            if (tour1[i] != offspring[i])
+                num_diffs++;
+    }
+
+    return num_diffs;
 }
 
 #endif							/* defined(CX) */

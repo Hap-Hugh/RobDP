@@ -32,9 +32,9 @@
 extern void geqo_set_seed(PlannerInfo *root, double seed);
 
 /* geqo_rand returns a random float value in the range [0.0, 1.0) */
-extern double geqo_rand(PlannerInfo *root);
+extern double geqo_rand(PlannerInfo * root);
 
 /* geqo_randint returns integer value between lower and upper inclusive */
-extern int	geqo_randint(PlannerInfo *root, int upper, int lower);
+extern int geqo_randint(PlannerInfo *root, int upper, int lower);
 
 #endif							/* GEQO_RANDOM_H */

@@ -56,9 +56,9 @@ extern PGDLLIMPORT int Geqo_effort; /* 1 .. 10, knob for adjustment of
 #define MIN_GEQO_EFFORT 1
 #define MAX_GEQO_EFFORT 10
 
-extern PGDLLIMPORT int Geqo_pool_size;	/* 2 .. inf, or 0 to use default */
+extern PGDLLIMPORT int Geqo_pool_size; /* 2 .. inf, or 0 to use default */
 
-extern PGDLLIMPORT int Geqo_generations;	/* 1 .. inf, or 0 to use default */
+extern PGDLLIMPORT int Geqo_generations; /* 1 .. inf, or 0 to use default */
 
 extern PGDLLIMPORT double Geqo_selection_bias;
 
@@ -66,25 +66,25 @@ extern PGDLLIMPORT double Geqo_selection_bias;
 #define MIN_GEQO_SELECTION_BIAS 1.5
 #define MAX_GEQO_SELECTION_BIAS 2.0
 
-extern PGDLLIMPORT double Geqo_seed;	/* 0 .. 1 */
+extern PGDLLIMPORT double Geqo_seed; /* 0 .. 1 */
 
 
 /*
  * Private state for a GEQO run --- accessible via root->join_search_private
  */
-typedef struct
-{
-	List	   *initial_rels;	/* the base relations we are joining */
-	pg_prng_state random_state; /* PRNG state */
+typedef struct {
+    List *initial_rels; /* the base relations we are joining */
+    pg_prng_state random_state; /* PRNG state */
 } GeqoPrivateData;
 
 
 /* routines in geqo_main.c */
 extern RelOptInfo *geqo(PlannerInfo *root,
-						int number_of_rels, List *initial_rels);
+                        int number_of_rels, List *initial_rels);
 
 /* routines in geqo_eval.c */
 extern Cost geqo_eval(PlannerInfo *root, Gene *tour, int num_gene);
+
 extern RelOptInfo *gimme_tree(PlannerInfo *root, Gene *tour, int num_gene);
 
 #endif							/* GEQO_H */

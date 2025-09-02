@@ -40,12 +40,11 @@
  * error_data, although that step is typically not necessary if the called
  * code was run in a short-lived context.
  */
-typedef struct ErrorSaveContext
-{
-	NodeTag		type;
-	bool		error_occurred; /* set to true if we detect a soft error */
-	bool		details_wanted; /* does caller want more info than that? */
-	ErrorData  *error_data;		/* details of error, if so */
+typedef struct ErrorSaveContext {
+    NodeTag type;
+    bool error_occurred; /* set to true if we detect a soft error */
+    bool details_wanted; /* does caller want more info than that? */
+    ErrorData *error_data; /* details of error, if so */
 } ErrorSaveContext;
 
 /* Often-useful macro for checking if a soft error was reported */

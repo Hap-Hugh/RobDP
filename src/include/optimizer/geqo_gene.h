@@ -29,17 +29,15 @@
    is o.k. for Gene; so don't change it! */
 typedef int Gene;
 
-typedef struct Chromosome
-{
-	Gene	   *string;
-	Cost		worth;
+typedef struct Chromosome {
+    Gene *string;
+    Cost worth;
 } Chromosome;
 
-typedef struct Pool
-{
-	Chromosome *data;
-	int			size;
-	int			string_length;
+typedef struct Pool {
+    Chromosome *data;
+    int size;
+    int string_length;
 } Pool;
 
 #endif							/* GEQO_GENE_H */

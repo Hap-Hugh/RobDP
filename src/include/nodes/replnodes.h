@@ -17,10 +17,9 @@
 #include "access/xlogdefs.h"
 #include "nodes/pg_list.h"
 
-typedef enum ReplicationKind
-{
-	REPLICATION_KIND_PHYSICAL,
-	REPLICATION_KIND_LOGICAL
+typedef enum ReplicationKind {
+    REPLICATION_KIND_PHYSICAL,
+    REPLICATION_KIND_LOGICAL
 } ReplicationKind;
 
 
@@ -28,9 +27,8 @@ typedef enum ReplicationKind
  *		IDENTIFY_SYSTEM command
  * ----------------------
  */
-typedef struct IdentifySystemCmd
-{
-	NodeTag		type;
+typedef struct IdentifySystemCmd {
+    NodeTag type;
 } IdentifySystemCmd;
 
 
@@ -38,10 +36,9 @@ typedef struct IdentifySystemCmd
  *		BASE_BACKUP command
  * ----------------------
  */
-typedef struct BaseBackupCmd
-{
-	NodeTag		type;
-	List	   *options;
+typedef struct BaseBackupCmd {
+    NodeTag type;
+    List *options;
 } BaseBackupCmd;
 
 
@@ -49,14 +46,13 @@ typedef struct BaseBackupCmd
  *		CREATE_REPLICATION_SLOT command
  * ----------------------
  */
-typedef struct CreateReplicationSlotCmd
-{
-	NodeTag		type;
-	char	   *slotname;
-	ReplicationKind kind;
-	char	   *plugin;
-	bool		temporary;
-	List	   *options;
+typedef struct CreateReplicationSlotCmd {
+    NodeTag type;
+    char *slotname;
+    ReplicationKind kind;
+    char *plugin;
+    bool temporary;
+    List *options;
 } CreateReplicationSlotCmd;
 
 
@@ -64,11 +60,10 @@ typedef struct CreateReplicationSlotCmd
  *		DROP_REPLICATION_SLOT command
  * ----------------------
  */
-typedef struct DropReplicationSlotCmd
-{
-	NodeTag		type;
-	char	   *slotname;
-	bool		wait;
+typedef struct DropReplicationSlotCmd {
+    NodeTag type;
+    char *slotname;
+    bool wait;
 } DropReplicationSlotCmd;
 
 
@@ -76,14 +71,13 @@ typedef struct DropReplicationSlotCmd
  *		START_REPLICATION command
  * ----------------------
  */
-typedef struct StartReplicationCmd
-{
-	NodeTag		type;
-	ReplicationKind kind;
-	char	   *slotname;
-	TimeLineID	timeline;
-	XLogRecPtr	startpoint;
-	List	   *options;
+typedef struct StartReplicationCmd {
+    NodeTag type;
+    ReplicationKind kind;
+    char *slotname;
+    TimeLineID timeline;
+    XLogRecPtr startpoint;
+    List *options;
 } StartReplicationCmd;
 
 
@@ -91,10 +85,9 @@ typedef struct StartReplicationCmd
  *		READ_REPLICATION_SLOT command
  * ----------------------
  */
-typedef struct ReadReplicationSlotCmd
-{
-	NodeTag		type;
-	char	   *slotname;
+typedef struct ReadReplicationSlotCmd {
+    NodeTag type;
+    char *slotname;
 } ReadReplicationSlotCmd;
 
 
@@ -102,10 +95,9 @@ typedef struct ReadReplicationSlotCmd
  *		TIMELINE_HISTORY command
  * ----------------------
  */
-typedef struct TimeLineHistoryCmd
-{
-	NodeTag		type;
-	TimeLineID	timeline;
+typedef struct TimeLineHistoryCmd {
+    NodeTag type;
+    TimeLineID timeline;
 } TimeLineHistoryCmd;
 
 #endif							/* REPLNODES_H */

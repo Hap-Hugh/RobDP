@@ -25,12 +25,11 @@
  * (There used to be a Value node, which encompassed all these different node types.  Hence the name of this file.)
  */
 
-typedef struct Integer
-{
-	pg_node_attr(special_read_write)
+typedef struct Integer {
+    pg_node_attr (special_read_write)
 
-	NodeTag		type;
-	int			ival;
+    NodeTag type;
+    int ival;
 } Integer;
 
 /*
@@ -44,36 +43,32 @@ typedef struct Integer
  * Note that an integer-looking string will get lexed as T_Float if the value
  * is too large to fit in an 'int'.
  */
-typedef struct Float
-{
-	pg_node_attr(special_read_write)
+typedef struct Float {
+    pg_node_attr (special_read_write)
 
-	NodeTag		type;
-	char	   *fval;
+    NodeTag type;
+    char *fval;
 } Float;
 
-typedef struct Boolean
-{
-	pg_node_attr(special_read_write)
+typedef struct Boolean {
+    pg_node_attr (special_read_write)
 
-	NodeTag		type;
-	bool		boolval;
+    NodeTag type;
+    bool boolval;
 } Boolean;
 
-typedef struct String
-{
-	pg_node_attr(special_read_write)
+typedef struct String {
+    pg_node_attr (special_read_write)
 
-	NodeTag		type;
-	char	   *sval;
+    NodeTag type;
+    char *sval;
 } String;
 
-typedef struct BitString
-{
-	pg_node_attr(special_read_write)
+typedef struct BitString {
+    pg_node_attr (special_read_write)
 
-	NodeTag		type;
-	char	   *bsval;
+    NodeTag type;
+    char *bsval;
 } BitString;
 
 #define intVal(v)		(castNode(Integer, v)->ival)
@@ -82,9 +77,13 @@ typedef struct BitString
 #define strVal(v)		(castNode(String, v)->sval)
 
 extern Integer *makeInteger(int i);
+
 extern Float *makeFloat(char *numericStr);
+
 extern Boolean *makeBoolean(bool val);
+
 extern String *makeString(char *str);
+
 extern BitString *makeBitString(char *str);
 
 #endif							/* VALUE_H */

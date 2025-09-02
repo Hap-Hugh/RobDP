@@ -179,16 +179,15 @@
 #define strtobool(x)  ((*(x) == 't') ? true : false)
 
 static char *
-nullable_string(const char *token, int length)
-{
-	/* outToken emits <> for NULL, and pg_strtok makes that an empty string */
-	if (length == 0)
-		return NULL;
-	/* outToken emits "" for empty string */
-	if (length == 2 && token[0] == '"' && token[1] == '"')
-		return pstrdup("");
-	/* otherwise, we must remove protective backslashes added by outToken */
-	return debackslash(token, length);
+nullable_string(const char *token, int length) {
+    /* outToken emits <> for NULL, and pg_strtok makes that an empty string */
+    if (length == 0)
+        return NULL;
+    /* outToken emits "" for empty string */
+    if (length == 2 && token[0] == '"' && token[1] == '"')
+        return pstrdup("");
+    /* otherwise, we must remove protective backslashes added by outToken */
+    return debackslash(token, length);
 }
 
 
@@ -200,41 +199,39 @@ nullable_string(const char *token, int length)
  * Bitmapset when we come across one in other contexts.
  */
 static Bitmapset *
-_readBitmapset(void)
-{
-	Bitmapset  *result = NULL;
+_readBitmapset(void) {
+    Bitmapset *result = NULL;
 
-	READ_TEMP_LOCALS();
+    READ_TEMP_LOCALS();
 
-	token = pg_strtok(&length);
-	if (token == NULL)
-		elog(ERROR, "incomplete Bitmapset structure");
-	if (length != 1 || token[0] != '(')
-		elog(ERROR, "unrecognized token: \"%.*s\"", length, token);
+    token = pg_strtok(&length);
+    if (token == NULL)
+        elog(ERROR, "incomplete Bitmapset structure");
+    if (length != 1 || token[0] != '(')
+        elog(ERROR, "unrecognized token: \"%.*s\"", length, token);
 
-	token = pg_strtok(&length);
-	if (token == NULL)
-		elog(ERROR, "incomplete Bitmapset structure");
-	if (length != 1 || token[0] != 'b')
-		elog(ERROR, "unrecognized token: \"%.*s\"", length, token);
+    token = pg_strtok(&length);
+    if (token == NULL)
+        elog(ERROR, "incomplete Bitmapset structure");
+    if (length != 1 || token[0] != 'b')
+        elog(ERROR, "unrecognized token: \"%.*s\"", length, token);
 
-	for (;;)
-	{
-		int			val;
-		char	   *endptr;
+    for (;;) {
+        int val;
+        char *endptr;
 
-		token = pg_strtok(&length);
-		if (token == NULL)
-			elog(ERROR, "unterminated Bitmapset structure");
-		if (length == 1 && token[0] == ')')
-			break;
-		val = (int) strtol(token, &endptr, 10);
-		if (endptr != token + length)
-			elog(ERROR, "unrecognized integer: \"%.*s\"", length, token);
-		result = bms_add_member(result, val);
-	}
+        token = pg_strtok(&length);
+        if (token == NULL)
+            elog(ERROR, "unterminated Bitmapset structure");
+        if (length == 1 && token[0] == ')')
+            break;
+        val = (int) strtol(token, &endptr, 10);
+        if (endptr != token + length)
+            elog(ERROR, "unrecognized integer: \"%.*s\"", length, token);
+        result = bms_add_member(result, val);
+    }
 
-	return result;
+    return result;
 }
 
 /*
@@ -242,9 +239,8 @@ _readBitmapset(void)
  * That's somewhat historical, though, because calling nodeRead() will work.
  */
 Bitmapset *
-readBitmapset(void)
-{
-	return _readBitmapset();
+readBitmapset(void) {
+    return _readBitmapset();
 }
 
 #include "readfuncs.funcs.c"
@@ -256,433 +252,393 @@ readBitmapset(void)
  */
 
 static Const *
-_readConst(void)
-{
-	READ_LOCALS(Const);
+_readConst(void) {
+    READ_LOCALS(Const);
 
-	READ_OID_FIELD(consttype);
-	READ_INT_FIELD(consttypmod);
-	READ_OID_FIELD(constcollid);
-	READ_INT_FIELD(constlen);
-	READ_BOOL_FIELD(constbyval);
-	READ_BOOL_FIELD(constisnull);
-	READ_LOCATION_FIELD(location);
+    READ_OID_FIELD(consttype);
+    READ_INT_FIELD(consttypmod);
+    READ_OID_FIELD(constcollid);
+    READ_INT_FIELD(constlen);
+    READ_BOOL_FIELD(constbyval);
+    READ_BOOL_FIELD(constisnull);
+    READ_LOCATION_FIELD(location);
 
-	token = pg_strtok(&length); /* skip :constvalue */
-	if (local_node->constisnull)
-		token = pg_strtok(&length); /* skip "<>" */
-	else
-		local_node->constvalue = readDatum(local_node->constbyval);
+    token = pg_strtok(&length); /* skip :constvalue */
+    if (local_node->constisnull)
+        token = pg_strtok(&length); /* skip "<>" */
+    else
+        local_node->constvalue = readDatum(local_node->constbyval);
 
-	READ_DONE();
+    READ_DONE();
 }
 
 static BoolExpr *
-_readBoolExpr(void)
-{
-	READ_LOCALS(BoolExpr);
+_readBoolExpr(void) {
+    READ_LOCALS(BoolExpr);
 
-	/* do-it-yourself enum representation */
-	token = pg_strtok(&length); /* skip :boolop */
-	token = pg_strtok(&length); /* get field value */
-	if (length == 3 && strncmp(token, "and", 3) == 0)
-		local_node->boolop = AND_EXPR;
-	else if (length == 2 && strncmp(token, "or", 2) == 0)
-		local_node->boolop = OR_EXPR;
-	else if (length == 3 && strncmp(token, "not", 3) == 0)
-		local_node->boolop = NOT_EXPR;
-	else
-		elog(ERROR, "unrecognized boolop \"%.*s\"", length, token);
+    /* do-it-yourself enum representation */
+    token = pg_strtok(&length); /* skip :boolop */
+    token = pg_strtok(&length); /* get field value */
+    if (length == 3 && strncmp(token, "and", 3) == 0)
+        local_node->boolop = AND_EXPR;
+    else if (length == 2 && strncmp(token, "or", 2) == 0)
+        local_node->boolop = OR_EXPR;
+    else if (length == 3 && strncmp(token, "not", 3) == 0)
+        local_node->boolop = NOT_EXPR;
+    else
+        elog(ERROR, "unrecognized boolop \"%.*s\"", length, token);
 
-	READ_NODE_FIELD(args);
-	READ_LOCATION_FIELD(location);
+    READ_NODE_FIELD(args);
+    READ_LOCATION_FIELD(location);
 
-	READ_DONE();
+    READ_DONE();
 }
 
 static A_Const *
-_readA_Const(void)
-{
-	READ_LOCALS(A_Const);
+_readA_Const(void) {
+    READ_LOCALS(A_Const);
 
-	/* We expect either NULL or :val here */
-	token = pg_strtok(&length);
-	if (length == 4 && strncmp(token, "NULL", 4) == 0)
-		local_node->isnull = true;
-	else
-	{
-		union ValUnion *tmp = nodeRead(NULL, 0);
+    /* We expect either NULL or :val here */
+    token = pg_strtok(&length);
+    if (length == 4 && strncmp(token, "NULL", 4) == 0)
+        local_node->isnull = true;
+    else {
+        union ValUnion *tmp = nodeRead(NULL, 0);
 
-		/* To forestall valgrind complaints, copy only the valid data */
-		switch (nodeTag(tmp))
-		{
-			case T_Integer:
-				memcpy(&local_node->val, tmp, sizeof(Integer));
-				break;
-			case T_Float:
-				memcpy(&local_node->val, tmp, sizeof(Float));
-				break;
-			case T_Boolean:
-				memcpy(&local_node->val, tmp, sizeof(Boolean));
-				break;
-			case T_String:
-				memcpy(&local_node->val, tmp, sizeof(String));
-				break;
-			case T_BitString:
-				memcpy(&local_node->val, tmp, sizeof(BitString));
-				break;
-			default:
-				elog(ERROR, "unrecognized node type: %d",
-					 (int) nodeTag(tmp));
-				break;
-		}
-	}
+        /* To forestall valgrind complaints, copy only the valid data */
+        switch (nodeTag(tmp)) {
+            case T_Integer:
+                memcpy(&local_node->val, tmp, sizeof(Integer));
+                break;
+            case T_Float:
+                memcpy(&local_node->val, tmp, sizeof(Float));
+                break;
+            case T_Boolean:
+                memcpy(&local_node->val, tmp, sizeof(Boolean));
+                break;
+            case T_String:
+                memcpy(&local_node->val, tmp, sizeof(String));
+                break;
+            case T_BitString:
+                memcpy(&local_node->val, tmp, sizeof(BitString));
+                break;
+            default:
+                elog(ERROR, "unrecognized node type: %d",
+                     (int) nodeTag(tmp));
+                break;
+        }
+    }
 
-	READ_LOCATION_FIELD(location);
+    READ_LOCATION_FIELD(location);
 
-	READ_DONE();
+    READ_DONE();
 }
 
 /*
  * _readConstraint
  */
 static Constraint *
-_readConstraint(void)
-{
-	READ_LOCALS(Constraint);
+_readConstraint(void) {
+    READ_LOCALS(Constraint);
 
-	READ_STRING_FIELD(conname);
-	READ_BOOL_FIELD(deferrable);
-	READ_BOOL_FIELD(initdeferred);
-	READ_LOCATION_FIELD(location);
+    READ_STRING_FIELD(conname);
+    READ_BOOL_FIELD(deferrable);
+    READ_BOOL_FIELD(initdeferred);
+    READ_LOCATION_FIELD(location);
 
-	token = pg_strtok(&length); /* skip :contype */
-	token = pg_strtok(&length); /* get field value */
-	if (length == 4 && strncmp(token, "NULL", 4) == 0)
-		local_node->contype = CONSTR_NULL;
-	else if (length == 8 && strncmp(token, "NOT_NULL", 8) == 0)
-		local_node->contype = CONSTR_NOTNULL;
-	else if (length == 7 && strncmp(token, "DEFAULT", 7) == 0)
-		local_node->contype = CONSTR_DEFAULT;
-	else if (length == 8 && strncmp(token, "IDENTITY", 8) == 0)
-		local_node->contype = CONSTR_IDENTITY;
-	else if (length == 9 && strncmp(token, "GENERATED", 9) == 0)
-		local_node->contype = CONSTR_GENERATED;
-	else if (length == 5 && strncmp(token, "CHECK", 5) == 0)
-		local_node->contype = CONSTR_CHECK;
-	else if (length == 11 && strncmp(token, "PRIMARY_KEY", 11) == 0)
-		local_node->contype = CONSTR_PRIMARY;
-	else if (length == 6 && strncmp(token, "UNIQUE", 6) == 0)
-		local_node->contype = CONSTR_UNIQUE;
-	else if (length == 9 && strncmp(token, "EXCLUSION", 9) == 0)
-		local_node->contype = CONSTR_EXCLUSION;
-	else if (length == 11 && strncmp(token, "FOREIGN_KEY", 11) == 0)
-		local_node->contype = CONSTR_FOREIGN;
-	else if (length == 15 && strncmp(token, "ATTR_DEFERRABLE", 15) == 0)
-		local_node->contype = CONSTR_ATTR_DEFERRABLE;
-	else if (length == 19 && strncmp(token, "ATTR_NOT_DEFERRABLE", 19) == 0)
-		local_node->contype = CONSTR_ATTR_NOT_DEFERRABLE;
-	else if (length == 13 && strncmp(token, "ATTR_DEFERRED", 13) == 0)
-		local_node->contype = CONSTR_ATTR_DEFERRED;
-	else if (length == 14 && strncmp(token, "ATTR_IMMEDIATE", 14) == 0)
-		local_node->contype = CONSTR_ATTR_IMMEDIATE;
+    token = pg_strtok(&length); /* skip :contype */
+    token = pg_strtok(&length); /* get field value */
+    if (length == 4 && strncmp(token, "NULL", 4) == 0)
+        local_node->contype = CONSTR_NULL;
+    else if (length == 8 && strncmp(token, "NOT_NULL", 8) == 0)
+        local_node->contype = CONSTR_NOTNULL;
+    else if (length == 7 && strncmp(token, "DEFAULT", 7) == 0)
+        local_node->contype = CONSTR_DEFAULT;
+    else if (length == 8 && strncmp(token, "IDENTITY", 8) == 0)
+        local_node->contype = CONSTR_IDENTITY;
+    else if (length == 9 && strncmp(token, "GENERATED", 9) == 0)
+        local_node->contype = CONSTR_GENERATED;
+    else if (length == 5 && strncmp(token, "CHECK", 5) == 0)
+        local_node->contype = CONSTR_CHECK;
+    else if (length == 11 && strncmp(token, "PRIMARY_KEY", 11) == 0)
+        local_node->contype = CONSTR_PRIMARY;
+    else if (length == 6 && strncmp(token, "UNIQUE", 6) == 0)
+        local_node->contype = CONSTR_UNIQUE;
+    else if (length == 9 && strncmp(token, "EXCLUSION", 9) == 0)
+        local_node->contype = CONSTR_EXCLUSION;
+    else if (length == 11 && strncmp(token, "FOREIGN_KEY", 11) == 0)
+        local_node->contype = CONSTR_FOREIGN;
+    else if (length == 15 && strncmp(token, "ATTR_DEFERRABLE", 15) == 0)
+        local_node->contype = CONSTR_ATTR_DEFERRABLE;
+    else if (length == 19 && strncmp(token, "ATTR_NOT_DEFERRABLE", 19) == 0)
+        local_node->contype = CONSTR_ATTR_NOT_DEFERRABLE;
+    else if (length == 13 && strncmp(token, "ATTR_DEFERRED", 13) == 0)
+        local_node->contype = CONSTR_ATTR_DEFERRED;
+    else if (length == 14 && strncmp(token, "ATTR_IMMEDIATE", 14) == 0)
+        local_node->contype = CONSTR_ATTR_IMMEDIATE;
 
-	switch (local_node->contype)
-	{
-		case CONSTR_NULL:
-		case CONSTR_NOTNULL:
-			/* no extra fields */
-			break;
+    switch (local_node->contype) {
+        case CONSTR_NULL:
+        case CONSTR_NOTNULL:
+            /* no extra fields */
+            break;
 
-		case CONSTR_DEFAULT:
-			READ_NODE_FIELD(raw_expr);
-			READ_STRING_FIELD(cooked_expr);
-			break;
+        case CONSTR_DEFAULT:
+            READ_NODE_FIELD(raw_expr);
+            READ_STRING_FIELD(cooked_expr);
+            break;
 
-		case CONSTR_IDENTITY:
-			READ_NODE_FIELD(options);
-			READ_CHAR_FIELD(generated_when);
-			break;
+        case CONSTR_IDENTITY:
+            READ_NODE_FIELD(options);
+            READ_CHAR_FIELD(generated_when);
+            break;
 
-		case CONSTR_GENERATED:
-			READ_NODE_FIELD(raw_expr);
-			READ_STRING_FIELD(cooked_expr);
-			READ_CHAR_FIELD(generated_when);
-			break;
+        case CONSTR_GENERATED:
+            READ_NODE_FIELD(raw_expr);
+            READ_STRING_FIELD(cooked_expr);
+            READ_CHAR_FIELD(generated_when);
+            break;
 
-		case CONSTR_CHECK:
-			READ_BOOL_FIELD(is_no_inherit);
-			READ_NODE_FIELD(raw_expr);
-			READ_STRING_FIELD(cooked_expr);
-			READ_BOOL_FIELD(skip_validation);
-			READ_BOOL_FIELD(initially_valid);
-			break;
+        case CONSTR_CHECK:
+            READ_BOOL_FIELD(is_no_inherit);
+            READ_NODE_FIELD(raw_expr);
+            READ_STRING_FIELD(cooked_expr);
+            READ_BOOL_FIELD(skip_validation);
+            READ_BOOL_FIELD(initially_valid);
+            break;
 
-		case CONSTR_PRIMARY:
-			READ_NODE_FIELD(keys);
-			READ_NODE_FIELD(including);
-			READ_NODE_FIELD(options);
-			READ_STRING_FIELD(indexname);
-			READ_STRING_FIELD(indexspace);
-			READ_BOOL_FIELD(reset_default_tblspc);
-			/* access_method and where_clause not currently used */
-			break;
+        case CONSTR_PRIMARY:
+            READ_NODE_FIELD(keys);
+            READ_NODE_FIELD(including);
+            READ_NODE_FIELD(options);
+            READ_STRING_FIELD(indexname);
+            READ_STRING_FIELD(indexspace);
+            READ_BOOL_FIELD(reset_default_tblspc);
+            /* access_method and where_clause not currently used */
+            break;
 
-		case CONSTR_UNIQUE:
-			READ_BOOL_FIELD(nulls_not_distinct);
-			READ_NODE_FIELD(keys);
-			READ_NODE_FIELD(including);
-			READ_NODE_FIELD(options);
-			READ_STRING_FIELD(indexname);
-			READ_STRING_FIELD(indexspace);
-			READ_BOOL_FIELD(reset_default_tblspc);
-			/* access_method and where_clause not currently used */
-			break;
+        case CONSTR_UNIQUE:
+            READ_BOOL_FIELD(nulls_not_distinct);
+            READ_NODE_FIELD(keys);
+            READ_NODE_FIELD(including);
+            READ_NODE_FIELD(options);
+            READ_STRING_FIELD(indexname);
+            READ_STRING_FIELD(indexspace);
+            READ_BOOL_FIELD(reset_default_tblspc);
+            /* access_method and where_clause not currently used */
+            break;
 
-		case CONSTR_EXCLUSION:
-			READ_NODE_FIELD(exclusions);
-			READ_NODE_FIELD(including);
-			READ_NODE_FIELD(options);
-			READ_STRING_FIELD(indexname);
-			READ_STRING_FIELD(indexspace);
-			READ_BOOL_FIELD(reset_default_tblspc);
-			READ_STRING_FIELD(access_method);
-			READ_NODE_FIELD(where_clause);
-			break;
+        case CONSTR_EXCLUSION:
+            READ_NODE_FIELD(exclusions);
+            READ_NODE_FIELD(including);
+            READ_NODE_FIELD(options);
+            READ_STRING_FIELD(indexname);
+            READ_STRING_FIELD(indexspace);
+            READ_BOOL_FIELD(reset_default_tblspc);
+            READ_STRING_FIELD(access_method);
+            READ_NODE_FIELD(where_clause);
+            break;
 
-		case CONSTR_FOREIGN:
-			READ_NODE_FIELD(pktable);
-			READ_NODE_FIELD(fk_attrs);
-			READ_NODE_FIELD(pk_attrs);
-			READ_CHAR_FIELD(fk_matchtype);
-			READ_CHAR_FIELD(fk_upd_action);
-			READ_CHAR_FIELD(fk_del_action);
-			READ_NODE_FIELD(fk_del_set_cols);
-			READ_NODE_FIELD(old_conpfeqop);
-			READ_OID_FIELD(old_pktable_oid);
-			READ_BOOL_FIELD(skip_validation);
-			READ_BOOL_FIELD(initially_valid);
-			break;
+        case CONSTR_FOREIGN:
+            READ_NODE_FIELD(pktable);
+            READ_NODE_FIELD(fk_attrs);
+            READ_NODE_FIELD(pk_attrs);
+            READ_CHAR_FIELD(fk_matchtype);
+            READ_CHAR_FIELD(fk_upd_action);
+            READ_CHAR_FIELD(fk_del_action);
+            READ_NODE_FIELD(fk_del_set_cols);
+            READ_NODE_FIELD(old_conpfeqop);
+            READ_OID_FIELD(old_pktable_oid);
+            READ_BOOL_FIELD(skip_validation);
+            READ_BOOL_FIELD(initially_valid);
+            break;
 
-		case CONSTR_ATTR_DEFERRABLE:
-		case CONSTR_ATTR_NOT_DEFERRABLE:
-		case CONSTR_ATTR_DEFERRED:
-		case CONSTR_ATTR_IMMEDIATE:
-			/* no extra fields */
-			break;
+        case CONSTR_ATTR_DEFERRABLE:
+        case CONSTR_ATTR_NOT_DEFERRABLE:
+        case CONSTR_ATTR_DEFERRED:
+        case CONSTR_ATTR_IMMEDIATE:
+            /* no extra fields */
+            break;
 
-		default:
-			elog(ERROR, "unrecognized ConstrType: %d", (int) local_node->contype);
-			break;
-	}
+        default:
+            elog(ERROR, "unrecognized ConstrType: %d", (int) local_node->contype);
+            break;
+    }
 
-	READ_DONE();
+    READ_DONE();
 }
 
 static RangeTblEntry *
-_readRangeTblEntry(void)
-{
-	READ_LOCALS(RangeTblEntry);
+_readRangeTblEntry(void) {
+    READ_LOCALS(RangeTblEntry);
 
-	/* put alias + eref first to make dump more legible */
-	READ_NODE_FIELD(alias);
-	READ_NODE_FIELD(eref);
-	READ_ENUM_FIELD(rtekind, RTEKind);
+    /* put alias + eref first to make dump more legible */
+    READ_NODE_FIELD(alias);
+    READ_NODE_FIELD(eref);
+    READ_ENUM_FIELD(rtekind, RTEKind);
 
-	switch (local_node->rtekind)
-	{
-		case RTE_RELATION:
-			READ_OID_FIELD(relid);
-			READ_CHAR_FIELD(relkind);
-			READ_INT_FIELD(rellockmode);
-			READ_NODE_FIELD(tablesample);
-			READ_UINT_FIELD(perminfoindex);
-			break;
-		case RTE_SUBQUERY:
-			READ_NODE_FIELD(subquery);
-			READ_BOOL_FIELD(security_barrier);
-			/* we re-use these RELATION fields, too: */
-			READ_OID_FIELD(relid);
-			READ_CHAR_FIELD(relkind);
-			READ_INT_FIELD(rellockmode);
-			READ_UINT_FIELD(perminfoindex);
-			break;
-		case RTE_JOIN:
-			READ_ENUM_FIELD(jointype, JoinType);
-			READ_INT_FIELD(joinmergedcols);
-			READ_NODE_FIELD(joinaliasvars);
-			READ_NODE_FIELD(joinleftcols);
-			READ_NODE_FIELD(joinrightcols);
-			READ_NODE_FIELD(join_using_alias);
-			break;
-		case RTE_FUNCTION:
-			READ_NODE_FIELD(functions);
-			READ_BOOL_FIELD(funcordinality);
-			break;
-		case RTE_TABLEFUNC:
-			READ_NODE_FIELD(tablefunc);
-			/* The RTE must have a copy of the column type info, if any */
-			if (local_node->tablefunc)
-			{
-				TableFunc  *tf = local_node->tablefunc;
+    switch (local_node->rtekind) {
+        case RTE_RELATION:
+            READ_OID_FIELD(relid);
+            READ_CHAR_FIELD(relkind);
+            READ_INT_FIELD(rellockmode);
+            READ_NODE_FIELD(tablesample);
+            READ_UINT_FIELD(perminfoindex);
+            break;
+        case RTE_SUBQUERY:
+            READ_NODE_FIELD(subquery);
+            READ_BOOL_FIELD(security_barrier);
+            /* we re-use these RELATION fields, too: */
+            READ_OID_FIELD(relid);
+            READ_CHAR_FIELD(relkind);
+            READ_INT_FIELD(rellockmode);
+            READ_UINT_FIELD(perminfoindex);
+            break;
+        case RTE_JOIN:
+            READ_ENUM_FIELD(jointype, JoinType);
+            READ_INT_FIELD(joinmergedcols);
+            READ_NODE_FIELD(joinaliasvars);
+            READ_NODE_FIELD(joinleftcols);
+            READ_NODE_FIELD(joinrightcols);
+            READ_NODE_FIELD(join_using_alias);
+            break;
+        case RTE_FUNCTION:
+            READ_NODE_FIELD(functions);
+            READ_BOOL_FIELD(funcordinality);
+            break;
+        case RTE_TABLEFUNC:
+            READ_NODE_FIELD(tablefunc);
+            /* The RTE must have a copy of the column type info, if any */
+            if (local_node->tablefunc) {
+                TableFunc *tf = local_node->tablefunc;
 
-				local_node->coltypes = tf->coltypes;
-				local_node->coltypmods = tf->coltypmods;
-				local_node->colcollations = tf->colcollations;
-			}
-			break;
-		case RTE_VALUES:
-			READ_NODE_FIELD(values_lists);
-			READ_NODE_FIELD(coltypes);
-			READ_NODE_FIELD(coltypmods);
-			READ_NODE_FIELD(colcollations);
-			break;
-		case RTE_CTE:
-			READ_STRING_FIELD(ctename);
-			READ_UINT_FIELD(ctelevelsup);
-			READ_BOOL_FIELD(self_reference);
-			READ_NODE_FIELD(coltypes);
-			READ_NODE_FIELD(coltypmods);
-			READ_NODE_FIELD(colcollations);
-			break;
-		case RTE_NAMEDTUPLESTORE:
-			READ_STRING_FIELD(enrname);
-			READ_FLOAT_FIELD(enrtuples);
-			READ_NODE_FIELD(coltypes);
-			READ_NODE_FIELD(coltypmods);
-			READ_NODE_FIELD(colcollations);
-			/* we re-use these RELATION fields, too: */
-			READ_OID_FIELD(relid);
-			break;
-		case RTE_RESULT:
-			/* no extra fields */
-			break;
-		default:
-			elog(ERROR, "unrecognized RTE kind: %d",
-				 (int) local_node->rtekind);
-			break;
-	}
+                local_node->coltypes = tf->coltypes;
+                local_node->coltypmods = tf->coltypmods;
+                local_node->colcollations = tf->colcollations;
+            }
+            break;
+        case RTE_VALUES:
+            READ_NODE_FIELD(values_lists);
+            READ_NODE_FIELD(coltypes);
+            READ_NODE_FIELD(coltypmods);
+            READ_NODE_FIELD(colcollations);
+            break;
+        case RTE_CTE:
+            READ_STRING_FIELD(ctename);
+            READ_UINT_FIELD(ctelevelsup);
+            READ_BOOL_FIELD(self_reference);
+            READ_NODE_FIELD(coltypes);
+            READ_NODE_FIELD(coltypmods);
+            READ_NODE_FIELD(colcollations);
+            break;
+        case RTE_NAMEDTUPLESTORE:
+            READ_STRING_FIELD(enrname);
+            READ_FLOAT_FIELD(enrtuples);
+            READ_NODE_FIELD(coltypes);
+            READ_NODE_FIELD(coltypmods);
+            READ_NODE_FIELD(colcollations);
+            /* we re-use these RELATION fields, too: */
+            READ_OID_FIELD(relid);
+            break;
+        case RTE_RESULT:
+            /* no extra fields */
+            break;
+        default:
+            elog(ERROR, "unrecognized RTE kind: %d",
+                 (int) local_node->rtekind);
+            break;
+    }
 
-	READ_BOOL_FIELD(lateral);
-	READ_BOOL_FIELD(inh);
-	READ_BOOL_FIELD(inFromCl);
-	READ_NODE_FIELD(securityQuals);
+    READ_BOOL_FIELD(lateral);
+    READ_BOOL_FIELD(inh);
+    READ_BOOL_FIELD(inFromCl);
+    READ_NODE_FIELD(securityQuals);
 
-	READ_DONE();
+    READ_DONE();
 }
 
 static A_Expr *
-_readA_Expr(void)
-{
-	READ_LOCALS(A_Expr);
+_readA_Expr(void) {
+    READ_LOCALS(A_Expr);
 
-	token = pg_strtok(&length);
+    token = pg_strtok(&length);
 
-	if (length == 3 && strncmp(token, "ANY", 3) == 0)
-	{
-		local_node->kind = AEXPR_OP_ANY;
-		READ_NODE_FIELD(name);
-	}
-	else if (length == 3 && strncmp(token, "ALL", 3) == 0)
-	{
-		local_node->kind = AEXPR_OP_ALL;
-		READ_NODE_FIELD(name);
-	}
-	else if (length == 8 && strncmp(token, "DISTINCT", 8) == 0)
-	{
-		local_node->kind = AEXPR_DISTINCT;
-		READ_NODE_FIELD(name);
-	}
-	else if (length == 12 && strncmp(token, "NOT_DISTINCT", 12) == 0)
-	{
-		local_node->kind = AEXPR_NOT_DISTINCT;
-		READ_NODE_FIELD(name);
-	}
-	else if (length == 6 && strncmp(token, "NULLIF", 6) == 0)
-	{
-		local_node->kind = AEXPR_NULLIF;
-		READ_NODE_FIELD(name);
-	}
-	else if (length == 2 && strncmp(token, "IN", 2) == 0)
-	{
-		local_node->kind = AEXPR_IN;
-		READ_NODE_FIELD(name);
-	}
-	else if (length == 4 && strncmp(token, "LIKE", 4) == 0)
-	{
-		local_node->kind = AEXPR_LIKE;
-		READ_NODE_FIELD(name);
-	}
-	else if (length == 5 && strncmp(token, "ILIKE", 5) == 0)
-	{
-		local_node->kind = AEXPR_ILIKE;
-		READ_NODE_FIELD(name);
-	}
-	else if (length == 7 && strncmp(token, "SIMILAR", 7) == 0)
-	{
-		local_node->kind = AEXPR_SIMILAR;
-		READ_NODE_FIELD(name);
-	}
-	else if (length == 7 && strncmp(token, "BETWEEN", 7) == 0)
-	{
-		local_node->kind = AEXPR_BETWEEN;
-		READ_NODE_FIELD(name);
-	}
-	else if (length == 11 && strncmp(token, "NOT_BETWEEN", 11) == 0)
-	{
-		local_node->kind = AEXPR_NOT_BETWEEN;
-		READ_NODE_FIELD(name);
-	}
-	else if (length == 11 && strncmp(token, "BETWEEN_SYM", 11) == 0)
-	{
-		local_node->kind = AEXPR_BETWEEN_SYM;
-		READ_NODE_FIELD(name);
-	}
-	else if (length == 15 && strncmp(token, "NOT_BETWEEN_SYM", 15) == 0)
-	{
-		local_node->kind = AEXPR_NOT_BETWEEN_SYM;
-		READ_NODE_FIELD(name);
-	}
-	else if (length == 5 && strncmp(token, ":name", 5) == 0)
-	{
-		local_node->kind = AEXPR_OP;
-		local_node->name = nodeRead(NULL, 0);
-	}
-	else
-		elog(ERROR, "unrecognized A_Expr kind: \"%.*s\"", length, token);
+    if (length == 3 && strncmp(token, "ANY", 3) == 0) {
+        local_node->kind = AEXPR_OP_ANY;
+        READ_NODE_FIELD(name);
+    } else if (length == 3 && strncmp(token, "ALL", 3) == 0) {
+        local_node->kind = AEXPR_OP_ALL;
+        READ_NODE_FIELD(name);
+    } else if (length == 8 && strncmp(token, "DISTINCT", 8) == 0) {
+        local_node->kind = AEXPR_DISTINCT;
+        READ_NODE_FIELD(name);
+    } else if (length == 12 && strncmp(token, "NOT_DISTINCT", 12) == 0) {
+        local_node->kind = AEXPR_NOT_DISTINCT;
+        READ_NODE_FIELD(name);
+    } else if (length == 6 && strncmp(token, "NULLIF", 6) == 0) {
+        local_node->kind = AEXPR_NULLIF;
+        READ_NODE_FIELD(name);
+    } else if (length == 2 && strncmp(token, "IN", 2) == 0) {
+        local_node->kind = AEXPR_IN;
+        READ_NODE_FIELD(name);
+    } else if (length == 4 && strncmp(token, "LIKE", 4) == 0) {
+        local_node->kind = AEXPR_LIKE;
+        READ_NODE_FIELD(name);
+    } else if (length == 5 && strncmp(token, "ILIKE", 5) == 0) {
+        local_node->kind = AEXPR_ILIKE;
+        READ_NODE_FIELD(name);
+    } else if (length == 7 && strncmp(token, "SIMILAR", 7) == 0) {
+        local_node->kind = AEXPR_SIMILAR;
+        READ_NODE_FIELD(name);
+    } else if (length == 7 && strncmp(token, "BETWEEN", 7) == 0) {
+        local_node->kind = AEXPR_BETWEEN;
+        READ_NODE_FIELD(name);
+    } else if (length == 11 && strncmp(token, "NOT_BETWEEN", 11) == 0) {
+        local_node->kind = AEXPR_NOT_BETWEEN;
+        READ_NODE_FIELD(name);
+    } else if (length == 11 && strncmp(token, "BETWEEN_SYM", 11) == 0) {
+        local_node->kind = AEXPR_BETWEEN_SYM;
+        READ_NODE_FIELD(name);
+    } else if (length == 15 && strncmp(token, "NOT_BETWEEN_SYM", 15) == 0) {
+        local_node->kind = AEXPR_NOT_BETWEEN_SYM;
+        READ_NODE_FIELD(name);
+    } else if (length == 5 && strncmp(token, ":name", 5) == 0) {
+        local_node->kind = AEXPR_OP;
+        local_node->name = nodeRead(NULL, 0);
+    } else
+        elog(ERROR, "unrecognized A_Expr kind: \"%.*s\"", length, token);
 
-	READ_NODE_FIELD(lexpr);
-	READ_NODE_FIELD(rexpr);
-	READ_LOCATION_FIELD(location);
+    READ_NODE_FIELD(lexpr);
+    READ_NODE_FIELD(rexpr);
+    READ_LOCATION_FIELD(location);
 
-	READ_DONE();
+    READ_DONE();
 }
 
 static ExtensibleNode *
-_readExtensibleNode(void)
-{
-	const ExtensibleNodeMethods *methods;
-	ExtensibleNode *local_node;
-	const char *extnodename;
+_readExtensibleNode(void) {
+    const ExtensibleNodeMethods *methods;
+    ExtensibleNode *local_node;
+    const char *extnodename;
 
-	READ_TEMP_LOCALS();
+    READ_TEMP_LOCALS();
 
-	token = pg_strtok(&length); /* skip :extnodename */
-	token = pg_strtok(&length); /* get extnodename */
+    token = pg_strtok(&length); /* skip :extnodename */
+    token = pg_strtok(&length); /* get extnodename */
 
-	extnodename = nullable_string(token, length);
-	if (!extnodename)
-		elog(ERROR, "extnodename has to be supplied");
-	methods = GetExtensibleNodeMethods(extnodename, false);
+    extnodename = nullable_string(token, length);
+    if (!extnodename)
+        elog(ERROR, "extnodename has to be supplied");
+    methods = GetExtensibleNodeMethods(extnodename, false);
 
-	local_node = (ExtensibleNode *) newNode(methods->node_size,
-											T_ExtensibleNode);
-	local_node->extnodename = extnodename;
+    local_node = (ExtensibleNode *) newNode(methods->node_size,
+                                            T_ExtensibleNode);
+    local_node->extnodename = extnodename;
 
-	/* deserialize the private fields */
-	methods->nodeRead(local_node);
+    /* deserialize the private fields */
+    methods->nodeRead(local_node);
 
-	READ_DONE();
+    READ_DONE();
 }
 
 
@@ -695,22 +651,22 @@ _readExtensibleNode(void)
  * The string to be read must already have been loaded into pg_strtok().
  */
 Node *
-parseNodeString(void)
-{
-	READ_TEMP_LOCALS();
+parseNodeString(void) {
+    READ_TEMP_LOCALS();
 
-	/* Guard against stack overflow due to overly complex expressions */
-	check_stack_depth();
+    /* Guard against stack overflow due to overly complex expressions */
+    check_stack_depth();
 
-	token = pg_strtok(&length);
+    token = pg_strtok(&length);
 
 #define MATCH(tokname, namelen) \
 	(length == namelen && memcmp(token, tokname, namelen) == 0)
 
 #include "readfuncs.switch.c"
 
-	elog(ERROR, "badly formatted node string \"%.32s\"...", token);
-	return NULL;				/* keep compiler quiet */
+elog(ERROR, "badly formatted node string \"%.32s\"...", token);
+return
+NULL; /* keep compiler quiet */
 }
 
 
@@ -722,57 +678,51 @@ parseNodeString(void)
  * so we must be told that.
  */
 Datum
-readDatum(bool typbyval)
-{
-	Size		length,
-				i;
-	int			tokenLength;
-	const char *token;
-	Datum		res;
-	char	   *s;
+readDatum(bool typbyval) {
+    Size length,
+            i;
+    int tokenLength;
+    const char *token;
+    Datum res;
+    char *s;
 
-	/*
+    /*
 	 * read the actual length of the value
 	 */
-	token = pg_strtok(&tokenLength);
-	length = atoui(token);
+    token = pg_strtok(&tokenLength);
+    length = atoui(token);
 
-	token = pg_strtok(&tokenLength);	/* read the '[' */
-	if (token == NULL || token[0] != '[')
-		elog(ERROR, "expected \"[\" to start datum, but got \"%s\"; length = %zu",
-			 token ? token : "[NULL]", length);
+    token = pg_strtok(&tokenLength); /* read the '[' */
+    if (token == NULL || token[0] != '[')
+        elog(ERROR, "expected \"[\" to start datum, but got \"%s\"; length = %zu",
+             token ? token : "[NULL]", length);
 
-	if (typbyval)
-	{
-		if (length > (Size) sizeof(Datum))
-			elog(ERROR, "byval datum but length = %zu", length);
-		res = (Datum) 0;
-		s = (char *) (&res);
-		for (i = 0; i < (Size) sizeof(Datum); i++)
-		{
-			token = pg_strtok(&tokenLength);
-			s[i] = (char) atoi(token);
-		}
-	}
-	else if (length <= 0)
-		res = (Datum) NULL;
-	else
-	{
-		s = (char *) palloc(length);
-		for (i = 0; i < length; i++)
-		{
-			token = pg_strtok(&tokenLength);
-			s[i] = (char) atoi(token);
-		}
-		res = PointerGetDatum(s);
-	}
+    if (typbyval) {
+        if (length > (Size) sizeof(Datum))
+            elog(ERROR, "byval datum but length = %zu", length);
+        res = (Datum) 0;
+        s = (char *) (&res);
+        for (i = 0; i < (Size) sizeof(Datum); i++) {
+            token = pg_strtok(&tokenLength);
+            s[i] = (char) atoi(token);
+        }
+    } else if (length <= 0)
+        res = (Datum) NULL;
+    else {
+        s = (char *) palloc(length);
+        for (i = 0; i < length; i++) {
+            token = pg_strtok(&tokenLength);
+            s[i] = (char) atoi(token);
+        }
+        res = PointerGetDatum(s);
+    }
 
-	token = pg_strtok(&tokenLength);	/* read the ']' */
-	if (token == NULL || token[0] != ']')
-		elog(ERROR, "expected \"]\" to end datum, but got \"%s\"; length = %zu",
-			 token ? token : "[NULL]", length);
+    token = pg_strtok(&tokenLength); /* read the ']' */
+    if (token == NULL || token[0] != ']')
+        elog(ERROR, "expected \"]\" to end datum, but got \"%s\"; length = %zu",
+             token ? token : "[NULL]", length);
 
-	return res;
+    return res;
 }
 
 /*

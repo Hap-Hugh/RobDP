@@ -92,11 +92,11 @@ struct SubscriptExecSteps;
  * reftypmod to again describe the container type, since that's what an
  * assignment must return.
  */
-typedef void (*SubscriptTransform) (SubscriptingRef *sbsref,
-									List *indirection,
-									struct ParseState *pstate,
-									bool isSlice,
-									bool isAssignment);
+typedef void (*SubscriptTransform)(SubscriptingRef *sbsref,
+                                   List *indirection,
+                                   struct ParseState *pstate,
+                                   bool isSlice,
+                                   bool isAssignment);
 
 /*
  * The exec_setup method is called during executor-startup compilation of a
@@ -150,18 +150,17 @@ typedef void (*SubscriptTransform) (SubscriptingRef *sbsref,
  * sbs_fetch_old and sbs_assign need not duplicate subscript processing.)
  * Set the relevant pointers to NULL for any omitted methods.
  */
-typedef void (*SubscriptExecSetup) (const SubscriptingRef *sbsref,
-									struct SubscriptingRefState *sbsrefstate,
-									struct SubscriptExecSteps *methods);
+typedef void (*SubscriptExecSetup)(const SubscriptingRef *sbsref,
+                                   struct SubscriptingRefState *sbsrefstate,
+                                   struct SubscriptExecSteps *methods);
 
 /* Struct returned by the SQL-visible subscript handler function */
-typedef struct SubscriptRoutines
-{
-	SubscriptTransform transform;	/* parse analysis function */
-	SubscriptExecSetup exec_setup;	/* expression compilation function */
-	bool		fetch_strict;	/* is fetch SubscriptRef strict? */
-	bool		fetch_leakproof;	/* is fetch SubscriptRef leakproof? */
-	bool		store_leakproof;	/* is assignment SubscriptRef leakproof? */
+typedef struct SubscriptRoutines {
+    SubscriptTransform transform; /* parse analysis function */
+    SubscriptExecSetup exec_setup; /* expression compilation function */
+    bool fetch_strict; /* is fetch SubscriptRef strict? */
+    bool fetch_leakproof; /* is fetch SubscriptRef leakproof? */
+    bool store_leakproof; /* is assignment SubscriptRef leakproof? */
 } SubscriptRoutines;
 
 #endif							/* SUBSCRIPTING_H */

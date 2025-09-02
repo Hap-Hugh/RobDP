@@ -33,16 +33,16 @@
 
 
 /* A "clump" of already-joined relations within gimme_tree */
-typedef struct
-{
-	RelOptInfo *joinrel;		/* joinrel for the set of relations */
-	int			size;			/* number of input relations in clump */
+typedef struct {
+    RelOptInfo *joinrel; /* joinrel for the set of relations */
+    int size; /* number of input relations in clump */
 } Clump;
 
 static List *merge_clump(PlannerInfo *root, List *clumps, Clump *new_clump,
-						 int num_gene, bool force);
-static bool desirable_join(PlannerInfo *root,
-						   RelOptInfo *outer_rel, RelOptInfo *inner_rel);
+                         int num_gene, bool force);
+
+static bool desirable_join(PlannerInfo * root,
+                           RelOptInfo * outer_rel, RelOptInfo * inner_rel);
 
 
 /*
@@ -54,16 +54,15 @@ static bool desirable_join(PlannerInfo *root,
  * returns DBL_MAX.
  */
 Cost
-geqo_eval(PlannerInfo *root, Gene *tour, int num_gene)
-{
-	MemoryContext mycontext;
-	MemoryContext oldcxt;
-	RelOptInfo *joinrel;
-	Cost		fitness;
-	int			savelength;
-	struct HTAB *savehash;
+geqo_eval(PlannerInfo *root, Gene *tour, int num_gene) {
+    MemoryContext mycontext;
+    MemoryContext oldcxt;
+    RelOptInfo *joinrel;
+    Cost fitness;
+    int savelength;
+    struct HTAB *savehash;
 
-	/*
+    /*
 	 * Create a private memory context that will hold all temp storage
 	 * allocated inside gimme_tree().
 	 *
@@ -72,12 +71,12 @@ geqo_eval(PlannerInfo *root, Gene *tour, int num_gene)
 	 * temp context a child of the planner's normal context, so that it will
 	 * be freed even if we abort via ereport(ERROR).
 	 */
-	mycontext = AllocSetContextCreate(CurrentMemoryContext,
-									  "GEQO",
-									  ALLOCSET_DEFAULT_SIZES);
-	oldcxt = MemoryContextSwitchTo(mycontext);
+    mycontext = AllocSetContextCreate(CurrentMemoryContext,
+                                      "GEQO",
+                                      ALLOCSET_DEFAULT_SIZES);
+    oldcxt = MemoryContextSwitchTo(mycontext);
 
-	/*
+    /*
 	 * gimme_tree will add entries to root->join_rel_list, which may or may
 	 * not already contain some entries.  The newly added entries will be
 	 * recycled by the MemoryContextDelete below, so we must ensure that the
@@ -92,44 +91,42 @@ geqo_eval(PlannerInfo *root, Gene *tour, int num_gene)
 	 *
 	 * join_rel_level[] shouldn't be in use, so just Assert it isn't.
 	 */
-	savelength = list_length(root->join_rel_list);
-	savehash = root->join_rel_hash;
-	Assert(root->join_rel_level == NULL);
+    savelength = list_length(root->join_rel_list);
+    savehash = root->join_rel_hash;
+    Assert(root->join_rel_level == NULL);
 
-	root->join_rel_hash = NULL;
+    root->join_rel_hash = NULL;
 
-	/* construct the best path for the given combination of relations */
-	joinrel = gimme_tree(root, tour, num_gene);
+    /* construct the best path for the given combination of relations */
+    joinrel = gimme_tree(root, tour, num_gene);
 
-	/*
+    /*
 	 * compute fitness, if we found a valid join
 	 *
 	 * XXX geqo does not currently support optimization for partial result
 	 * retrieval, nor do we take any cognizance of possible use of
 	 * parameterized paths --- how to fix?
 	 */
-	if (joinrel)
-	{
-		Path	   *best_path = joinrel->cheapest_total_path;
+    if (joinrel) {
+        Path *best_path = joinrel->cheapest_total_path;
 
-		fitness = best_path->total_cost;
-	}
-	else
-		fitness = DBL_MAX;
+        fitness = best_path->total_cost;
+    } else
+        fitness = DBL_MAX;
 
-	/*
+    /*
 	 * Restore join_rel_list to its former state, and put back original
 	 * hashtable if any.
 	 */
-	root->join_rel_list = list_truncate(root->join_rel_list,
-										savelength);
-	root->join_rel_hash = savehash;
+    root->join_rel_list = list_truncate(root->join_rel_list,
+                                        savelength);
+    root->join_rel_hash = savehash;
 
-	/* release all the memory acquired within gimme_tree */
-	MemoryContextSwitchTo(oldcxt);
-	MemoryContextDelete(mycontext);
+    /* release all the memory acquired within gimme_tree */
+    MemoryContextSwitchTo(oldcxt);
+    MemoryContextDelete(mycontext);
 
-	return fitness;
+    return fitness;
 }
 
 /*
@@ -160,13 +157,15 @@ geqo_eval(PlannerInfo *root, Gene *tour, int num_gene)
  * since there's no provision for un-clumping, this must lead to failure.)
  */
 RelOptInfo *
-gimme_tree(PlannerInfo *root, Gene *tour, int num_gene)
-{
-	GeqoPrivateData *private = (GeqoPrivateData *) root->join_search_private;
-	List	   *clumps;
-	int			rel_count;
+gimme_tree(PlannerInfo *root, Gene *tour, int num_gene) {
+    GeqoPrivateData *
+    private
+    =
+    (GeqoPrivateData *) root->join_search_private;
+    List *clumps;
+    int rel_count;
 
-	/*
+    /*
 	 * Sometimes, a relation can't yet be joined to others due to heuristics
 	 * or actual semantic restrictions.  We maintain a list of "clumps" of
 	 * successfully joined relations, with larger clumps at the front. Each
@@ -177,49 +176,47 @@ gimme_tree(PlannerInfo *root, Gene *tour, int num_gene)
 	 * heuristics and try to forcibly join any remaining clumps.  If we are
 	 * unable to merge all the clumps into one, fail.
 	 */
-	clumps = NIL;
+    clumps = NIL;
 
-	for (rel_count = 0; rel_count < num_gene; rel_count++)
-	{
-		int			cur_rel_index;
-		RelOptInfo *cur_rel;
-		Clump	   *cur_clump;
+    for (rel_count = 0; rel_count < num_gene; rel_count++) {
+        int cur_rel_index;
+        RelOptInfo *cur_rel;
+        Clump *cur_clump;
 
-		/* Get the next input relation */
-		cur_rel_index = (int) tour[rel_count];
-		cur_rel = (RelOptInfo *) list_nth(private->initial_rels,
-										  cur_rel_index - 1);
+        /* Get the next input relation */
+        cur_rel_index = (int) tour[rel_count];
+        cur_rel = (RelOptInfo *) list_nth(private->initial_rels,
+                                          cur_rel_index - 1);
 
-		/* Make it into a single-rel clump */
-		cur_clump = (Clump *) palloc(sizeof(Clump));
-		cur_clump->joinrel = cur_rel;
-		cur_clump->size = 1;
+        /* Make it into a single-rel clump */
+        cur_clump = (Clump *) palloc(sizeof(Clump));
+        cur_clump->joinrel = cur_rel;
+        cur_clump->size = 1;
 
-		/* Merge it into the clumps list, using only desirable joins */
-		clumps = merge_clump(root, clumps, cur_clump, num_gene, false);
-	}
+        /* Merge it into the clumps list, using only desirable joins */
+        clumps = merge_clump(root, clumps, cur_clump, num_gene, false);
+    }
 
-	if (list_length(clumps) > 1)
-	{
-		/* Force-join the remaining clumps in some legal order */
-		List	   *fclumps;
-		ListCell   *lc;
+    if (list_length(clumps) > 1) {
+        /* Force-join the remaining clumps in some legal order */
+        List *fclumps;
+        ListCell *lc;
 
-		fclumps = NIL;
-		foreach(lc, clumps)
-		{
-			Clump	   *clump = (Clump *) lfirst(lc);
+        fclumps = NIL;
+        foreach(lc, clumps)
+        {
+            Clump *clump = (Clump *) lfirst(lc);
 
-			fclumps = merge_clump(root, fclumps, clump, num_gene, true);
-		}
-		clumps = fclumps;
-	}
+            fclumps = merge_clump(root, fclumps, clump, num_gene, true);
+        }
+        clumps = fclumps;
+    }
 
-	/* Did we succeed in forming a single join relation? */
-	if (list_length(clumps) != 1)
-		return NULL;
+    /* Did we succeed in forming a single join relation? */
+    if (list_length(clumps) != 1)
+        return NULL;
 
-	return ((Clump *) linitial(clumps))->joinrel;
+    return ((Clump *) linitial(clumps))->joinrel;
 }
 
 /*
@@ -236,86 +233,82 @@ gimme_tree(PlannerInfo *root, Gene *tour, int num_gene)
  */
 static List *
 merge_clump(PlannerInfo *root, List *clumps, Clump *new_clump, int num_gene,
-			bool force)
-{
-	ListCell   *lc;
-	int			pos;
+            bool force) {
+    ListCell *lc;
+    int pos;
 
-	/* Look for a clump that new_clump can join to */
-	foreach(lc, clumps)
-	{
-		Clump	   *old_clump = (Clump *) lfirst(lc);
+    /* Look for a clump that new_clump can join to */
+    foreach(lc, clumps)
+    {
+        Clump *old_clump = (Clump *) lfirst(lc);
 
-		if (force ||
-			desirable_join(root, old_clump->joinrel, new_clump->joinrel))
-		{
-			RelOptInfo *joinrel;
+        if (force ||
+            desirable_join(root, old_clump->joinrel, new_clump->joinrel)) {
+            RelOptInfo *joinrel;
 
-			/*
+            /*
 			 * Construct a RelOptInfo representing the join of these two input
 			 * relations.  Note that we expect the joinrel not to exist in
 			 * root->join_rel_list yet, and so the paths constructed for it
 			 * will only include the ones we want.
 			 */
-			joinrel = make_join_rel(root,
-									old_clump->joinrel,
-									new_clump->joinrel);
+            joinrel = make_join_rel(root,
+                                    old_clump->joinrel,
+                                    new_clump->joinrel);
 
-			/* Keep searching if join order is not valid */
-			if (joinrel)
-			{
-				/* Create paths for partitionwise joins. */
-				generate_partitionwise_join_paths(root, joinrel);
+            /* Keep searching if join order is not valid */
+            if (joinrel) {
+                /* Create paths for partitionwise joins. */
+                generate_partitionwise_join_paths(root, joinrel);
 
-				/*
+                /*
 				 * Except for the topmost scan/join rel, consider gathering
 				 * partial paths.  We'll do the same for the topmost scan/join
 				 * rel once we know the final targetlist (see
 				 * grouping_planner).
 				 */
-				if (!bms_equal(joinrel->relids, root->all_query_rels))
-					generate_useful_gather_paths(root, joinrel, false);
+                if (!bms_equal(joinrel->relids, root->all_query_rels))
+                    generate_useful_gather_paths(root, joinrel, false);
 
-				/* Find and save the cheapest paths for this joinrel */
-				set_cheapest(joinrel);
+                /* Find and save the cheapest paths for this joinrel */
+                set_cheapest(joinrel);
 
-				/* Absorb new clump into old */
-				old_clump->joinrel = joinrel;
-				old_clump->size += new_clump->size;
-				pfree(new_clump);
+                /* Absorb new clump into old */
+                old_clump->joinrel = joinrel;
+                old_clump->size += new_clump->size;
+                pfree(new_clump);
 
-				/* Remove old_clump from list */
-				clumps = foreach_delete_current(clumps, lc);
+                /* Remove old_clump from list */
+                clumps = foreach_delete_current(clumps, lc);
 
-				/*
+                /*
 				 * Recursively try to merge the enlarged old_clump with
 				 * others.  When no further merge is possible, we'll reinsert
 				 * it into the list.
 				 */
-				return merge_clump(root, clumps, old_clump, num_gene, force);
-			}
-		}
-	}
+                return merge_clump(root, clumps, old_clump, num_gene, force);
+            }
+        }
+    }
 
-	/*
+    /*
 	 * No merging is possible, so add new_clump as an independent clump, in
 	 * proper order according to size.  We can be fast for the common case
 	 * where it has size 1 --- it should always go at the end.
 	 */
-	if (clumps == NIL || new_clump->size == 1)
-		return lappend(clumps, new_clump);
+    if (clumps == NIL || new_clump->size == 1)
+        return lappend(clumps, new_clump);
 
-	/* Else search for the place to insert it */
-	for (pos = 0; pos < list_length(clumps); pos++)
-	{
-		Clump	   *old_clump = (Clump *) list_nth(clumps, pos);
+    /* Else search for the place to insert it */
+    for (pos = 0; pos < list_length(clumps); pos++) {
+        Clump *old_clump = (Clump *) list_nth(clumps, pos);
 
-		if (new_clump->size > old_clump->size)
-			break;				/* new_clump belongs before old_clump */
-	}
-	clumps = list_insert_nth(clumps, pos, new_clump);
+        if (new_clump->size > old_clump->size)
+            break; /* new_clump belongs before old_clump */
+    }
+    clumps = list_insert_nth(clumps, pos, new_clump);
 
-	return clumps;
+    return clumps;
 }
 
 /*
@@ -323,16 +316,15 @@ merge_clump(PlannerInfo *root, List *clumps, Clump *new_clump, int num_gene,
  */
 static bool
 desirable_join(PlannerInfo *root,
-			   RelOptInfo *outer_rel, RelOptInfo *inner_rel)
-{
-	/*
+               RelOptInfo *outer_rel, RelOptInfo *inner_rel) {
+    /*
 	 * Join if there is an applicable join clause, or if there is a join order
 	 * restriction forcing these rels to be joined.
 	 */
-	if (have_relevant_joinclause(root, outer_rel, inner_rel) ||
-		have_join_order_restriction(root, outer_rel, inner_rel))
-		return true;
+    if (have_relevant_joinclause(root, outer_rel, inner_rel) ||
+        have_join_order_restriction(root, outer_rel, inner_rel))
+        return true;
 
-	/* Otherwise postpone the join till later. */
-	return false;
+    /* Otherwise postpone the join till later. */
+    return false;
 }

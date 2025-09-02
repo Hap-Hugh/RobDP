@@ -41,22 +41,21 @@
  * This is like bms_add_member, but for multibitmapsets.
  */
 List *
-mbms_add_member(List *a, int listidx, int bitidx)
-{
-	Bitmapset  *bms;
-	ListCell   *lc;
+mbms_add_member(List *a, int listidx, int bitidx) {
+    Bitmapset *bms;
+    ListCell *lc;
 
-	if (listidx < 0 || bitidx < 0)
-		elog(ERROR, "negative multibitmapset member index not allowed");
-	/* Add empty elements as needed */
-	while (list_length(a) <= listidx)
-		a = lappend(a, NULL);
-	/* Update the target element */
-	lc = list_nth_cell(a, listidx);
-	bms = lfirst_node(Bitmapset, lc);
-	bms = bms_add_member(bms, bitidx);
-	lfirst(lc) = bms;
-	return a;
+    if (listidx < 0 || bitidx < 0)
+        elog(ERROR, "negative multibitmapset member index not allowed");
+    /* Add empty elements as needed */
+    while (list_length(a) <= listidx)
+        a = lappend(a, NULL);
+    /* Update the target element */
+    lc = list_nth_cell(a, listidx);
+    bms = lfirst_node(Bitmapset, lc);
+    bms = bms_add_member(bms, bitidx);
+    lfirst(lc) = bms;
+    return a;
 }
 
 /*
@@ -68,24 +67,23 @@ mbms_add_member(List *a, int listidx, int bitidx)
  * This is like bms_add_members, but for multibitmapsets.
  */
 List *
-mbms_add_members(List *a, const List *b)
-{
-	ListCell   *lca,
-			   *lcb;
+mbms_add_members(List *a, const List *b) {
+    ListCell *lca,
+            *lcb;
 
-	/* Add empty elements to a, as needed */
-	while (list_length(a) < list_length(b))
-		a = lappend(a, NULL);
-	/* forboth will stop at the end of the shorter list, which is fine */
-	forboth(lca, a, lcb, b)
-	{
-		Bitmapset  *bmsa = lfirst_node(Bitmapset, lca);
-		const Bitmapset *bmsb = lfirst_node(Bitmapset, lcb);
+    /* Add empty elements to a, as needed */
+    while (list_length(a) < list_length(b))
+        a = lappend(a, NULL);
+    /* forboth will stop at the end of the shorter list, which is fine */
+    forboth(lca, a, lcb, b)
+    {
+        Bitmapset *bmsa = lfirst_node(Bitmapset, lca);
+        const Bitmapset *bmsb = lfirst_node(Bitmapset, lcb);
 
-		bmsa = bms_add_members(bmsa, bmsb);
-		lfirst(lca) = bmsa;
-	}
-	return a;
+        bmsa = bms_add_members(bmsa, bmsb);
+        lfirst(lca) = bmsa;
+    }
+    return a;
 }
 
 /*
@@ -97,23 +95,22 @@ mbms_add_members(List *a, const List *b)
  * This is like bms_int_members, but for multibitmapsets.
  */
 List *
-mbms_int_members(List *a, const List *b)
-{
-	ListCell   *lca,
-			   *lcb;
+mbms_int_members(List *a, const List *b) {
+    ListCell *lca,
+            *lcb;
 
-	/* Remove any elements of a that are no longer of use */
-	a = list_truncate(a, list_length(b));
-	/* forboth will stop at the end of the shorter list, which is fine */
-	forboth(lca, a, lcb, b)
-	{
-		Bitmapset  *bmsa = lfirst_node(Bitmapset, lca);
-		const Bitmapset *bmsb = lfirst_node(Bitmapset, lcb);
+    /* Remove any elements of a that are no longer of use */
+    a = list_truncate(a, list_length(b));
+    /* forboth will stop at the end of the shorter list, which is fine */
+    forboth(lca, a, lcb, b)
+    {
+        Bitmapset *bmsa = lfirst_node(Bitmapset, lca);
+        const Bitmapset *bmsb = lfirst_node(Bitmapset, lcb);
 
-		bmsa = bms_int_members(bmsa, bmsb);
-		lfirst(lca) = bmsa;
-	}
-	return a;
+        bmsa = bms_int_members(bmsa, bmsb);
+        lfirst(lca) = bmsa;
+    }
+    return a;
 }
 
 /*
@@ -123,17 +120,16 @@ mbms_int_members(List *a, const List *b)
  * This is like bms_is_member, but for multibitmapsets.
  */
 bool
-mbms_is_member(int listidx, int bitidx, const List *a)
-{
-	const Bitmapset *bms;
+mbms_is_member(int listidx, int bitidx, const List *a) {
+    const Bitmapset *bms;
 
-	/* XXX better to just return false for negative indexes? */
-	if (listidx < 0 || bitidx < 0)
-		elog(ERROR, "negative multibitmapset member index not allowed");
-	if (listidx >= list_length(a))
-		return false;
-	bms = list_nth_node(Bitmapset, a, listidx);
-	return bms_is_member(bitidx, bms);
+    /* XXX better to just return false for negative indexes? */
+    if (listidx < 0 || bitidx < 0)
+        elog(ERROR, "negative multibitmapset member index not allowed");
+    if (listidx >= list_length(a))
+        return false;
+    bms = list_nth_node(Bitmapset, a, listidx);
+    return bms_is_member(bitidx, bms);
 }
 
 /*
@@ -143,20 +139,19 @@ mbms_is_member(int listidx, int bitidx, const List *a)
  * The result is a bitmapset of the list indexes of bitmapsets that overlap.
  */
 Bitmapset *
-mbms_overlap_sets(const List *a, const List *b)
-{
-	Bitmapset  *result = NULL;
-	ListCell   *lca,
-			   *lcb;
+mbms_overlap_sets(const List *a, const List *b) {
+    Bitmapset *result = NULL;
+    ListCell *lca,
+            *lcb;
 
-	/* forboth will stop at the end of the shorter list, which is fine */
-	forboth(lca, a, lcb, b)
-	{
-		const Bitmapset *bmsa = lfirst_node(Bitmapset, lca);
-		const Bitmapset *bmsb = lfirst_node(Bitmapset, lcb);
+    /* forboth will stop at the end of the shorter list, which is fine */
+    forboth(lca, a, lcb, b)
+    {
+        const Bitmapset *bmsa = lfirst_node(Bitmapset, lca);
+        const Bitmapset *bmsb = lfirst_node(Bitmapset, lcb);
 
-		if (bms_overlap(bmsa, bmsb))
-			result = bms_add_member(result, foreach_current_index(lca));
-	}
-	return result;
+        if (bms_overlap(bmsa, bmsb))
+            result = bms_add_member(result, foreach_current_index(lca));
+    }
+    return result;
 }
