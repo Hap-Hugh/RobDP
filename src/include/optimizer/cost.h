@@ -81,7 +81,17 @@ extern void cost_seqscan(
     ParamPathInfo *param_info
 );
 
+extern void cost_seqscan_exp(
+    Path *path, PlannerInfo *root, RelOptInfo *baserel,
+    ParamPathInfo *param_info
+);
+
 extern void cost_samplescan(
+    Path *path, PlannerInfo *root, RelOptInfo *baserel,
+    ParamPathInfo *param_info
+);
+
+extern void cost_samplescan_exp(
     Path *path, PlannerInfo *root, RelOptInfo *baserel,
     ParamPathInfo *param_info
 );
@@ -267,7 +277,19 @@ extern void cost_gather(
     RelOptInfo *rel, ParamPathInfo *param_info, double *rows
 );
 
+extern void cost_gather_exp(
+    GatherPath *path, PlannerInfo *root,
+    RelOptInfo *rel, ParamPathInfo *param_info, double *rows
+);
+
 extern void cost_gather_merge(
+    GatherMergePath *path, PlannerInfo *root,
+    RelOptInfo *rel, ParamPathInfo *param_info,
+    Cost input_startup_cost, Cost input_total_cost,
+    double *rows
+);
+
+extern void cost_gather_merge_exp(
     GatherMergePath *path, PlannerInfo *root,
     RelOptInfo *rel, ParamPathInfo *param_info,
     Cost input_startup_cost, Cost input_total_cost,

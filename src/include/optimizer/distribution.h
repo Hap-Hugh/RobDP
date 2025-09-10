@@ -16,6 +16,8 @@ struct Distribution {
 };
 
 /* Utility functions for making a fake distribution */
-Distribution *make_fake_dist(void);
+Distribution *make_fake_dist(double factor);
+
+Distribution *make_single_point_dist(double val);
 
 #endif // DISTRIBUTION_H

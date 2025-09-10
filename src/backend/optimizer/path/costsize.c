@@ -86,6 +86,7 @@
 #include "nodes/nodeFuncs.h"
 #include "optimizer/clauses.h"
 #include "optimizer/cost.h"
+#include "optimizer/distribution.h"
 #include "optimizer/optimizer.h"
 #include "optimizer/pathnode.h"
 #include "optimizer/paths.h"
@@ -346,6 +347,122 @@ cost_seqscan(Path *path, PlannerInfo *root,
 }
 
 /*
+ * cost_seqscan_exp
+ *    Compute the expected cost of a sequential scan using a distribution
+ *    over possible output row counts, with a linearized approximation for
+ *    clamp_row_est() under parallelism.
+ *
+ * Approximation:
+ *  - We assume clamp_row_est(x) is locally linear and use
+ *        E[clamp_row_est(X)] ≈ clamp_row_est(E[X]).
+ *    Therefore, for parallel scans we use:
+ *        expected_rows_per_worker ≈ clamp_row_est(E[rows] / divisor)
+ *    rather than integrating over the distribution.
+ *
+ * Rationale:
+ *  - Disk I/O cost ~ pages, independent of output rows.
+ *  - Qual-eval CPU cost ~ scanned tuples, independent of output rows.
+ *  - Only targetlist per-output-row cost depends on rows:
+ *      * Non-parallel: per_tuple_cost * E[rows] (exact, linear).
+ *      * Parallel: per-worker rows approximated as above.
+ *
+ * Behavior:
+ *  - If parameterized (param_info != NULL), set path->rows from
+ *    param_info->rows_dist. Otherwise use baserel->rows and
+ *    baserel->rows_dist.
+ *  - After computing expectations, path->rows is updated to the expected
+ *    (per-worker if parallel) row count, clamped via clamp_row_est().
+ */
+void
+cost_seqscan_exp(Path *path, PlannerInfo *root,
+                 RelOptInfo *baserel, ParamPathInfo *param_info) {
+    Cost startup_cost = 0;
+    Cost cpu_run_cost;
+    Cost disk_run_cost;
+    double spc_seq_page_cost;
+    QualCost qpqual_cost;
+    Cost cpu_per_tuple;
+    const Distribution *rows_dist;
+
+    /* Sanity: only for base relations */
+    Assert(baserel->relid > 0);
+    Assert(baserel->rtekind == RTE_RELATION);
+
+    if (!enable_seqscan)
+        startup_cost += disable_cost;
+
+    /* Tablespace-dependent page cost */
+    get_tablespace_page_costs(baserel->reltablespace,
+                              NULL,
+                              &spc_seq_page_cost);
+
+    /* Disk cost: proportional to relation pages (rows-independent) */
+    disk_run_cost = spc_seq_page_cost * baserel->pages;
+
+    /*
+     * Qual-eval CPU cost per scanned tuple (rows-independent for SeqScan).
+     */
+    get_restriction_qual_cost(root, baserel, param_info, &qpqual_cost);
+
+    startup_cost += qpqual_cost.startup;
+    cpu_per_tuple = cpu_tuple_cost + qpqual_cost.per_tuple;
+    cpu_run_cost = cpu_per_tuple * baserel->tuples;
+
+    /* Targetlist startup cost: paid once */
+    startup_cost += path->pathtarget->cost.startup;
+
+    /*
+     * Establish the source of 'rows' and attach a distribution to the path.
+     * We may overwrite path->rows later with its expected value.
+     */
+    if (param_info) {
+        path->rows = param_info->ppi_rows;
+        path->rows_dist = param_info->rows_dist;
+    } else {
+        path->rows = baserel->rows;
+        path->rows_dist = baserel->rows_dist;
+    }
+    rows_dist = path->rows_dist; /* assumed valid: non-empty with probs/vals */
+
+    /* Targetlist per-output-row cost: compute expectation using the approximation */
+    double tlist_per_tuple = path->pathtarget->cost.per_tuple;
+    double mean_rows = 0.0;
+
+    /* Compute E[rows] from the provided distribution */
+    for (int i = 0; i < rows_dist->sample_count; i++)
+        mean_rows += rows_dist->probs[i] * rows_dist->vals[i];
+
+    if (path->parallel_workers > 0) {
+        double divisor = get_parallel_divisor(path);
+        double expected_rows_per_worker;
+
+        /*
+         * Linearized approximation:
+         *   E[ clamp_row_est(rows/divisor) ] ≈ clamp_row_est(E[rows]/divisor)
+         */
+        expected_rows_per_worker = clamp_row_est(mean_rows / divisor);
+
+        /* Split qual CPU among workers (as in upstream) */
+        cpu_run_cost /= divisor;
+
+        /* Add expected tlist per-output-row cost (per worker) */
+        cpu_run_cost += tlist_per_tuple * expected_rows_per_worker;
+
+        /* Record expected per-worker rows */
+        path->rows = expected_rows_per_worker;
+    } else {
+        /* Exact linear term: E[rows] */
+        cpu_run_cost += tlist_per_tuple * mean_rows;
+
+        /* Record expected rows (clamped to a sane estimate) */
+        path->rows = clamp_row_est(mean_rows);
+    }
+
+    path->startup_cost = startup_cost;
+    path->total_cost = startup_cost + cpu_run_cost + disk_run_cost;
+}
+
+/*
  * cost_samplescan
  *	  Determines and returns the cost of scanning a relation using sampling.
  *
@@ -416,6 +533,129 @@ cost_samplescan(Path *path, PlannerInfo *root,
 }
 
 /*
+ * cost_samplescan_exp
+ *    Compute the expected cost of a Sample Scan using a distribution over
+ *    output rows. The number of sampled tuples (baserel->tuples) is treated
+ *    as a fixed scalar provided by the sampling method.
+ *
+ * Rationale:
+ *  - Disk I/O cost depends on the number/type of pages the TABLESAMPLE
+ *    method will visit (already reflected in baserel->pages) and is
+ *    independent of the final output row count.
+ *  - Qual-eval CPU cost is paid per *selected tuple* produced by the
+ *    sampling method and uses the fixed scalar baserel->tuples.
+ *  - TargetList (tlist) per-output-row cost is linear in the number of
+ *    output rows, so we use E[rows] computed from the attached distribution.
+ *  - Internal computation of the sampling method and evaluation of
+ *    TABLESAMPLE parameters are ignored (matching upstream behavior).
+ *
+ * Behavior:
+ *  - If the path is parameterized (param_info != NULL), set path->rows from
+ *    param_info->rows_dist.
+ *  - Otherwise, use baserel->rows and baserel->rows_dist.
+ *  - Costs are then computed as:
+ *      run_cost += spc_page_cost * baserel->pages
+ *      run_cost += (cpu_tuple_cost + qpqual_cost.per_tuple) * baserel->tuples
+ *      run_cost += tlist_per_tuple * E[path->rows]
+ *    and we set path->rows := clamp_row_est(E[path->rows]) so downstream
+ *    costing consumes a consistent expectation.
+ *
+ * Notes:
+ *  - This function assumes path->rows_dist will be non-NULL with valid
+ *    probs/vals after the "Mark the path..." block below.
+ *  - baserel->tuples is treated as fixed; no tuples distribution is used.
+ */
+void
+cost_samplescan_exp(Path *path, PlannerInfo *root,
+                    RelOptInfo *baserel, ParamPathInfo *param_info) {
+    Cost startup_cost = 0;
+    Cost run_cost = 0;
+    RangeTblEntry *rte;
+    TableSampleClause *tsc;
+    TsmRoutine *tsm;
+    double spc_seq_page_cost,
+            spc_random_page_cost,
+            spc_page_cost;
+    QualCost qpqual_cost;
+    Cost cpu_per_tuple;
+    const Distribution *rows_dist;
+
+    /* Should only be applied to base relations with tablesample clauses */
+    Assert(baserel->relid > 0);
+    rte = planner_rt_fetch(baserel->relid, root);
+    Assert(rte->rtekind == RTE_RELATION);
+    tsc = rte->tablesample;
+    Assert(tsc != NULL);
+    tsm = GetTsmRoutine(tsc->tsmhandler);
+
+    /*
+     * Mark the path with the correct row estimate and attach the
+     * corresponding distribution (degenerate for parameterized case).
+     * We may overwrite path->rows later with E[rows] for consistency.
+     */
+    if (param_info) {
+        path->rows = param_info->ppi_rows;
+        path->rows_dist = param_info->rows_dist;
+    } else {
+        path->rows = baserel->rows;
+        path->rows_dist = baserel->rows_dist;
+    }
+    rows_dist = path->rows_dist; /* assumed valid: non-empty with probs/vals */
+
+    /*
+     * Fetch estimated page costs for the table's tablespace.
+     * If NextSampleBlock is used, assume random access; else sequential.
+     */
+    get_tablespace_page_costs(baserel->reltablespace,
+                              &spc_random_page_cost,
+                              &spc_seq_page_cost);
+    spc_page_cost = (tsm->NextSampleBlock != NULL)
+                        ? spc_random_page_cost
+                        : spc_seq_page_cost;
+
+    /*
+     * Disk costs.
+     * baserel->pages has already been set by the sampling method to the
+     * number of pages it will visit (independent of 'rows').
+     */
+    run_cost += spc_page_cost * baserel->pages;
+
+    /*
+     * CPU costs for restriction quals (paid per selected tuple).
+     * baserel->tuples has already been set by the sampling method to the
+     * number of tuples it will select. This term is linear in that fixed
+     * scalar and does not use any distribution.
+     */
+    get_restriction_qual_cost(root, baserel, param_info, &qpqual_cost);
+
+    startup_cost += qpqual_cost.startup;
+    cpu_per_tuple = cpu_tuple_cost + qpqual_cost.per_tuple;
+    run_cost += cpu_per_tuple * baserel->tuples;
+
+    /*
+     * Targetlist evaluation:
+     *  - Startup is paid once.
+     *  - Per-output-row term is linear → use E[rows].
+     */
+    startup_cost += path->pathtarget->cost.startup;
+
+    double tlist_per_tuple = path->pathtarget->cost.per_tuple;
+    double mean_rows = 0.0;
+
+    /* E[rows] from the provided distribution */
+    for (int i = 0; i < rows_dist->sample_count; i++)
+        mean_rows += rows_dist->probs[i] * rows_dist->vals[i];
+
+    run_cost += tlist_per_tuple * mean_rows;
+
+    /* Record expected rows for downstream consumers */
+    path->rows = clamp_row_est(mean_rows);
+
+    path->startup_cost = startup_cost;
+    path->total_cost = startup_cost + run_cost;
+}
+
+/*
  * cost_gather
  *	  Determines and returns the cost of gather path.
  *
@@ -450,6 +690,75 @@ cost_gather(GatherPath *path, PlannerInfo *root,
 
     path->path.startup_cost = startup_cost;
     path->path.total_cost = (startup_cost + run_cost);
+}
+
+/*
+ * cost_gather_exp
+ *    Compute the expected cost of a Gather path using a distribution over
+ *    output rows. The only term that depends on the number of output rows
+ *    here is the per-tuple communication cost:
+ *
+ *        run_cost += parallel_tuple_cost * E[rows]
+ *
+ * Rationale:
+ *  - Subpath startup/total cost are taken as-is from path->subpath.
+ *  - Parallel setup cost is a fixed startup surcharge.
+ *  - The gather-time per-tuple overhead is linear in the number of tuples
+ *    produced by the subpath, so we replace 'rows' with its expectation.
+ *
+ * Behavior:
+ *  - If 'rows' (override) is non-NULL, set path->path.rows to *rows and
+ *    attach a single-point distribution to path->path.rows_dist.
+ *  - Else if parameterized, use param_info->rows_dist.
+ *  - Otherwise, use rel->rows and rel->rows_dist.
+ *  - After computing E[rows], we set path->path.rows :=
+ *    clamp_row_est(E[rows]) so downstream costing sees a consistent
+ *    expected row count.
+ *
+ * Assumptions:
+ *  - When using rel->rows_dist, it is non-NULL with valid probs/vals.
+ *  - make_single_point_dist() returns a valid Distribution object.
+ */
+void
+cost_gather_exp(GatherPath *path, PlannerInfo *root,
+                RelOptInfo *rel, ParamPathInfo *param_info,
+                double *rows) {
+    Cost startup_cost = 0;
+    Cost run_cost = 0;
+    const Distribution *rows_dist;
+
+    /* Choose the source of rows and attach a corresponding distribution. */
+    if (rows) {
+        path->path.rows = *rows;
+        path->path.rows_dist = make_single_point_dist(*rows);
+    } else if (param_info) {
+        path->path.rows = param_info->ppi_rows;
+        path->path.rows_dist = param_info->rows_dist;
+    } else {
+        path->path.rows = rel->rows;
+        path->path.rows_dist = rel->rows_dist;
+    }
+    rows_dist = path->path.rows_dist; /* assumed valid distribution */
+
+    /* Subpath costs pass through unchanged. */
+    startup_cost = path->subpath->startup_cost;
+    run_cost = path->subpath->total_cost - path->subpath->startup_cost;
+
+    /* Parallel setup and per-tuple communication costs. */
+    startup_cost += parallel_setup_cost;
+
+    /* E[rows] for the linear per-tuple term. */
+    double mean_rows = 0.0;
+    for (int i = 0; i < rows_dist->sample_count; i++)
+        mean_rows += rows_dist->probs[i] * rows_dist->vals[i];
+
+    run_cost += parallel_tuple_cost * mean_rows;
+
+    /* Record expected rows for downstream consumers. */
+    path->path.rows = clamp_row_est(mean_rows);
+
+    path->path.startup_cost = startup_cost;
+    path->path.total_cost = startup_cost + run_cost;
 }
 
 /*
@@ -516,6 +825,99 @@ cost_gather_merge(GatherMergePath *path, PlannerInfo *root,
 
     path->path.startup_cost = startup_cost + input_startup_cost;
     path->path.total_cost = (startup_cost + run_cost + input_total_cost);
+}
+
+/*
+ * cost_gather_merge_exp
+ *    Compute the expected cost of a Gather Merge path using a distribution
+ *    over output rows. All per-output-tuple terms are linear in rows and
+ *    thus use E[rows]. Startup terms are independent of rows.
+ *
+ * Rationale:
+ *  - Heap creation at startup ~ N * log2(N) comparisons (independent of rows).
+ *  - Per-output-tuple maintenance ~ log2(N) comparisons (linear in rows).
+ *  - Small additional per-tuple heap mgmt charge (linear in rows).
+ *  - IPC per-tuple charge slightly higher than Gather (x1.05), linear in rows.
+ *  - Subpath costs (input_startup_cost, input_total_cost) are passed in.
+ *
+ * Behavior:
+ *  - If 'rows' override is provided, set path->path.rows and attach a
+ *    single-point distribution to path->path.rows_dist.
+ *  - Else if parameterized, use param_info->rows_dist.
+ *  - Otherwise, use rel->rows and rel->rows_dist.
+ *  - After computing E[rows], set path->path.rows := clamp_row_est(E[rows])
+ *    so downstream costing sees a consistent expected row count.
+ *
+ * Assumptions:
+ *  - rel->rows_dist is non-NULL and valid (probs/vals) when used.
+ *  - make_single_point_dist() returns a valid Distribution.
+ */
+void
+cost_gather_merge_exp(GatherMergePath *path, PlannerInfo *root,
+                      RelOptInfo *rel, ParamPathInfo *param_info,
+                      Cost input_startup_cost, Cost input_total_cost,
+                      double *rows) {
+    Cost startup_cost = 0;
+    Cost run_cost = 0;
+    Cost comparison_cost;
+    double N;
+    double logN;
+    const Distribution *rows_dist;
+
+    /* Select the source of rows and attach a corresponding distribution. */
+    if (rows) {
+        path->path.rows = *rows;
+        path->path.rows_dist = make_single_point_dist(*rows);
+    } else if (param_info) {
+        path->path.rows = param_info->ppi_rows;
+        path->path.rows_dist = param_info->rows_dist;
+    } else {
+        path->path.rows = rel->rows;
+        path->path.rows_dist = rel->rows_dist;
+    }
+    rows_dist = path->path.rows_dist; /* assumed valid with probs/vals */
+
+    if (!enable_gathermerge)
+        startup_cost += disable_cost;
+
+    /*
+     * Add one to the number of workers to account for the leader.
+     * (Conservative: leader may do less work than workers.)
+     */
+    Assert(path->num_workers > 0);
+    N = (double) path->num_workers + 1;
+    logN = LOG2(N);
+
+    /* Assumed cost per tuple comparison */
+    comparison_cost = 2.0 * cpu_operator_cost;
+
+    /* Heap creation (startup) */
+    startup_cost += comparison_cost * N * logN;
+
+    /* Compute E[rows] for all linear per-tuple terms below. */
+    double mean_rows = 0.0;
+    for (int i = 0; i < rows_dist->sample_count; i++)
+        mean_rows += rows_dist->probs[i] * rows_dist->vals[i];
+
+    /* Per-tuple heap maintenance: E[rows] * comparison_cost * logN */
+    run_cost += mean_rows * comparison_cost * logN;
+
+    /* Small per-tuple heap-management charge (like cost_merge_append) */
+    run_cost += cpu_operator_cost * mean_rows;
+
+    /*
+     * Parallel setup and communication cost. Gather Merge requires blocking
+     * until a tuple is available from every worker; charge 5% extra IPC.
+     */
+    startup_cost += parallel_setup_cost;
+    run_cost += parallel_tuple_cost * mean_rows * 1.05;
+
+    /* Include subpath costs. */
+    path->path.startup_cost = startup_cost + input_startup_cost;
+    path->path.total_cost = startup_cost + run_cost + input_total_cost;
+
+    /* Record expected rows for downstream consumers. */
+    path->path.rows = clamp_row_est(mean_rows);
 }
 
 /*
@@ -4807,6 +5209,8 @@ set_baserel_size_estimates(PlannerInfo *root, RelOptInfo *rel) {
     cost_qual_eval(&rel->baserestrictcost, rel->baserestrictinfo, root);
 
     set_rel_width(root, rel);
+
+    rel->rows_dist = make_fake_dist(rel->rows);
 }
 
 /*
