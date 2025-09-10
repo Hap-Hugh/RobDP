@@ -134,6 +134,8 @@
 #include "utils/pg_locale.h"
 #include "utils/rel.h"
 #include "utils/selfuncs.h"
+
+#include "optimizer/distribution.h"
 #include "utils/snapmgr.h"
 #include "utils/spccache.h"
 #include "utils/syscache.h"
@@ -6482,6 +6484,7 @@ genericcostestimate(PlannerInfo *root,
 											  index->rel->relid,
 											  JOIN_INNER,
 											  NULL);
+	elog(LOG, "genericcostestimate::[SEL] sel = %.5f", indexSelectivity);
 
 	/*
 	 * If caller didn't give us an estimate, estimate the number of index
@@ -6812,9 +6815,16 @@ btcostestimate(PlannerInfo *root, IndexPath *path, double loop_count,
 		selectivityQuals = add_predicate_to_index_quals(index, indexBoundQuals);
 
 		btreeSelectivity = clauselist_selectivity(root, selectivityQuals,
-												  index->rel->relid,
-												  JOIN_INNER,
-												  NULL);
+		                                          index->rel->relid,
+		                                          JOIN_INNER,
+		                                          NULL);
+
+		char *rel_name = get_baserel_alias(root, path->path.parent->relid);
+		elog(LOG, "btcostestimate::[SEL] rel = %s, sel = %.5f", rel_name, btreeSelectivity);
+		/*
+		 * Now we have the estimated btree selectivity and we want to generate the
+		 * distribution of the real selectivity.
+		 */
 		numIndexTuples = btreeSelectivity * index->rel->tuples;
 
 		/*

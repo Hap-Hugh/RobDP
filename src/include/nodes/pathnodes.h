@@ -1029,6 +1029,9 @@ typedef struct RelOptInfo
 	List	  **partexprs pg_node_attr(read_write_ignore);
 	/* Nullable partition key expressions */
 	List	  **nullable_partexprs pg_node_attr(read_write_ignore);
+
+	/* Save the selectivity distribution of the current relation */
+	Distribution *rows_dist pg_node_attr(read_write_ignore);
 } RelOptInfo;
 
 /*
@@ -1549,6 +1552,7 @@ typedef struct ParamPathInfo
 	Cardinality ppi_rows;		/* estimated number of result tuples */
 	List	   *ppi_clauses;	/* join clauses available from outer rels */
 	Bitmapset  *ppi_serials;	/* set of rinfo_serial for enforced quals */
+	Distribution *ppi_rows_dist pg_node_attr(read_write_ignore);
 } ParamPathInfo;
 
 

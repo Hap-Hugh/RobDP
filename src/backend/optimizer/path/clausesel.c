@@ -690,6 +690,7 @@ clause_selectivity_ext(PlannerInfo *root,
 					   SpecialJoinInfo *sjinfo,
 					   bool use_extended_stats)
 {
+	elog(LOG, "clause_selectivity_ext::[clause] %s", nodeToString(clause));
 	Selectivity s1 = 0.5;		/* default for any unhandled clause type */
 	RestrictInfo *rinfo = NULL;
 	bool		cacheable = false;

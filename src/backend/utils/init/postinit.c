@@ -40,6 +40,7 @@
 #include "mb/pg_wchar.h"
 #include "miscadmin.h"
 #include "pgstat.h"
+#include "optimizer/distribution.h"
 #include "postmaster/autovacuum.h"
 #include "postmaster/postmaster.h"
 #include "replication/slot.h"
@@ -66,6 +67,7 @@
 #include "utils/snapmgr.h"
 #include "utils/syscache.h"
 #include "utils/timeout.h"
+#include "optimizer/session_mem.h"
 
 static HeapTuple GetDatabaseTuple(const char *dbname);
 static HeapTuple GetDatabaseTupleByOid(Oid dboid);
@@ -728,6 +730,10 @@ InitPostgres(const char *in_dbname, Oid dboid,
 	int			nfree = 0;
 
 	elog(DEBUG3, "InitPostgres");
+
+	(void) session_mem_context();
+
+	set_global_sel_error_dist_info();
 
 	/*
 	 * Add my PGPROC struct to the ProcArray.

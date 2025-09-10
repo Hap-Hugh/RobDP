@@ -21,6 +21,7 @@
 #include "optimizer/appendinfo.h"
 #include "optimizer/clauses.h"
 #include "optimizer/cost.h"
+#include "optimizer/distribution.h"
 #include "optimizer/inherit.h"
 #include "optimizer/pathnode.h"
 #include "optimizer/paths.h"
@@ -284,6 +285,8 @@ build_simple_rel(PlannerInfo *root, int relid, RelOptInfo *parent)
 	rel->all_partrels = NULL;
 	rel->partexprs = NULL;
 	rel->nullable_partexprs = NULL;
+
+	rel->rows_dist = NULL;
 
 	/*
 	 * Pass assorted information down the inheritance hierarchy.
@@ -748,6 +751,8 @@ build_join_rel(PlannerInfo *root,
 	joinrel->partexprs = NULL;
 	joinrel->nullable_partexprs = NULL;
 
+	joinrel->rows_dist = NULL;
+
 	/* Compute information relevant to the foreign relations. */
 	set_foreign_rel_properties(joinrel, outer_rel, inner_rel);
 
@@ -940,6 +945,8 @@ build_child_join_rel(PlannerInfo *root, RelOptInfo *outer_rel,
 	joinrel->all_partrels = NULL;
 	joinrel->partexprs = NULL;
 	joinrel->nullable_partexprs = NULL;
+
+	joinrel->rows_dist = NULL;
 
 	/* Compute information relevant to foreign relations. */
 	set_foreign_rel_properties(joinrel, outer_rel, inner_rel);
@@ -1478,6 +1485,8 @@ fetch_upper_rel(PlannerInfo *root, UpperRelationKind kind, Relids relids)
 	upperrel->cheapest_unique_path = NULL;
 	upperrel->cheapest_parameterized_paths = NIL;
 
+	upperrel->rows_dist = NULL;
+
 	root->upper_rels[kind] = lappend(root->upper_rels[kind], upperrel);
 
 	return upperrel;
@@ -1598,6 +1607,7 @@ get_baserel_parampathinfo(PlannerInfo *root, RelOptInfo *baserel,
 	ppi->ppi_clauses = pclauses;
 	ppi->ppi_serials = pserials;
 	baserel->ppilist = lappend(baserel->ppilist, ppi);
+	elog(LOG, "get_baserel_parampathinfo::[baserel] %s", get_baserel_alias(root, baserel->relid));
 
 	return ppi;
 }
@@ -1813,6 +1823,7 @@ get_joinrel_parampathinfo(PlannerInfo *root, RelOptInfo *joinrel,
 	ppi->ppi_clauses = NIL;
 	ppi->ppi_serials = NULL;
 	joinrel->ppilist = lappend(joinrel->ppilist, ppi);
+	elog(LOG, "get_joinrel_parampathinfo::[joinrel] %s", get_joinrel_aliases(root, joinrel->relids));
 
 	return ppi;
 }
@@ -1852,6 +1863,7 @@ get_appendrel_parampathinfo(RelOptInfo *appendrel, Relids required_outer)
 	ppi->ppi_clauses = NIL;
 	ppi->ppi_serials = NULL;
 	appendrel->ppilist = lappend(appendrel->ppilist, ppi);
+	elog(LOG, "get_appendrel_parampathinfo::[appendrel]");
 
 	return ppi;
 }

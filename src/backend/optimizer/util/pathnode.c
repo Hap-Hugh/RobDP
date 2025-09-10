@@ -25,6 +25,8 @@
 #include "optimizer/cost.h"
 #include "optimizer/optimizer.h"
 #include "optimizer/pathnode.h"
+
+#include "optimizer/distribution.h"
 #include "optimizer/paths.h"
 #include "optimizer/placeholder.h"
 #include "optimizer/planmain.h"
@@ -939,14 +941,62 @@ create_seqscan_path(PlannerInfo *root, RelOptInfo *rel,
 	pathnode->pathtype = T_SeqScan;
 	pathnode->parent = rel;
 	pathnode->pathtarget = rel->reltarget;
-	pathnode->param_info = get_baserel_parampathinfo(root, rel,
-													 required_outer);
+	pathnode->param_info = get_baserel_parampathinfo(root, rel, required_outer);
 	pathnode->parallel_aware = (parallel_workers > 0);
 	pathnode->parallel_safe = rel->consider_parallel;
 	pathnode->parallel_workers = parallel_workers;
 	pathnode->pathkeys = NIL;	/* seqscan has unordered result */
 
-	cost_seqscan(pathnode, root, rel, pathnode->param_info);
+	/* We add the distribution of rows here */
+	set_scan_path_rows_dist_with_ppi(rel, pathnode, pathnode->param_info);
+
+	/* We still run the cost function but we will override some results afterwards */
+	cost_seqscan(pathnode, root, rel, pathnode->param_info, false, 0.0);
+	elog(LOG, "create_seqscan_path::[cost] original_startup = %.5f; original_total = %.5f",
+	 	pathnode->startup_cost, pathnode->total_cost);
+
+	int count = pathnode->rows_dist->sample_count;
+	double exp_startup_cost = 0.0;
+	double exp_total_cost = 0.0;
+
+	for (int i = 0; i < count; ++i) {
+		/* Now we consider the entries in the distribution */
+		double prob = pathnode->rows_dist->probs[i];
+		double val = pathnode->rows_dist->vals[i];
+
+		/* We just mock the original logic */
+		Path* current_path = makeNode(Path);
+		current_path->pathtype = T_SeqScan;
+		current_path->parent = rel;
+		current_path->pathtarget = rel->reltarget;
+		current_path->param_info = get_baserel_parampathinfo(root, rel, required_outer);
+		current_path->parallel_aware = (parallel_workers > 0);
+		current_path->parallel_safe = rel->consider_parallel;
+		current_path->parallel_workers = parallel_workers;
+		current_path->pathkeys = NIL;	/* seqscan has unordered result */
+
+		/*
+		 * Now we send a fake path node (`current_path`) into the function below.
+		 * This is a little bit strange but we only need to get the result.
+		 * The only effect of `current_path` is to collect the output result.
+		 */
+		/* We override the original estimation of the rows. */
+		cost_seqscan(current_path, root, rel, pathnode->param_info, true, val);
+		/* Now we get the return values stored in the `current_path` object */
+
+		/* Now we calculate the startup cost and the total cost and update the expected cost */
+		exp_startup_cost += prob * current_path->startup_cost;
+		exp_total_cost += prob * current_path->total_cost;
+
+		/* We no longer need the `current_path` object now */
+		pfree(current_path);
+	}
+	/* Now we write the expected startup and total cost back to the `pathnode` object */
+	pathnode->startup_cost = exp_startup_cost;
+	pathnode->total_cost = exp_total_cost;
+
+	elog(LOG, "create_seqscan_path::[cost] expected_startup = %.5f; expected_total = %.5f",
+		 pathnode->startup_cost, pathnode->total_cost);
 
 	return pathnode;
 }
@@ -963,14 +1013,62 @@ create_samplescan_path(PlannerInfo *root, RelOptInfo *rel, Relids required_outer
 	pathnode->pathtype = T_SampleScan;
 	pathnode->parent = rel;
 	pathnode->pathtarget = rel->reltarget;
-	pathnode->param_info = get_baserel_parampathinfo(root, rel,
-													 required_outer);
+	pathnode->param_info = get_baserel_parampathinfo(root, rel, required_outer);
 	pathnode->parallel_aware = false;
 	pathnode->parallel_safe = rel->consider_parallel;
 	pathnode->parallel_workers = 0;
 	pathnode->pathkeys = NIL;	/* samplescan has unordered result */
 
-	cost_samplescan(pathnode, root, rel, pathnode->param_info);
+	/* We add the distribution of rows here */
+	set_scan_path_rows_dist_with_ppi(rel, pathnode, pathnode->param_info);
+
+	/* We still run the cost function but we will override some results afterwards */
+	cost_samplescan(pathnode, root, rel, pathnode->param_info, false, 0.0);
+	elog(LOG, "create_samplescan_path::[cost] original_startup = %.5f; original_total = %.5f",
+		pathnode->startup_cost, pathnode->total_cost);
+
+	int count = pathnode->rows_dist->sample_count;
+	double exp_startup_cost = 0.0;
+	double exp_total_cost = 0.0;
+
+	for (int i = 0; i < count; ++i) {
+		/* Now we consider the entries in the distribution */
+		double prob = pathnode->rows_dist->probs[i];
+		double val = pathnode->rows_dist->vals[i];
+
+		/* We just mock the original logic */
+		Path	   *current_path = makeNode(Path);
+		current_path->pathtype = T_SampleScan;
+		current_path->parent = rel;
+		current_path->pathtarget = rel->reltarget;
+		current_path->param_info = get_baserel_parampathinfo(root, rel, required_outer);
+		current_path->parallel_aware = false;
+		current_path->parallel_safe = rel->consider_parallel;
+		current_path->parallel_workers = 0;
+		current_path->pathkeys = NIL;	/* samplescan has unordered result */
+
+		/*
+		 * Now we send a fake path node (`current_path`) into the function below.
+		 * This is a little bit strange but we only need to get the result.
+		 * The only effect of `current_path` is to collect the output result.
+		 */
+		/* We override the original estimation of the rows. */
+		cost_samplescan(current_path, root, rel, pathnode->param_info, true, val);
+		/* Now we get the return values stored in the `current_path` object */
+
+		/* Now we calculate the startup cost and the total cost and update the expected cost */
+		exp_startup_cost += prob * current_path->startup_cost;
+		exp_total_cost += prob * current_path->total_cost;
+
+		/* We no longer need the `current_path` object now */
+		pfree(current_path);
+	}
+	/* Now we write the expected startup and total cost back to the `pathnode` object */
+	pathnode->startup_cost = exp_startup_cost;
+	pathnode->total_cost = exp_total_cost;
+
+	elog(LOG, "create_samplescan_path::[cost] expected_startup = %.5f; expected_total = %.5f",
+		 pathnode->startup_cost, pathnode->total_cost);
 
 	return pathnode;
 }
@@ -1015,8 +1113,7 @@ create_index_path(PlannerInfo *root,
 	pathnode->path.pathtype = indexonly ? T_IndexOnlyScan : T_IndexScan;
 	pathnode->path.parent = rel;
 	pathnode->path.pathtarget = rel->reltarget;
-	pathnode->path.param_info = get_baserel_parampathinfo(root, rel,
-														  required_outer);
+	pathnode->path.param_info = get_baserel_parampathinfo(root, rel, required_outer);
 	pathnode->path.parallel_aware = false;
 	pathnode->path.parallel_safe = rel->consider_parallel;
 	pathnode->path.parallel_workers = 0;
@@ -1028,7 +1125,63 @@ create_index_path(PlannerInfo *root,
 	pathnode->indexorderbycols = indexorderbycols;
 	pathnode->indexscandir = indexscandir;
 
-	cost_index(pathnode, root, loop_count, partial_path);
+	/* We add the distribution of rows here */
+	set_scan_path_rows_dist_with_ppi(rel, &pathnode->path, pathnode->path.param_info);
+
+	/* We still run the cost function but we will override some results afterwards */
+	cost_index(pathnode, root, loop_count, partial_path, false, 0.0);
+	elog(LOG, "create_index_path::[cost] original_startup = %.5f; original_total = %.5f",
+		 pathnode->path.startup_cost, pathnode->path.total_cost);
+
+	int count = pathnode->path.rows_dist->sample_count;
+	double exp_startup_cost = 0.0;
+	double exp_total_cost = 0.0;
+
+	for (int i = 0; i < count; ++i) {
+		/* Now we consider the entries in the distribution */
+		double prob = pathnode->path.rows_dist->probs[i];
+		double val = pathnode->path.rows_dist->vals[i];
+
+		IndexPath *current_path = makeNode(IndexPath);
+
+		current_path->path.pathtype = indexonly ? T_IndexOnlyScan : T_IndexScan;
+		current_path->path.parent = rel;
+		current_path->path.pathtarget = rel->reltarget;
+		current_path->path.param_info = get_baserel_parampathinfo(root, rel, required_outer);
+		current_path->path.parallel_aware = false;
+		current_path->path.parallel_safe = rel->consider_parallel;
+		current_path->path.parallel_workers = 0;
+		current_path->path.pathkeys = pathkeys;
+
+		current_path->indexinfo = index;
+		current_path->indexclauses = indexclauses;
+		current_path->indexorderbys = indexorderbys;
+		current_path->indexorderbycols = indexorderbycols;
+		current_path->indexscandir = indexscandir;
+
+		/*
+		 * Now we send a fake path node (`current_path`) into the function below.
+		 * This is a little bit strange but we only need to get the result.
+		 * The only effect of `current_path` is to collect the output result.
+		 */
+
+		/* We override the original estimation of the rows. */
+		cost_index(current_path, root, loop_count, partial_path, true, val);
+		/* Now we get the return values stored in the `current_path` object */
+
+		/* Now we calculate the startup cost and the total cost and update the expected cost */
+		exp_startup_cost += prob * current_path->path.startup_cost;
+		exp_total_cost += prob * current_path->path.total_cost;
+
+		/* We no longer need the `current_path` object now */
+		// pfree(current_path);
+	}
+	/* Now we write the expected startup and total cost back to the `pathnode` object */
+	pathnode->path.startup_cost = exp_startup_cost;
+	pathnode->path.total_cost = exp_total_cost;
+
+	elog(LOG, "create_index_path::[cost] expected_startup = %.5f; expected_total = %.5f",
+		 pathnode->path.startup_cost, pathnode->path.total_cost);
 
 	return pathnode;
 }
@@ -3918,7 +4071,7 @@ reparameterize_path(PlannerInfo *root, Path *path,
 				memcpy(newpath, ipath, sizeof(IndexPath));
 				newpath->path.param_info =
 					get_baserel_parampathinfo(root, rel, required_outer);
-				cost_index(newpath, root, loop_count, false);
+				cost_index(newpath, root, loop_count, false, false, 0.0);
 				return (Path *) newpath;
 			}
 		case T_BitmapHeapScan:
@@ -4395,6 +4548,7 @@ do { \
 		ADJUST_CHILD_ATTRS(new_ppi->ppi_clauses);
 		new_ppi->ppi_serials = bms_copy(old_ppi->ppi_serials);
 		rel->ppilist = lappend(rel->ppilist, new_ppi);
+		elog(LOG, "reparameterize_path_by_child::[baserel] %s", get_baserel_alias(root, rel->relid));
 
 		MemoryContextSwitchTo(oldcontext);
 	}
