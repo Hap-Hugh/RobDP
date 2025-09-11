@@ -790,8 +790,13 @@ try_nestloop_path(PlannerInfo *root,
 	 * The latter two steps are expensive enough to make this two-phase
 	 * methodology worthwhile.
 	 */
-	initial_cost_nestloop(root, &workspace, jointype,
-						  outer_path, inner_path, extra);
+	if (enable_rows_dist) {
+		initial_cost_nestloop_exp(root, &workspace, jointype,
+					  outer_path, inner_path, extra);
+	} else {
+		initial_cost_nestloop(root, &workspace, jointype,
+					  outer_path, inner_path, extra);
+	}
 
 	if (add_path_precheck(joinrel,
 						  workspace.startup_cost, workspace.total_cost,
@@ -884,8 +889,14 @@ try_partial_nestloop_path(PlannerInfo *root,
 	 * Before creating a path, get a quick lower bound on what it is likely to
 	 * cost.  Bail out right away if it looks terrible.
 	 */
-	initial_cost_nestloop(root, &workspace, jointype,
+	if (enable_rows_dist) {
+		initial_cost_nestloop_exp(root, &workspace, jointype,
 						  outer_path, inner_path, extra);
+	} else {
+		initial_cost_nestloop(root, &workspace, jointype,
+						  outer_path, inner_path, extra);
+	}
+
 	if (!add_partial_path_precheck(joinrel, workspace.total_cost, pathkeys))
 		return;
 
@@ -994,10 +1005,17 @@ try_mergejoin_path(PlannerInfo *root,
 	/*
 	 * See comments in try_nestloop_path().
 	 */
-	initial_cost_mergejoin(root, &workspace, jointype, mergeclauses,
+	if (enable_rows_dist) {
+		initial_cost_mergejoin_exp(root, &workspace, jointype, mergeclauses,
 						   outer_path, inner_path,
 						   outersortkeys, innersortkeys,
 						   extra);
+	} else {
+		initial_cost_mergejoin(root, &workspace, jointype, mergeclauses,
+						   outer_path, inner_path,
+						   outersortkeys, innersortkeys,
+						   extra);
+	}
 
 	if (add_path_precheck(joinrel,
 						  workspace.startup_cost, workspace.total_cost,
@@ -1070,10 +1088,17 @@ try_partial_mergejoin_path(PlannerInfo *root,
 	/*
 	 * See comments in try_partial_nestloop_path().
 	 */
-	initial_cost_mergejoin(root, &workspace, jointype, mergeclauses,
+	if (enable_rows_dist) {
+		initial_cost_mergejoin_exp(root, &workspace, jointype, mergeclauses,
 						   outer_path, inner_path,
 						   outersortkeys, innersortkeys,
 						   extra);
+	} else {
+		initial_cost_mergejoin(root, &workspace, jointype, mergeclauses,
+						   outer_path, inner_path,
+						   outersortkeys, innersortkeys,
+						   extra);
+	}
 
 	if (!add_partial_path_precheck(joinrel, workspace.total_cost, pathkeys))
 		return;
@@ -1141,8 +1166,13 @@ try_hashjoin_path(PlannerInfo *root,
 	 * See comments in try_nestloop_path().  Also note that hashjoin paths
 	 * never have any output pathkeys, per comments in create_hashjoin_path.
 	 */
-	initial_cost_hashjoin(root, &workspace, jointype, hashclauses,
+	if (enable_rows_dist) {
+		initial_cost_hashjoin_exp(root, &workspace, jointype, hashclauses,
 						  outer_path, inner_path, extra, false);
+	} else {
+		initial_cost_hashjoin(root, &workspace, jointype, hashclauses,
+						  outer_path, inner_path, extra, false);
+	}
 
 	if (add_path_precheck(joinrel,
 						  workspace.startup_cost, workspace.total_cost,
@@ -1208,8 +1238,14 @@ try_partial_hashjoin_path(PlannerInfo *root,
 	 * Before creating a path, get a quick lower bound on what it is likely to
 	 * cost.  Bail out right away if it looks terrible.
 	 */
-	initial_cost_hashjoin(root, &workspace, jointype, hashclauses,
+	if (enable_rows_dist) {
+		initial_cost_hashjoin_exp(root, &workspace, jointype, hashclauses,
 						  outer_path, inner_path, extra, parallel_hash);
+	} else {
+		initial_cost_hashjoin(root, &workspace, jointype, hashclauses,
+						  outer_path, inner_path, extra, parallel_hash);
+	}
+
 	if (!add_partial_path_precheck(joinrel, workspace.total_cost, NIL))
 		return;
 

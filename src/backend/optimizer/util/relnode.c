@@ -1596,10 +1596,13 @@ get_baserel_parampathinfo(PlannerInfo *root, RelOptInfo *baserel,
 	ppi = makeNode(ParamPathInfo);
 	ppi->ppi_req_outer = required_outer;
 	ppi->ppi_rows = rows;
-	ppi->rows_dist = make_single_point_dist(rows);
 	ppi->ppi_clauses = pclauses;
 	ppi->ppi_serials = pserials;
 	baserel->ppilist = lappend(baserel->ppilist, ppi);
+
+	if (enable_rows_dist) {
+		ppi->rows_dist = make_single_point_dist(rows);
+	}
 
 	return ppi;
 }

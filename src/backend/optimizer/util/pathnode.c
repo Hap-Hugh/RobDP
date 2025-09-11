@@ -946,7 +946,11 @@ create_seqscan_path(PlannerInfo *root, RelOptInfo *rel,
 	pathnode->parallel_workers = parallel_workers;
 	pathnode->pathkeys = NIL;	/* seqscan has unordered result */
 
-	cost_seqscan(pathnode, root, rel, pathnode->param_info);
+	if (enable_rows_dist) {
+		cost_seqscan_exp(pathnode, root, rel, pathnode->param_info);
+	} else {
+		cost_seqscan(pathnode, root, rel, pathnode->param_info);
+	}
 
 	return pathnode;
 }
@@ -970,7 +974,11 @@ create_samplescan_path(PlannerInfo *root, RelOptInfo *rel, Relids required_outer
 	pathnode->parallel_workers = 0;
 	pathnode->pathkeys = NIL;	/* samplescan has unordered result */
 
-	cost_samplescan(pathnode, root, rel, pathnode->param_info);
+	if (enable_rows_dist) {
+		cost_samplescan_exp(pathnode, root, rel, pathnode->param_info);
+	} else {
+		cost_samplescan(pathnode, root, rel, pathnode->param_info);
+	}
 
 	return pathnode;
 }
@@ -1028,7 +1036,11 @@ create_index_path(PlannerInfo *root,
 	pathnode->indexorderbycols = indexorderbycols;
 	pathnode->indexscandir = indexscandir;
 
-	cost_index(pathnode, root, loop_count, partial_path);
+	if (enable_rows_dist) {
+		cost_index_exp(pathnode, root, loop_count, partial_path);
+	} else {
+		cost_index(pathnode, root, loop_count, partial_path);
+	}
 
 	return pathnode;
 }
@@ -1067,9 +1079,15 @@ create_bitmap_heap_path(PlannerInfo *root,
 
 	pathnode->bitmapqual = bitmapqual;
 
-	cost_bitmap_heap_scan(&pathnode->path, root, rel,
-						  pathnode->path.param_info,
-						  bitmapqual, loop_count);
+	if (enable_rows_dist) {
+		cost_bitmap_heap_scan_exp(&pathnode->path, root, rel,
+							  pathnode->path.param_info,
+							  bitmapqual, loop_count);
+	} else {
+		cost_bitmap_heap_scan(&pathnode->path, root, rel,
+							  pathnode->path.param_info,
+							  bitmapqual, loop_count);
+	}
 
 	return pathnode;
 }
@@ -1200,8 +1218,13 @@ create_tidscan_path(PlannerInfo *root, RelOptInfo *rel, List *tidquals,
 
 	pathnode->tidquals = tidquals;
 
-	cost_tidscan(&pathnode->path, root, rel, tidquals,
-				 pathnode->path.param_info);
+	if (enable_rows_dist) {
+		cost_tidscan_exp(&pathnode->path, root, rel, tidquals,
+					 pathnode->path.param_info);
+	} else {
+		cost_tidscan(&pathnode->path, root, rel, tidquals,
+					 pathnode->path.param_info);
+	}
 
 	return pathnode;
 }
@@ -1229,8 +1252,13 @@ create_tidrangescan_path(PlannerInfo *root, RelOptInfo *rel,
 
 	pathnode->tidrangequals = tidrangequals;
 
-	cost_tidrangescan(&pathnode->path, root, rel, tidrangequals,
-					  pathnode->path.param_info);
+	if (enable_rows_dist) {
+		cost_tidrangescan_exp(&pathnode->path, root, rel, tidrangequals,
+						  pathnode->path.param_info);
+	} else {
+		cost_tidrangescan(&pathnode->path, root, rel, tidrangequals,
+						  pathnode->path.param_info);
+	}
 
 	return pathnode;
 }
@@ -1922,8 +1950,13 @@ create_gather_merge_path(PlannerInfo *root, RelOptInfo *rel, Path *subpath,
 		input_total_cost += sort_path.total_cost;
 	}
 
-	cost_gather_merge(pathnode, root, rel, pathnode->path.param_info,
+	if (enable_rows_dist) {
+		cost_gather_merge_exp(pathnode, root, rel, pathnode->path.param_info,
+						  input_startup_cost, input_total_cost, rows);
+	} else {
+		cost_gather_merge(pathnode, root, rel, pathnode->path.param_info,
 					  input_startup_cost, input_total_cost, rows);
+	}
 
 	return pathnode;
 }
@@ -1994,7 +2027,11 @@ create_gather_path(PlannerInfo *root, RelOptInfo *rel, Path *subpath,
 		pathnode->single_copy = true;
 	}
 
-	cost_gather(pathnode, root, rel, pathnode->path.param_info, rows);
+	if (enable_rows_dist) {
+		cost_gather_exp(pathnode, root, rel, pathnode->path.param_info, rows);
+	} else {
+		cost_gather(pathnode, root, rel, pathnode->path.param_info, rows);
+	}
 
 	return pathnode;
 }
@@ -2483,7 +2520,11 @@ create_nestloop_path(PlannerInfo *root,
 	pathnode->jpath.innerjoinpath = inner_path;
 	pathnode->jpath.joinrestrictinfo = restrict_clauses;
 
-	final_cost_nestloop(root, pathnode, workspace, extra);
+	if (enable_rows_dist) {
+		final_cost_nestloop_exp(root, pathnode, workspace, extra);
+	} else {
+		final_cost_nestloop(root, pathnode, workspace, extra);
+	}
 
 	return pathnode;
 }
@@ -2552,7 +2593,11 @@ create_mergejoin_path(PlannerInfo *root,
 	/* pathnode->skip_mark_restore will be set by final_cost_mergejoin */
 	/* pathnode->materialize_inner will be set by final_cost_mergejoin */
 
-	final_cost_mergejoin(root, pathnode, workspace, extra);
+	if (enable_rows_dist) {
+		final_cost_mergejoin_exp(root, pathnode, workspace, extra);
+	} else {
+		final_cost_mergejoin(root, pathnode, workspace, extra);
+	}
 
 	return pathnode;
 }
@@ -2626,7 +2671,11 @@ create_hashjoin_path(PlannerInfo *root,
 	pathnode->path_hashclauses = hashclauses;
 	/* final_cost_hashjoin will fill in pathnode->num_batches */
 
-	final_cost_hashjoin(root, pathnode, workspace, extra);
+	if (enable_rows_dist) {
+		final_cost_hashjoin_exp(root, pathnode, workspace, extra);
+	} else {
+		final_cost_hashjoin(root, pathnode, workspace, extra);
+	}
 
 	return pathnode;
 }
@@ -3918,7 +3967,11 @@ reparameterize_path(PlannerInfo *root, Path *path,
 				memcpy(newpath, ipath, sizeof(IndexPath));
 				newpath->path.param_info =
 					get_baserel_parampathinfo(root, rel, required_outer);
-				cost_index(newpath, root, loop_count, false);
+				if (enable_rows_dist) {
+					cost_index_exp(newpath, root, loop_count, false);
+				} else {
+					cost_index(newpath, root, loop_count, false);
+				}
 				return (Path *) newpath;
 			}
 		case T_BitmapHeapScan:

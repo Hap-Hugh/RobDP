@@ -1591,11 +1591,19 @@ bitmap_scan_cost_est(PlannerInfo *root, RelOptInfo *rel, Path *ipath)
 	bpath.path.parallel_workers = 0;
 
 	/* Now we can do cost_bitmap_heap_scan */
-	cost_bitmap_heap_scan(&bpath.path, root, rel,
-						  bpath.path.param_info,
-						  ipath,
-						  get_loop_count(root, rel->relid,
-										 PATH_REQ_OUTER(ipath)));
+	if (enable_rows_dist) {
+		cost_bitmap_heap_scan_exp(&bpath.path, root, rel,
+							  bpath.path.param_info,
+							  ipath,
+							  get_loop_count(root, rel->relid,
+											 PATH_REQ_OUTER(ipath)));
+	} else {
+		cost_bitmap_heap_scan(&bpath.path, root, rel,
+							  bpath.path.param_info,
+							  ipath,
+							  get_loop_count(root, rel->relid,
+											 PATH_REQ_OUTER(ipath)));
+	}
 
 	return bpath.path.total_cost;
 }

@@ -100,6 +100,8 @@
 #include "utils/spccache.h"
 #include "utils/tuplesort.h"
 
+/* GUC Parameters */
+bool enable_rows_dist = true;
 
 #define LOG2(x)  (log(x) / 0.693147180559945)
 
@@ -1203,6 +1205,248 @@ cost_index(IndexPath *path, PlannerInfo *root, double loop_count,
 }
 
 /*
+ * cost_index_exp
+ *    Compute the expected cost of an IndexScan/IndexOnlyScan using a
+ *    distribution over output rows.
+ *
+ * Dependence on rows:
+ *  - Index access method costs (indexStartupCost/indexTotalCost) do not
+ *    depend on output rows.
+ *  - Heap I/O cost is estimated from tuples_fetched and correlation;
+ *    independent of output rows.
+ *  - Restriction qual CPU cost is per fetched tuple (tuples_fetched);
+ *    independent of output rows.
+ *  - The only rows-dependent component is the pathtarget per-output-row cost:
+ *        per_tuple_tlist_cost * rows
+ *    This term is treated as linear in the number of output rows. For
+ *    expectation we use:
+ *        Non-parallel: per_tuple_tlist_cost * E[rows]
+ *        Parallel:     per_tuple_tlist_cost * (E[rows] / divisor)
+ *    Here clamp_row_est() is assumed to be effectively linear, so we replace
+ *    E[clamp(rows/divisor)] with clamp(E[rows]/divisor).
+ *
+ * Row distribution:
+ *  - If the path is parameterized, we attach a single-point distribution
+ *    built from ppi_rows.
+ *  - Otherwise, we attach baserel->rows_dist.
+ */
+void
+cost_index_exp(IndexPath *path, PlannerInfo *root, double loop_count,
+               bool partial_path) {
+    IndexOptInfo *index = path->indexinfo;
+    RelOptInfo *baserel = index->rel;
+    bool indexonly = (path->path.pathtype == T_IndexOnlyScan);
+    amcostestimate_function amcostestimate;
+    List *qpquals;
+    Cost startup_cost = 0;
+    Cost run_cost = 0;
+    Cost cpu_run_cost = 0;
+    Cost indexStartupCost;
+    Cost indexTotalCost;
+    Selectivity indexSelectivity;
+    double indexCorrelation, csquared;
+    double spc_seq_page_cost, spc_random_page_cost;
+    Cost min_IO_cost, max_IO_cost;
+    QualCost qpqual_cost;
+    Cost cpu_per_tuple;
+    double tuples_fetched;
+    double pages_fetched;
+    double rand_heap_pages;
+    double index_pages;
+    const Distribution *rows_dist;
+
+    /* Should only be applied to base relations */
+    Assert(IsA(baserel, RelOptInfo) && IsA(index, IndexOptInfo));
+    Assert(baserel->relid > 0);
+    Assert(baserel->rtekind == RTE_RELATION);
+
+    /*
+     * Determine rows and attach a corresponding distribution to the path.
+     * We may overwrite path->path.rows later with its expected value.
+     * Also identify qpquals as in upstream.
+     */
+    if (path->path.param_info) {
+        path->path.rows = path->path.param_info->ppi_rows;
+        path->path.rows_dist = path->path.param_info->rows_dist;
+
+        /* qpquals come from the rel's restriction clauses and ppi_clauses */
+        qpquals = list_concat(
+            extract_nonindex_conditions(path->indexinfo->indrestrictinfo,
+                                        path->indexclauses),
+            extract_nonindex_conditions(path->path.param_info->ppi_clauses,
+                                        path->indexclauses));
+    } else {
+        path->path.rows = baserel->rows;
+        path->path.rows_dist = baserel->rows_dist;
+
+        /* qpquals come from just the rel's restriction clauses */
+        qpquals = extract_nonindex_conditions(path->indexinfo->indrestrictinfo,
+                                              path->indexclauses);
+    }
+    rows_dist = path->path.rows_dist; /* assumed valid: non-empty with probs/vals */
+
+    if (!enable_indexscan)
+        startup_cost += disable_cost;
+    /* enable_indexonlyscan already checked upstream */
+
+    /*
+     * AM-specific estimate for index scan proper.
+     */
+    amcostestimate = (amcostestimate_function) index->amcostestimate;
+    amcostestimate(root, path, loop_count,
+                   &indexStartupCost, &indexTotalCost,
+                   &indexSelectivity, &indexCorrelation,
+                   &index_pages);
+
+    /* Save for possible BitmapIndexScan */
+    path->indextotalcost = indexTotalCost;
+    path->indexselectivity = indexSelectivity;
+
+    /* Index AM costs */
+    startup_cost += indexStartupCost;
+    run_cost += indexTotalCost - indexStartupCost;
+
+    /* Estimate number of heap tuples fetched (scalar) */
+    tuples_fetched = clamp_row_est(indexSelectivity * baserel->tuples);
+
+    /* Tablespace page costs */
+    get_tablespace_page_costs(baserel->reltablespace,
+                              &spc_random_page_cost,
+                              &spc_seq_page_cost);
+
+    /*----------
+     * Estimate heap page I/O and cost (rows-independent).
+     * See upstream comments for rationale of the two cases.
+     *----------
+     */
+    if (loop_count > 1) {
+        /* Uncorrelated case across repeated scans */
+        pages_fetched = index_pages_fetched(tuples_fetched * loop_count,
+                                            baserel->pages,
+                                            (double) index->pages,
+                                            root);
+
+        if (indexonly)
+            pages_fetched = ceil(pages_fetched * (1.0 - baserel->allvisfrac));
+
+        rand_heap_pages = pages_fetched;
+
+        max_IO_cost = (pages_fetched * spc_random_page_cost) / loop_count;
+
+        /* Perfectly correlated per-scan pages, then caching across scans */
+        pages_fetched = ceil(indexSelectivity * (double) baserel->pages);
+
+        pages_fetched = index_pages_fetched(pages_fetched * loop_count,
+                                            baserel->pages,
+                                            (double) index->pages,
+                                            root);
+
+        if (indexonly)
+            pages_fetched = ceil(pages_fetched * (1.0 - baserel->allvisfrac));
+
+        min_IO_cost = (pages_fetched * spc_random_page_cost) / loop_count;
+    } else {
+        /* Normal single-scan case */
+        pages_fetched = index_pages_fetched(tuples_fetched,
+                                            baserel->pages,
+                                            (double) index->pages,
+                                            root);
+
+        if (indexonly)
+            pages_fetched = ceil(pages_fetched * (1.0 - baserel->allvisfrac));
+
+        rand_heap_pages = pages_fetched;
+
+        /* Uncorrelated (csquared=0) */
+        max_IO_cost = pages_fetched * spc_random_page_cost;
+
+        /* Perfectly correlated (csquared=1) */
+        pages_fetched = ceil(indexSelectivity * (double) baserel->pages);
+
+        if (indexonly)
+            pages_fetched = ceil(pages_fetched * (1.0 - baserel->allvisfrac));
+
+        if (pages_fetched > 0) {
+            min_IO_cost = spc_random_page_cost;
+            if (pages_fetched > 1)
+                min_IO_cost += (pages_fetched - 1) * spc_seq_page_cost;
+        } else
+            min_IO_cost = 0;
+    }
+
+    if (partial_path) {
+        /* For parallel path generation (rows-independent part) */
+        if (indexonly)
+            rand_heap_pages = -1;
+
+        path->path.parallel_workers =
+                compute_parallel_worker(baserel,
+                                        rand_heap_pages,
+                                        index_pages,
+                                        max_parallel_workers_per_gather);
+
+        if (path->path.parallel_workers <= 0)
+            return;
+
+        path->path.parallel_aware = true;
+    }
+
+    /* Interpolate I/O cost based on index order correlation */
+    csquared = indexCorrelation * indexCorrelation;
+    run_cost += max_IO_cost + csquared * (min_IO_cost - max_IO_cost);
+
+    /*
+     * CPU costs per fetched tuple (rows-independent).
+     */
+    cost_qual_eval(&qpqual_cost, qpquals, root);
+
+    startup_cost += qpqual_cost.startup;
+    cpu_per_tuple = cpu_tuple_cost + qpqual_cost.per_tuple;
+
+    cpu_run_cost += cpu_per_tuple * tuples_fetched;
+
+    /* Targetlist evaluation: startup once + per-output-row (rows-dependent) */
+    startup_cost += path->path.pathtarget->cost.startup;
+
+    /* ----- Rows-dependent block (assuming clamp_row_est is effectively linear) ----- */
+    /* We approximate: E[clamp_row_est(rows/div)] ≈ clamp_row_est(E[rows]/div). */
+    /* Hence all rows-dependent terms become linear in E[rows]. */
+
+    double tlist_per_tuple = path->path.pathtarget->cost.per_tuple;
+    rows_dist = path->path.rows_dist; /* assumed valid */
+    double mean_rows = 0.0;
+
+    /* Compute E[rows] from the distribution (simple mean). */
+    for (int i = 0; i < rows_dist->sample_count; ++i)
+        mean_rows += rows_dist->probs[i] * rows_dist->vals[i];
+
+    if (path->path.parallel_workers > 0) {
+        double divisor = get_parallel_divisor(&path->path);
+        double expected_rows_per_worker = clamp_row_est(mean_rows / divisor);
+
+        /* Divide fetched-tuple CPU among workers (rows-independent part). */
+        cpu_run_cost /= divisor;
+
+        /* Add tlist per-output-row cost using the linearized expectation. */
+        cpu_run_cost += tlist_per_tuple * expected_rows_per_worker;
+
+        /* Record expected per-worker rows for downstream consumers. */
+        path->path.rows = expected_rows_per_worker;
+    } else {
+        /* Non-parallel: strictly linear in rows. */
+        cpu_run_cost += tlist_per_tuple * mean_rows;
+
+        /* Record expected rows for downstream consumers. */
+        path->path.rows = clamp_row_est(mean_rows);
+    }
+
+    run_cost += cpu_run_cost;
+
+    path->path.startup_cost = startup_cost;
+    path->path.total_cost = startup_cost + run_cost;
+}
+
+/*
  * extract_nonindex_conditions
  *
  * Given a list of quals to be enforced in an indexscan, extract the ones that
@@ -1469,6 +1713,129 @@ cost_bitmap_heap_scan(Path *path, PlannerInfo *root, RelOptInfo *baserel,
 }
 
 /*
+ * cost_bitmap_heap_scan_exp
+ *    Compute the expected cost of a Bitmap Heap Scan assuming clamp_row_est()
+ *    is effectively linear. Under this assumption we use:
+ *
+ *      Non-parallel: per_tuple_tlist_cost * E[rows]
+ *      Parallel:     per_tuple_tlist_cost * clamp_row_est(E[rows] / divisor)
+ */
+void
+cost_bitmap_heap_scan_exp(Path *path, PlannerInfo *root, RelOptInfo *baserel,
+                          ParamPathInfo *param_info,
+                          Path *bitmapqual, double loop_count) {
+    Cost startup_cost = 0;
+    Cost run_cost = 0;
+    Cost indexTotalCost;
+    QualCost qpqual_cost;
+    Cost cpu_per_tuple;
+    Cost cost_per_page;
+    Cost cpu_run_cost;
+    double tuples_fetched;
+    double pages_fetched;
+    double spc_seq_page_cost,
+            spc_random_page_cost;
+    double T;
+    const Distribution *rows_dist;
+
+    /* Should only be applied to base relations */
+    Assert(IsA(baserel, RelOptInfo));
+    Assert(baserel->relid > 0);
+    Assert(baserel->rtekind == RTE_RELATION);
+
+    /*
+     * Mark the path with the correct row estimate and attach the
+     * corresponding distribution. We will overwrite path->rows below with
+     * the expected value for downstream consistency.
+     */
+    if (param_info) {
+        path->rows = param_info->ppi_rows;
+        path->rows_dist = param_info->rows_dist; /* assumed valid */
+    } else {
+        path->rows = baserel->rows;
+        path->rows_dist = baserel->rows_dist; /* assumed valid */
+    }
+    rows_dist = path->rows_dist; /* non-NULL with valid probs/vals */
+
+    if (!enable_bitmapscan)
+        startup_cost += disable_cost;
+
+    /* Bitmap index work and tuples/pages estimates (rows-independent) */
+    pages_fetched = compute_bitmap_pages(root, baserel, bitmapqual,
+                                         loop_count, &indexTotalCost,
+                                         &tuples_fetched);
+
+    startup_cost += indexTotalCost;
+    T = (baserel->pages > 1) ? (double) baserel->pages : 1.0;
+
+    /* Tablespace page costs */
+    get_tablespace_page_costs(baserel->reltablespace,
+                              &spc_random_page_cost,
+                              &spc_seq_page_cost);
+
+    /*
+     * Interpolate per-page cost between random and sequential as a function
+     * of coverage; this is rows-independent.
+     */
+    if (pages_fetched >= 2.0)
+        cost_per_page = spc_random_page_cost -
+                        (spc_random_page_cost - spc_seq_page_cost)
+                        * sqrt(pages_fetched / T);
+    else
+        cost_per_page = spc_random_page_cost;
+
+    run_cost += pages_fetched * cost_per_page;
+
+    /*
+     * CPU costs per fetched tuple (rows-independent).
+     * We conservatively assume indexquals are rechecked.
+     */
+    get_restriction_qual_cost(root, baserel, param_info, &qpqual_cost);
+
+    startup_cost += qpqual_cost.startup;
+    cpu_per_tuple = cpu_tuple_cost + qpqual_cost.per_tuple;
+    cpu_run_cost = cpu_per_tuple * tuples_fetched;
+
+    /* Divide fetched-tuple CPU among workers if parallel; rows-independent. */
+    if (path->parallel_workers > 0) {
+        double parallel_divisor = get_parallel_divisor(path);
+        cpu_run_cost /= parallel_divisor;
+    }
+
+    run_cost += cpu_run_cost;
+
+    /* Targetlist evaluation: startup once + per-output-row (rows-dependent). */
+    startup_cost += path->pathtarget->cost.startup;
+
+    double tlist_per_tuple = path->pathtarget->cost.per_tuple;
+    double mean_rows = 0.0;
+
+    /* Compute E[rows] from the distribution */
+    for (int i = 0; i < rows_dist->sample_count; i++)
+        mean_rows += rows_dist->probs[i] * rows_dist->vals[i];
+
+    if (path->parallel_workers > 0) {
+        double divisor = get_parallel_divisor(path);
+        /* Linearized clamp assumption: clamp(E[rows]/divisor) */
+        double expected_rows_per_worker = clamp_row_est(mean_rows / divisor);
+
+        run_cost += tlist_per_tuple * expected_rows_per_worker;
+
+        /* Record expected per-worker rows */
+        path->rows = expected_rows_per_worker;
+    } else {
+        /* Strictly linear in rows for non-parallel */
+        run_cost += tlist_per_tuple * mean_rows;
+
+        /* Record expected rows */
+        path->rows = clamp_row_est(mean_rows);
+    }
+
+    path->startup_cost = startup_cost;
+    path->total_cost = startup_cost + run_cost;
+}
+
+/*
  * cost_bitmap_tree_node
  *		Extract cost and selectivity from a bitmap tree node (index/and/or)
  */
@@ -1686,6 +2053,125 @@ cost_tidscan(Path *path, PlannerInfo *root,
 }
 
 /*
+ * cost_tidscan_exp
+ *    Compute the expected cost of a TID Scan using a distribution over
+ *    output rows. We assume clamp_row_est() is effectively linear, so the
+ *    per-output-row tlist term uses E[rows] directly.
+ *
+ * Rows dependence:
+ *  - All disk and qpqual CPU terms are independent of output rows and use
+ *    the same logic as upstream.
+ *  - Only the pathtarget per-output-row term depends on rows:
+ *        per_tuple_tlist_cost * E[rows]
+ *    We compute E[rows] from the attached distribution and record
+ *    path->rows := clamp_row_est(E[rows]) for downstream consistency.
+ */
+void
+cost_tidscan_exp(Path *path, PlannerInfo *root,
+                 RelOptInfo *baserel, List *tidquals, ParamPathInfo *param_info) {
+    Cost startup_cost = 0;
+    Cost run_cost = 0;
+    bool isCurrentOf = false;
+    QualCost qpqual_cost;
+    Cost cpu_per_tuple;
+    QualCost tid_qual_cost;
+    int ntuples;
+    ListCell *l;
+    double spc_random_page_cost;
+    const Distribution *rows_dist;
+
+    /* Should only be applied to base relations */
+    Assert(baserel->relid > 0);
+    Assert(baserel->rtekind == RTE_RELATION);
+
+    /*
+     * Mark the path with the correct row estimate and attach a distribution.
+     * We will overwrite path->rows below with E[rows] (clamped) to keep
+     * downstream costing consistent.
+     */
+    if (param_info) {
+        path->rows = param_info->ppi_rows;
+        path->rows_dist = param_info->rows_dist; /* assumed valid */
+    } else {
+        path->rows = baserel->rows;
+        path->rows_dist = baserel->rows_dist; /* assumed valid */
+    }
+    rows_dist = path->rows_dist; /* non-NULL with valid probs/vals */
+
+    /* Count how many tuples we expect to retrieve */
+    ntuples = 0;
+    foreach(l, tidquals) {
+        RestrictInfo *rinfo = lfirst_node(RestrictInfo, l);
+        Expr *qual = rinfo->clause;
+
+        if (IsA(qual, ScalarArrayOpExpr)) {
+            /* Each element of the array yields 1 tuple */
+            ScalarArrayOpExpr *saop = (ScalarArrayOpExpr *) qual;
+            Node *arraynode = (Node *) lsecond(saop->args);
+
+            ntuples += estimate_array_length(arraynode);
+        } else if (IsA(qual, CurrentOfExpr)) {
+            /* CURRENT OF yields 1 tuple */
+            isCurrentOf = true;
+            ntuples++;
+        } else {
+            /* It's just CTID = something, count 1 tuple */
+            ntuples++;
+        }
+    }
+
+    /*
+     * We must force TID scan for WHERE CURRENT OF (see upstream rationale).
+     */
+    if (isCurrentOf) {
+        Assert(baserel->baserestrictcost.startup >= disable_cost);
+        startup_cost -= disable_cost;
+    } else if (!enable_tidscan)
+        startup_cost += disable_cost;
+
+    /*
+     * The TID qual expressions will be computed once, any other baserestrict
+     * quals once per retrieved tuple.
+     */
+    cost_qual_eval(&tid_qual_cost, tidquals, root);
+
+    /* fetch estimated page cost for tablespace containing table */
+    get_tablespace_page_costs(baserel->reltablespace,
+                              &spc_random_page_cost,
+                              NULL);
+
+    /* disk costs --- assume each tuple on a different page */
+    run_cost += spc_random_page_cost * ntuples;
+
+    /* Add scanning CPU costs */
+    get_restriction_qual_cost(root, baserel, param_info, &qpqual_cost);
+
+    /* XXX currently we assume TID quals are a subset of qpquals */
+    startup_cost += qpqual_cost.startup + tid_qual_cost.per_tuple;
+    cpu_per_tuple = cpu_tuple_cost + qpqual_cost.per_tuple -
+                    tid_qual_cost.per_tuple;
+    run_cost += cpu_per_tuple * ntuples;
+
+    /* Targetlist evaluation: startup once + per-output-row (rows-dependent). */
+    startup_cost += path->pathtarget->cost.startup;
+
+    double tlist_per_tuple = path->pathtarget->cost.per_tuple;
+    double mean_rows = 0.0;
+
+    /* Compute E[rows] from the distribution (clamp assumed linear). */
+    for (int i = 0; i < rows_dist->sample_count; i++)
+        mean_rows += rows_dist->probs[i] * rows_dist->vals[i];
+
+    run_cost += tlist_per_tuple * mean_rows;
+
+    /* Record expected rows for downstream consumers */
+    path->rows = clamp_row_est(mean_rows);
+
+    path->startup_cost = startup_cost;
+    path->total_cost = startup_cost + run_cost;
+}
+
+/*
  * cost_tidrangescan
  *	  Determines and sets the costs of scanning a relation using a range of
  *	  TIDs for 'path'
@@ -1780,6 +2266,120 @@ cost_tidrangescan(Path *path, PlannerInfo *root,
 }
 
 /*
+ * cost_tidrangescan_exp
+ *    Compute the expected cost of a TID Range Scan using a distribution
+ *    over output rows. We assume clamp_row_est() is effectively linear,
+ *    so the per-output-row tlist term uses E[rows] directly.
+ *
+ * Rows dependence:
+ *  - Disk I/O (1 random + remaining sequential pages), selectivity,
+ *    and qpqual CPU costs depend on pages/tuples estimated from the range
+ *    quals; they are independent of the final output row count.
+ *  - Only the pathtarget per-output-row term depends on rows:
+ *        per_tuple_tlist_cost * E[rows]
+ *    We compute E[rows] from the attached distribution and record
+ *    path->rows := clamp_row_est(E[rows]) for downstream consistency.
+ */
+void
+cost_tidrangescan_exp(Path *path, PlannerInfo *root,
+                      RelOptInfo *baserel, List *tidrangequals,
+                      ParamPathInfo *param_info) {
+    Selectivity selectivity;
+    double pages;
+    Cost startup_cost = 0;
+    Cost run_cost = 0;
+    QualCost qpqual_cost;
+    Cost cpu_per_tuple;
+    QualCost tid_qual_cost;
+    double ntuples;
+    double nseqpages;
+    double spc_random_page_cost;
+    double spc_seq_page_cost;
+    const Distribution *rows_dist;
+
+    /* Should only be applied to base relations */
+    Assert(baserel->relid > 0);
+    Assert(baserel->rtekind == RTE_RELATION);
+
+    /*
+     * Establish the source of 'rows' and attach a distribution.
+     * We will overwrite path->rows below with E[rows] (clamped).
+     */
+    if (param_info) {
+        path->rows = param_info->ppi_rows;
+        path->rows_dist = param_info->rows_dist; /* assumed valid */
+    } else {
+        path->rows = baserel->rows;
+        path->rows_dist = baserel->rows_dist; /* assumed valid */
+    }
+    rows_dist = path->rows_dist; /* non-NULL with valid probs/vals */
+
+    /* Count how many tuples and pages we expect to scan */
+    selectivity = clauselist_selectivity(root, tidrangequals, baserel->relid,
+                                         JOIN_INNER, NULL);
+    pages = ceil(selectivity * baserel->pages);
+    if (pages <= 0.0)
+        pages = 1.0;
+
+    /*
+     * The first page in a range requires a random seek; subsequent pages are
+     * sequential reads. We intentionally keep TID Range Scan a bit more
+     * expensive than a plain SeqScan when comparable, to prefer SeqScan unless
+     * range scan genuinely wins.
+     */
+    ntuples = selectivity * baserel->tuples;
+    nseqpages = pages - 1.0;
+
+    if (!enable_tidscan)
+        startup_cost += disable_cost;
+
+    /*
+     * TID range qual expressions are computed once; other baserestrict quals
+     * are charged per retrieved tuple.
+     */
+    cost_qual_eval(&tid_qual_cost, tidrangequals, root);
+
+    /* Fetch estimated page costs for the relation's tablespace */
+    get_tablespace_page_costs(baserel->reltablespace,
+                              &spc_random_page_cost,
+                              &spc_seq_page_cost);
+
+    /* Disk costs: 1 random page + remaining sequential pages */
+    run_cost += spc_random_page_cost + spc_seq_page_cost * nseqpages;
+
+    /* Add scanning CPU costs */
+    get_restriction_qual_cost(root, baserel, param_info, &qpqual_cost);
+
+    /*
+     * Assume TID quals are a subset of qpquals and will be removed at plan
+     * creation time; subtract their per-tuple cost here (as upstream).
+     */
+    startup_cost += qpqual_cost.startup + tid_qual_cost.per_tuple;
+    cpu_per_tuple = cpu_tuple_cost + qpqual_cost.per_tuple - tid_qual_cost.per_tuple;
+    run_cost += cpu_per_tuple * ntuples;
+
+    /* Targetlist evaluation: startup once + per-output-row (rows-dependent). */
+    startup_cost += path->pathtarget->cost.startup;
+
+    {
+        double tlist_per_tuple = path->pathtarget->cost.per_tuple;
+        double mean_rows = 0.0;
+
+        /* E[rows] under the (effectively linear) clamp assumption */
+        for (int i = 0; i < rows_dist->sample_count; i++)
+            mean_rows += rows_dist->probs[i] * rows_dist->vals[i];
+
+        run_cost += tlist_per_tuple * mean_rows;
+
+        /* Record expected rows for downstream consumers */
+        path->rows = clamp_row_est(mean_rows);
+    }
+
+    path->startup_cost = startup_cost;
+    path->total_cost = startup_cost + run_cost;
+}
+
+/*
  * cost_subqueryscan
  *	  Determines and returns the cost of scanning a subquery RTE.
  *
@@ -1858,6 +2458,7 @@ cost_subqueryscan(SubqueryScanPath *path, PlannerInfo *root,
     path->path.startup_cost += startup_cost;
     path->path.total_cost += startup_cost + run_cost;
 }
+
 
 /*
  * cost_functionscan
@@ -2461,6 +3062,89 @@ cost_sort(Path *path, PlannerInfo *root,
     path->rows = tuples;
     path->startup_cost = startup_cost;
     path->total_cost = startup_cost + run_cost;
+}
+
+/*
+ * cost_sort_exp (distribution version)
+ *   Computes the expected cost of sorting when the input row count is a
+ *   distribution rather than a single point estimate.
+ *
+ *   Key idea:
+ *     For each sample (n_i, p_i) in tuples_dist:
+ *       - Call cost_tuplesort() with n_i to get (startup_i, run_i)
+ *       - Accumulate expectation:
+ *           E[startup] += p_i * startup_i
+ *           E[run]     += p_i * run_i
+ *
+ *   Notes:
+ *     - We assume tuples_dist is well-formed (no negative/NaN values).
+ *       No defensive skipping is performed per your request.
+ *     - We normalize probs to sum to 1.0 if needed (light-weight fixup).
+ *     - input_cost is added once to the expected startup cost, mirroring
+ *       upstream PG semantics where input_cost belongs to the producer.
+ *     - path->rows is set to E[tuples] (the mean of the distribution).
+ *     - !enable_sort penalty is added to startup as in upstream PG.
+ */
+void
+cost_sort_exp(
+    Path *path, PlannerInfo *root,
+    List *pathkeys,
+    Cost input_cost,
+    Distribution *tuples_dist, /* <— changed from double tuples */
+    int width,
+    Cost comparison_cost,
+    int sort_mem,
+    double limit_tuples
+) {
+    Cost exp_startup_cost = 0.0;
+    Cost exp_run_cost = 0.0;
+    double prob_sum = 0.0;
+    double rows_mean = 0.0;
+
+    /* ---- Normalize probabilities (no defensive skipping) ---- */
+    for (int i = 0; i < tuples_dist->sample_count; i++)
+        prob_sum += tuples_dist->probs[i];
+
+    if (prob_sum != 1.0 && prob_sum > 0.0) {
+        for (int i = 0; i < tuples_dist->sample_count; i++)
+            tuples_dist->probs[i] /= prob_sum;
+    }
+
+    /* ---- Expected rows (mean) ---- */
+    for (int i = 0; i < tuples_dist->sample_count; i++) {
+        rows_mean += tuples_dist->probs[i] * tuples_dist->vals[i];
+    }
+
+    /* ---- Expected cost via cost_tuplesort per sample ---- */
+    for (int i = 0; i < tuples_dist->sample_count; i++) {
+        double n_i = tuples_dist->vals[i];
+        double p_i = tuples_dist->probs[i];
+
+        Cost s_i = 0.0;
+        Cost r_i = 0.0;
+
+        /* No guards here per request (no skipping for negatives/NaNs) */
+        cost_tuplesort(&s_i, &r_i,
+                       n_i, width,
+                       comparison_cost, sort_mem,
+                       limit_tuples);
+
+        exp_startup_cost += p_i * s_i;
+        exp_run_cost += p_i * r_i;
+    }
+
+    /* ---- enable_sort penalty (same as upstream) ---- */
+    if (!enable_sort)
+        exp_startup_cost += disable_cost;
+
+    /* ---- Add input_cost once ---- */
+    exp_startup_cost += input_cost;
+
+    /* ---- Populate path fields ---- */
+    path->rows = rows_mean; /* E[tuples] */
+    path->rows_dist = tuples_dist;
+    path->startup_cost = exp_startup_cost; /* E[startup] + input_cost (+ penalty) */
+    path->total_cost = exp_startup_cost + exp_run_cost; /* E[startup+run] */
 }
 
 /*
@@ -3336,6 +4020,113 @@ initial_cost_nestloop(PlannerInfo *root, JoinCostWorkspace *workspace,
 }
 
 /*
+ * initial_cost_nestloop_exp
+ *   Distribution-aware preliminary (lower-bound) estimate for a NestLoop path.
+ *
+ * Changes vs. upstream:
+ *   - Use the outer side's row-count distribution to compute the expected
+ *     number of inner rescans: E[(N_outer - 1)_+], by summing over samples.
+ *     This handles the nonlinearity of "if (outer_rows > 1) (outer_rows-1)*...".
+ *   - Do NOT mutate distributions; no fallback to path->rows. Assertions
+ *     enforce that outer_path->rows_dist is present and valid.
+ *   - All CPU/qual costs remain postponed (as in upstream). For SEMI/ANTI or
+ *     inner_unique, the inner run costs are saved for final_cost_nestloop.
+ */
+void
+initial_cost_nestloop_exp(
+    PlannerInfo *root, JoinCostWorkspace *workspace,
+    JoinType jointype,
+    Path *outer_path, Path *inner_path,
+    JoinPathExtraData *extra
+) {
+    Cost startup_cost = 0;
+    Cost run_cost = 0;
+
+    /* --- Outer distribution must exist (no fallback) --- */
+    Assert(outer_path->rows_dist &&
+        outer_path->rows_dist->sample_count > 0 &&
+        outer_path->rows_dist->probs &&
+        outer_path->rows_dist->vals);
+
+    /* --- Estimate costs to rescan the inner relation (unchanged) --- */
+    Cost inner_rescan_start_cost;
+    Cost inner_rescan_total_cost;
+    cost_rescan(root, inner_path,
+                &inner_rescan_start_cost,
+                &inner_rescan_total_cost);
+
+    Cost inner_run_cost = inner_path->total_cost - inner_path->startup_cost;
+    Cost inner_rescan_run_cost = inner_rescan_total_cost - inner_rescan_start_cost;
+
+    /* === Source data costs (linear; add once) ============================== */
+    /*
+     * We must pay both outer and inner startup before producing any tuples.
+     * Also pay the full outer run part once (independent of N for a lower bound).
+     */
+    startup_cost += outer_path->startup_cost + inner_path->startup_cost;
+    run_cost += outer_path->total_cost - outer_path->startup_cost;
+
+    /* === Expected #rescans on inner: E[(N_outer - 1)_+] ==================== */
+    /*
+     * Nonlinear in N: upstream used:
+     *   if (outer_rows > 1) run += (outer_rows - 1) * inner_rescan_start_cost;
+     * Replace with:
+     *   E_rescans = Σ p_i * max(n_i - 1, 0)
+     */
+    double E_outer_rescans = 0.0;
+    {
+        Distribution *d = outer_path->rows_dist;
+        double psum = 0.0;
+        for (int i = 0; i < d->sample_count; i++) {
+            double p = d->probs[i];
+            double n = d->vals[i];
+            Assert(isfinite(p) && p >= 0.0);
+            /* Accept any n; treat <=1 as 0 rescans */
+            double rescans_i = (n > 1.0) ? (n - 1.0) : 0.0;
+            E_outer_rescans += p * rescans_i;
+            psum += p;
+        }
+        Assert(psum > 0.0);
+        E_outer_rescans /= psum; /* normalize expectation */
+    }
+
+    /* Pay expected inner *rescan startup* cost */
+    run_cost += E_outer_rescans * inner_rescan_start_cost;
+
+    /* === Inner run cost handling =========================================== */
+    if (jointype == JOIN_SEMI || jointype == JOIN_ANTI || extra->inner_unique) {
+        /*
+         * With SEMI/ANTI or unique inner: executor stops after first match.
+         * We postpone detailed inner run costing to final_cost_nestloop,
+         * same as upstream.
+         */
+        workspace->inner_run_cost = inner_run_cost;
+        workspace->inner_rescan_run_cost = inner_rescan_run_cost;
+    } else {
+        /* Normal case: scan whole inner for each outer row */
+        /*
+         * Upstream: run_cost += inner_run_cost;
+         *           if (outer_rows > 1) run_cost += (outer_rows-1)*inner_rescan_run_cost;
+         * Distribution-aware:
+         *   run += inner_run_cost (once)  +  E[(N-1)_+]*inner_rescan_run_cost
+         * The first term is independent of N for a lower bound; the second
+         * uses the same E_outer_rescans computed above.
+         */
+        run_cost += inner_run_cost;
+        run_cost += E_outer_rescans * inner_rescan_run_cost;
+    }
+
+    /* === CPU costs left for later (unchanged) ============================== */
+
+    /* Public result fields */
+    workspace->startup_cost = startup_cost;
+    workspace->total_cost = startup_cost + run_cost;
+
+    /* Save private data for final_cost_nestloop */
+    workspace->run_cost = run_cost;
+}
+
+/*
  * final_cost_nestloop
  *	  Final estimate of the cost and result size of a nestloop join path.
  *
@@ -3506,6 +4297,191 @@ final_cost_nestloop(PlannerInfo *root, NestPath *path,
     /* tlist eval costs are paid per output row, not per tuple scanned */
     startup_cost += path->jpath.path.pathtarget->cost.startup;
     run_cost += path->jpath.path.pathtarget->cost.per_tuple * path->jpath.path.rows;
+
+    path->jpath.path.startup_cost = startup_cost;
+    path->jpath.path.total_cost = startup_cost + run_cost;
+}
+
+/*
+ * final_cost_nestloop_exp
+ *   Distribution-aware final cost and result size for a NestLoop path.
+ *
+ * Differences vs upstream:
+ *   - Compute expected input row counts from distributions in place (no fallback).
+ *   - For SEMI/ANTI (or inner_unique), compute E[outer_matched_rows]
+ *     via Σ p_i * rint(n_i * outer_match_frac). Unmatched = E[outer]-E[matched].
+ *   - In non-SEMI/ANTI case, use independence E[outer*inner] ≈ E[outer]*E[inner].
+ *   - Keep upstream semantics for CPU/tlist costs and disable penalties.
+ *   - Do not mutate distributions; assertions enforce validity.
+ */
+void
+final_cost_nestloop_exp(
+    PlannerInfo *root, NestPath *path,
+    JoinCostWorkspace *workspace,
+    JoinPathExtraData *extra
+) {
+    Path *outer_path = path->jpath.outerjoinpath;
+    Path *inner_path = path->jpath.innerjoinpath;
+
+    /* Distributions must exist (keep the no-fallback discipline) */
+    Assert(outer_path->rows_dist &&
+        outer_path->rows_dist->sample_count > 0 &&
+        outer_path->rows_dist->probs &&
+        outer_path->rows_dist->vals);
+    Assert(inner_path->rows_dist &&
+        inner_path->rows_dist->sample_count > 0 &&
+        inner_path->rows_dist->probs &&
+        inner_path->rows_dist->vals);
+
+    /* In-place expected rows (do NOT mutate distributions) */
+    double outer_E_rows = 0.0;
+    {
+        Distribution *d = outer_path->rows_dist;
+        double psum = 0.0, wsum = 0.0;
+        for (int i = 0; i < d->sample_count; i++) {
+            double p = d->probs[i], v = d->vals[i];
+            Assert(isfinite(p) && p >= 0.0);
+            Assert(isfinite(v) && v >= 0.0);
+            psum += p;
+            wsum += p * v;
+        }
+        Assert(psum > 0.0);
+        outer_E_rows = wsum / psum;
+        if (outer_E_rows <= 0.0) outer_E_rows = 1.0;
+    }
+
+    double inner_E_rows = 0.0;
+    {
+        Distribution *d = inner_path->rows_dist;
+        double psum = 0.0, wsum = 0.0;
+        for (int i = 0; i < d->sample_count; i++) {
+            double p = d->probs[i], v = d->vals[i];
+            Assert(isfinite(p) && p >= 0.0);
+            Assert(isfinite(v) && v >= 0.0);
+            psum += p;
+            wsum += p * v;
+        }
+        Assert(psum > 0.0);
+        inner_E_rows = wsum / psum;
+        if (inner_E_rows <= 0.0) inner_E_rows = 1.0;
+    }
+
+    /* Bring costs carried from initial phase */
+    Cost startup_cost = workspace->startup_cost;
+    Cost run_cost = workspace->run_cost;
+
+    Cost cpu_per_tuple;
+    QualCost restrict_qual_cost;
+    double ntuples;
+
+    /* Mark output rows (unchanged upstream logic) */
+    if (path->jpath.path.param_info) {
+        path->jpath.path.rows = path->jpath.path.param_info->ppi_rows;
+        path->jpath.path.rows_dist = path->jpath.path.param_info->rows_dist;
+    } else {
+        path->jpath.path.rows = path->jpath.path.parent->rows;
+        path->jpath.path.rows_dist = path->jpath.path.parent->rows_dist;
+    }
+
+    /* For partial paths, scale output estimate */
+    if (path->jpath.path.parallel_workers > 0) {
+        double parallel_divisor = get_parallel_divisor(&path->jpath.path);
+        path->jpath.path.rows =
+                clamp_row_est(path->jpath.path.rows / parallel_divisor);
+    }
+
+    /* Optional disable penalty */
+    if (!enable_nestloop)
+        startup_cost += disable_cost;
+
+    /* Inner source costs were handled in initial phase as per PG */
+    if (path->jpath.jointype == JOIN_SEMI ||
+        path->jpath.jointype == JOIN_ANTI ||
+        extra->inner_unique) {
+        Cost inner_run_cost = workspace->inner_run_cost;
+        Cost inner_rescan_run_cost = workspace->inner_rescan_run_cost;
+
+        /* Expected matched/unmatched outer rows */
+        double outer_matched_E = 0.0;
+        {
+            Distribution *d = outer_path->rows_dist;
+            double psum = 0.0, wsum = 0.0;
+            for (int i = 0; i < d->sample_count; i++) {
+                double p = d->probs[i], n = d->vals[i];
+                Assert(isfinite(p) && p >= 0.0);
+                if (n < 0.0) n = 0.0;
+                /* nonlinear rint → integrate per-sample */
+                wsum += p * rint(n * extra->semifactors.outer_match_frac);
+                psum += p;
+            }
+            Assert(psum > 0.0);
+            outer_matched_E = wsum / psum;
+        }
+        double outer_unmatched_E = outer_E_rows - outer_matched_E;
+        if (outer_unmatched_E < 0.0) outer_unmatched_E = 0.0;
+
+        /* Fraction of inner scanned for matched rows */
+        Selectivity inner_scan_frac =
+                2.0 / (extra->semifactors.match_count + 1.0);
+
+        /* Tuples processed (not emitted) for matched rows */
+        ntuples = outer_matched_E * inner_E_rows * inner_scan_frac;
+
+        if (has_indexed_join_quals(path)) {
+            /* Matched rows scan only a fraction of inner */
+            run_cost += inner_run_cost * inner_scan_frac;
+            if (outer_matched_E > 1.0)
+                run_cost += (outer_matched_E - 1.0) * inner_rescan_run_cost * inner_scan_frac;
+
+            /* Unmatched rows: approximate as "first tuple" cost each
+               Use 1 / E[inner] to scale (engineering approximation) */
+            run_cost += outer_unmatched_E *
+                    (inner_rescan_run_cost / inner_E_rows);
+
+            /* Unmatched rows do not add to ntuples beyond “first tuple” probe here */
+        } else {
+            /* Conservatively charge one full inner first-scan once */
+            run_cost += inner_run_cost;
+
+            /* “Decrement” expected counts by one, preferring unmatched */
+            if (outer_unmatched_E >= 1.0) {
+                outer_unmatched_E -= 1.0;
+            } else {
+                double deficit = 1.0 - outer_unmatched_E;
+                outer_unmatched_E = 0.0;
+                outer_matched_E = (outer_matched_E > deficit)
+                                      ? (outer_matched_E - deficit)
+                                      : 0.0;
+            }
+
+            /* Additional matched rows pay rescans scaled by inner_scan_frac */
+            if (outer_matched_E > 0.0)
+                run_cost += outer_matched_E * inner_rescan_run_cost * inner_scan_frac;
+
+            /* Additional unmatched rows pay full rescan cost */
+            if (outer_unmatched_E > 0.0)
+                run_cost += outer_unmatched_E * inner_rescan_run_cost;
+
+            /* Also account processed tuples for the unmatched part */
+            ntuples += outer_unmatched_E * inner_E_rows;
+        }
+    } else {
+        /* Normal-case source costs included in preliminary estimate */
+
+        /* Processed tuples (not emitted): assume independence */
+        ntuples = outer_E_rows * inner_E_rows;
+    }
+
+    /* CPU costs */
+    cost_qual_eval(&restrict_qual_cost, path->jpath.joinrestrictinfo, root);
+    startup_cost += restrict_qual_cost.startup;
+    cpu_per_tuple = cpu_tuple_cost + restrict_qual_cost.per_tuple;
+    run_cost += cpu_per_tuple * ntuples;
+
+    /* tlist eval costs are paid per output row (not per scanned tuple) */
+    startup_cost += path->jpath.path.pathtarget->cost.startup;
+    run_cost += path->jpath.path.pathtarget->cost.per_tuple *
+            path->jpath.path.rows;
 
     path->jpath.path.startup_cost = startup_cost;
     path->jpath.path.total_cost = startup_cost + run_cost;
@@ -3727,6 +4703,224 @@ initial_cost_mergejoin(PlannerInfo *root, JoinCostWorkspace *workspace,
     workspace->inner_run_cost = inner_run_cost;
     workspace->outer_rows = outer_rows;
     workspace->inner_rows = inner_rows;
+    workspace->outer_skip_rows = outer_skip_rows;
+    workspace->inner_skip_rows = inner_skip_rows;
+}
+
+/*
+ * initial_cost_mergejoin_exp
+ *   MergeJoin initial cost with row-count distributions on both outer and inner.
+ *
+ * Changes vs. vanilla:
+ *   - Use expected row counts E[rows] computed directly ("in place") from
+ *     Path->rows_dist (Distribution*) rather than a single-point estimate.
+ *   - When a sort is needed on either side, call cost_sort_exp(...) to compute
+ *     the expected sort costs, capture them in a dummy Path (sort_path), and
+ *     then split into startup and run segments according to selectivity windows.
+ *
+ * Notes:
+ *   - We keep the original selectivity plumbing. Only the row counts and
+ *     sort-cost parts are distribution-aware.
+ *   - If E[rows] <= 0 due to upstream inputs, clamp to 1 to protect downstream math.
+ *   - comparison_cost uses a common heuristic: 2.0 * cpu_operator_cost.
+ *   - limit_tuples is set to -1.0 (no LIMIT) for sort costing here.
+ */
+void
+initial_cost_mergejoin_exp(
+    PlannerInfo *root, JoinCostWorkspace *workspace,
+    JoinType jointype,
+    List *mergeclauses,
+    Path *outer_path, Path *inner_path,
+    List *outersortkeys, List *innersortkeys,
+    JoinPathExtraData *extra
+) {
+    Cost startup_cost = 0;
+    Cost run_cost = 0;
+
+    /* === Row-count distributions === */
+    Distribution *outer_dist = outer_path->rows_dist; /* NOT NULL */
+    Distribution *inner_dist = inner_path->rows_dist; /* NOT NULL */
+    Assert(outer_dist != NULL);
+    Assert(inner_dist != NULL);
+
+    /* In-place mean of distributions (no dist_mean() helper). If NULL, fall back to path->rows. */
+    double outer_path_rows = 0.0;
+    if (outer_dist && outer_dist->sample_count > 0 && outer_dist->probs && outer_dist->vals) {
+        /* Lightweight normalization (if sum != 1, renormalize). */
+        double psum = 0.0;
+        for (int i = 0; i < outer_dist->sample_count; i++)
+            psum += outer_dist->probs[i];
+        if (psum > 0.0 && psum != 1.0) {
+            for (int i = 0; i < outer_dist->sample_count; i++)
+                outer_dist->probs[i] /= psum;
+        }
+        for (int i = 0; i < outer_dist->sample_count; i++)
+            outer_path_rows += outer_dist->probs[i] * outer_dist->vals[i];
+    } else {
+        outer_path_rows = outer_path->rows;
+    }
+
+    double inner_path_rows = 0.0;
+    if (inner_dist && inner_dist->sample_count > 0 && inner_dist->probs && inner_dist->vals) {
+        double psum = 0.0;
+        for (int i = 0; i < inner_dist->sample_count; i++)
+            psum += inner_dist->probs[i];
+        if (psum > 0.0 && psum != 1.0) {
+            for (int i = 0; i < inner_dist->sample_count; i++)
+                inner_dist->probs[i] /= psum;
+        }
+        for (int i = 0; i < inner_dist->sample_count; i++)
+            inner_path_rows += inner_dist->probs[i] * inner_dist->vals[i];
+    } else {
+        inner_path_rows = inner_path->rows;
+    }
+
+    /* Protect assumptions below that rowcounts aren't zero */
+    if (outer_path_rows <= 0) outer_path_rows = 1;
+    if (inner_path_rows <= 0) inner_path_rows = 1;
+
+    /* === Selectivity plumbing: keep original logic === */
+    Selectivity outerstartsel, outerendsel, innerstartsel, innerendsel;
+
+    if (mergeclauses && jointype != JOIN_FULL) {
+        RestrictInfo *firstclause = (RestrictInfo *) linitial(mergeclauses);
+        List *opathkeys = outersortkeys ? outersortkeys : outer_path->pathkeys;
+        List *ipathkeys = innersortkeys ? innersortkeys : inner_path->pathkeys;
+        Assert(opathkeys);
+        Assert(ipathkeys);
+        PathKey *opathkey = (PathKey *) linitial(opathkeys);
+        PathKey *ipathkey = (PathKey *) linitial(ipathkeys);
+        if (opathkey->pk_opfamily != ipathkey->pk_opfamily ||
+            opathkey->pk_eclass->ec_collation != ipathkey->pk_eclass->ec_collation ||
+            opathkey->pk_strategy != ipathkey->pk_strategy ||
+            opathkey->pk_nulls_first != ipathkey->pk_nulls_first)
+            elog(ERROR, "left and right pathkeys do not match in mergejoin");
+
+        MergeScanSelCache *cache = cached_scansel(root, firstclause, opathkey);
+
+        if (bms_is_subset(firstclause->left_relids, outer_path->parent->relids)) {
+            outerstartsel = cache->leftstartsel;
+            outerendsel = cache->leftendsel;
+            innerstartsel = cache->rightstartsel;
+            innerendsel = cache->rightendsel;
+        } else {
+            outerstartsel = cache->rightstartsel;
+            outerendsel = cache->rightendsel;
+            innerstartsel = cache->leftstartsel;
+            innerendsel = cache->leftendsel;
+        }
+        if (jointype == JOIN_LEFT || jointype == JOIN_ANTI) {
+            outerstartsel = 0.0;
+            outerendsel = 1.0;
+        } else if (jointype == JOIN_RIGHT || jointype == JOIN_RIGHT_ANTI) {
+            innerstartsel = 0.0;
+            innerendsel = 1.0;
+        }
+    } else {
+        outerstartsel = innerstartsel = 0.0;
+        outerendsel = innerendsel = 1.0;
+    }
+
+    /* Convert selectivities to row counts (use expected row counts) */
+    double outer_skip_rows = rint(outer_path_rows * outerstartsel);
+    double inner_skip_rows = rint(inner_path_rows * innerstartsel);
+    double outer_rows = clamp_row_est(outer_path_rows * outerendsel);
+    double inner_rows = clamp_row_est(inner_path_rows * innerendsel);
+
+    Assert(outer_skip_rows <= outer_rows);
+    Assert(inner_skip_rows <= inner_rows);
+
+    /* Tweak selectivities to align with the rounded row counts (keep original formulae) */
+    outerstartsel = outer_skip_rows / outer_path_rows;
+    innerstartsel = inner_skip_rows / inner_path_rows;
+    outerendsel = outer_rows / outer_path_rows;
+    innerendsel = inner_rows / inner_path_rows;
+
+    Assert(outerstartsel <= outerendsel);
+    Assert(innerstartsel <= innerendsel);
+
+    /* === Cost of source data (outer and inner), with optional sort on each side === */
+
+    /* Common knobs for sort costing */
+    Cost comparison_cost = 2.0 * cpu_operator_cost; /* typical heuristic */
+    int sort_mem = work_mem;
+    double limit_tuples = -1.0; /* no LIMIT in mergejoin pre-sort */
+
+    Path sort_path; /* dummy to receive cost_sort_exp() results */
+
+    /* --- OUTER side --- */
+    if (outersortkeys) {
+        /*
+         * Need to sort the outer input. Compute expected sort cost using the
+         * outer path as producer (input_cost = outer_path->total_cost) and the
+         * outer row-count distribution.
+         *
+         * cost_sort_exp fills sort_path.startup_cost and sort_path.total_cost.
+         */
+        MemSet(&sort_path, 0, sizeof(Path));
+        cost_sort_exp(
+            &sort_path, root, outersortkeys,
+            outer_path->total_cost, /* input_cost */
+            outer_dist, /* tuples_dist (may be NULL) */
+            outer_path->pathtarget->width,
+            comparison_cost, sort_mem,
+            limit_tuples
+        );
+
+        /* Split sort cost across the scan window [outerstartsel, outerendsel] */
+        Cost sort_delta = sort_path.total_cost - sort_path.startup_cost;
+
+        startup_cost += sort_path.startup_cost; /* E[startup] */
+        startup_cost += sort_delta * outerstartsel; /* first segment */
+        run_cost += sort_delta * (outerendsel - outerstartsel); /* remaining */
+    } else {
+        /* No sort: keep producer path's costs, split as in upstream */
+        startup_cost += outer_path->startup_cost;
+        startup_cost += (outer_path->total_cost - outer_path->startup_cost) * outerstartsel;
+        run_cost += (outer_path->total_cost - outer_path->startup_cost) * (outerendsel - outerstartsel);
+    }
+
+    /* --- INNER side --- */
+    Cost inner_run_cost;
+
+    if (innersortkeys) {
+        /*
+         * Need to sort the inner input. Use inner path as producer and its
+         * row-count distribution.
+         */
+        MemSet(&sort_path, 0, sizeof(Path));
+        cost_sort_exp(
+            &sort_path, root, innersortkeys,
+            inner_path->total_cost, /* input_cost */
+            inner_dist, /* tuples_dist (may be NULL) */
+            inner_path->pathtarget->width,
+            comparison_cost, sort_mem,
+            limit_tuples
+        );
+
+        Cost sort_delta = sort_path.total_cost - sort_path.startup_cost;
+
+        startup_cost += sort_path.startup_cost; /* E[startup] */
+        startup_cost += sort_delta * innerstartsel; /* first segment */
+        inner_run_cost = sort_delta * (innerendsel - innerstartsel); /* remaining goes to inner_run_cost */
+    } else {
+        /* No sort: keep inner producer path's costs, split as in upstream */
+        startup_cost += inner_path->startup_cost;
+        startup_cost += (inner_path->total_cost - inner_path->startup_cost) * innerstartsel;
+        inner_run_cost = (inner_path->total_cost - inner_path->startup_cost) * (innerendsel - innerstartsel);
+    }
+
+    /* CPU costs are left for final_cost_mergejoin (unchanged). */
+
+    /* === Public result fields === */
+    workspace->startup_cost = startup_cost;
+    workspace->total_cost = startup_cost + run_cost + inner_run_cost;
+
+    /* Save private data for final_cost_mergejoin */
+    workspace->run_cost = run_cost;
+    workspace->inner_run_cost = inner_run_cost;
+    workspace->outer_rows = outer_rows; /* derived from expected rows */
+    workspace->inner_rows = inner_rows; /* derived from expected rows */
     workspace->outer_skip_rows = outer_skip_rows;
     workspace->inner_skip_rows = inner_skip_rows;
 }
@@ -4002,6 +5196,202 @@ final_cost_mergejoin(PlannerInfo *root, MergePath *path,
 }
 
 /*
+ * final_cost_mergejoin_exp (distribution-aware)
+ *   Finalize cost and result size for a MergeJoin path when row counts are
+ *   represented as distributions upstream.
+ *
+ * Changes vs. upstream:
+ *   - Use expected inner input rows E[rows_inner_input] for computations that
+ *     depend on the size of the (unsliced) inner stream, such as re-scan math
+ *     and the materialization spill threshold check.
+ *   - Prefer workspace->outer_rows / inner_rows / *_skip_rows that were already
+ *     derived from distributions in initial_cost_mergejoin_exp(...).
+ *   - Compute the mean of inner_path->rows_dist in-place (no helper) when needed.
+ *   - Keep CPU and qual costing logic unchanged, but apply them to expected counts.
+ */
+void
+final_cost_mergejoin_exp(
+    PlannerInfo *root, MergePath *path,
+    JoinCostWorkspace *workspace,
+    JoinPathExtraData *extra
+) {
+    Path *outer_path = path->jpath.outerjoinpath;
+    Path *inner_path = path->jpath.innerjoinpath;
+    List *mergeclauses = path->path_mergeclauses;
+    List *innersortkeys = path->innersortkeys;
+
+    /* Accumulated costs from initial phase (already distribution-aware) */
+    Cost startup_cost = workspace->startup_cost;
+    Cost run_cost = workspace->run_cost;
+    Cost inner_run_cost = workspace->inner_run_cost;
+
+    /* Expected row counts sliced by selectivities (from initial) */
+    double outer_rows = workspace->outer_rows;
+    double inner_rows = workspace->inner_rows;
+    double outer_skip_rows = workspace->outer_skip_rows;
+    double inner_skip_rows = workspace->inner_skip_rows;
+
+    /* We still need an estimate for the *unsliced* inner input size
+     * (used in rescannedtuples math and materialization threshold). */
+    double inner_input_rows = 0.0;
+
+    /* --- Compute E[rows] for inner input stream in-place (no dist_mean) --- */
+    if (inner_path->rows_dist &&
+        inner_path->rows_dist->sample_count > 0 &&
+        inner_path->rows_dist->probs &&
+        inner_path->rows_dist->vals) {
+        Distribution *d = inner_path->rows_dist;
+        double psum = 0.0;
+        for (int i = 0; i < d->sample_count; i++)
+            psum += d->probs[i];
+        if (psum > 0.0 && psum != 1.0) {
+            for (int i = 0; i < d->sample_count; i++)
+                d->probs[i] /= psum; /* light-weight normalization */
+        }
+        for (int i = 0; i < d->sample_count; i++)
+            inner_input_rows += d->probs[i] * d->vals[i];
+    } else {
+        /* Fall back to the path's point estimate */
+        inner_input_rows = inner_path->rows;
+    }
+
+    /* Protect against zero/negative estimates for math below */
+    if (inner_input_rows <= 0)
+        inner_input_rows = 1;
+    if (inner_rows <= 0)
+        inner_rows = 1;
+
+    /* Mark the path with the correct output row estimate (unchanged logic) */
+    if (path->jpath.path.param_info) {
+        path->jpath.path.rows = path->jpath.path.param_info->ppi_rows;
+        path->jpath.path.rows_dist = path->jpath.path.param_info->rows_dist;
+    } else {
+        path->jpath.path.rows = path->jpath.path.parent->rows;
+        path->jpath.path.rows_dist = path->jpath.path.parent->rows_dist;
+    }
+
+    /* For partial paths, scale row estimate. */
+    if (path->jpath.path.parallel_workers > 0) {
+        double parallel_divisor = get_parallel_divisor(&path->jpath.path);
+        path->jpath.path.rows =
+                clamp_row_est(path->jpath.path.rows / parallel_divisor);
+    }
+
+    /* Optional disable penalty */
+    if (!enable_mergejoin)
+        startup_cost += disable_cost;
+
+    /* Cost of merge quals vs. qp quals (unchanged) */
+    QualCost merge_qual_cost;
+    QualCost qp_qual_cost;
+    cost_qual_eval(&merge_qual_cost, mergeclauses, root);
+    cost_qual_eval(&qp_qual_cost, path->jpath.joinrestrictinfo, root);
+    qp_qual_cost.startup -= merge_qual_cost.startup;
+    qp_qual_cost.per_tuple -= merge_qual_cost.per_tuple;
+
+    /* Determine if we can skip mark/restore (unchanged) */
+    if ((path->jpath.jointype == JOIN_SEMI ||
+         path->jpath.jointype == JOIN_ANTI ||
+         extra->inner_unique) &&
+        (list_length(path->jpath.joinrestrictinfo) ==
+         list_length(path->path_mergeclauses)))
+        path->skip_mark_restore = true;
+    else
+        path->skip_mark_restore = false;
+
+    /* Estimated # of tuples that pass merge quals (JOIN_INNER semantics) */
+    double mergejointuples = approx_tuple_count(root, &path->jpath, mergeclauses);
+
+    /*
+     * Estimate re-fetches due to duplicate outer keys.
+     * Use expected inner input size (inner_input_rows) instead of point estimate.
+     */
+    double rescannedtuples;
+    if (IsA(outer_path, UniquePath) || path->skip_mark_restore)
+        rescannedtuples = 0;
+    else {
+        rescannedtuples = mergejointuples - inner_input_rows;
+        if (rescannedtuples < 0)
+            rescannedtuples = 0;
+    }
+
+    /*
+     * Inflate factor for re-scans. This multiplies costs tied to the portion
+     * of the inner rel we'll actually scan (inner_rows and slices thereof).
+     */
+    double rescanratio = 1.0 + (rescannedtuples / inner_rows);
+
+    /*
+     * Compare two options for handling mark/restore pressure:
+     *   1) Bare re-fetch from the inner plan (inflate by rescanratio)
+     *   2) Interpose a Material node (CPU-only per re-fetch)
+     *
+     * Note: We keep the same simple model as upstream. If you want to be more
+     * distribution-faithful for Material memory spill threshold, you could
+     * integrate a spill probability over the inner_input_rows distribution.
+     * Here we use E[rows] for that threshold.
+     */
+    Cost bare_inner_cost = inner_run_cost * rescanratio;
+
+    Cost mat_inner_cost =
+            inner_run_cost + cpu_operator_cost * inner_rows * rescanratio;
+
+    /* Decide materialization */
+    if (path->skip_mark_restore) {
+        path->materialize_inner = false;
+    } else if (enable_material && mat_inner_cost < bare_inner_cost) {
+        path->materialize_inner = true;
+    } else if (innersortkeys == NIL &&
+               !ExecSupportsMarkRestore(inner_path)) {
+        /* Required for correctness if inner doesn't support mark/restore */
+        path->materialize_inner = true;
+    } else if (enable_material && innersortkeys != NIL &&
+               relation_byte_size(inner_input_rows, /* use expected inner input size */
+                                  inner_path->pathtarget->width) >
+               (work_mem * 1024L)) {
+        /* Force material if inner sort is expected to spill */
+        path->materialize_inner = true;
+    } else {
+        path->materialize_inner = false;
+    }
+
+    /* Add the chosen inner-side incremental cost */
+    if (path->materialize_inner)
+        run_cost += mat_inner_cost;
+    else
+        run_cost += bare_inner_cost;
+
+    /* === CPU costs (unchanged formulas; applied to expected counts) === */
+
+    /*
+     * Merge qual eval: approximately outer + inner + rescanned tuples comparisons.
+     * Split between startup and run parts using the same slicing as upstream,
+     * but with expected slice sizes from workspace.
+     */
+    startup_cost += merge_qual_cost.startup;
+    startup_cost += merge_qual_cost.per_tuple *
+            (outer_skip_rows + inner_skip_rows * rescanratio);
+    run_cost += merge_qual_cost.per_tuple *
+    ((outer_rows - outer_skip_rows) +
+     (inner_rows - inner_skip_rows) * rescanratio);
+
+    /*
+     * Additional qp quals and per-output tuple CPU:
+     */
+    startup_cost += qp_qual_cost.startup;
+    Cost cpu_per_tuple = cpu_tuple_cost + qp_qual_cost.per_tuple;
+    run_cost += cpu_per_tuple * mergejointuples;
+
+    /* Target (tlist) eval is paid per output row, not per scanned tuple */
+    startup_cost += path->jpath.path.pathtarget->cost.startup;
+    run_cost += path->jpath.path.pathtarget->cost.per_tuple *
+            path->jpath.path.rows;
+
+    path->jpath.path.startup_cost = startup_cost;
+    path->jpath.path.total_cost = startup_cost + run_cost;
+}
+
+/*
  * run mergejoinscansel() with caching
  */
 static MergeScanSelCache *
@@ -4174,6 +5564,200 @@ initial_cost_hashjoin(PlannerInfo *root, JoinCostWorkspace *workspace,
     workspace->numbuckets = numbuckets;
     workspace->numbatches = numbatches;
     workspace->inner_rows_total = inner_path_rows_total;
+}
+
+/*
+ * initial_cost_hashjoin_exp
+ *
+ * Distribution-aware preliminary (lower-bound) cost estimate for a Hash Join.
+ * This version:
+ *   - assumes BOTH outer_path->rows_dist and inner_path->rows_dist are present
+ *     and valid; it DOES NOT fallback to path->rows;
+ *   - computes expectations in place (no helper, no in-place normalization);
+ *   - treats linear terms via E[rows], and integrates the nonlinear batching
+ *     decision over the inner-side distribution;
+ *   - adds source path costs exactly once, mirroring upstream semantics;
+ *   - emits scalar hash table sizing at E[inner_total_rows] for downstream use.
+ *
+ * NOTE:
+ *   If you disable Asserts in production builds, replace critical Asserts with
+ *   explicit checks + elog(ERROR, ...) to avoid undefined behavior.
+ */
+void
+initial_cost_hashjoin_exp(
+    PlannerInfo *root,
+    JoinCostWorkspace *workspace,
+    JoinType jointype,
+    List *hashclauses,
+    Path *outer_path, Path *inner_path,
+    JoinPathExtraData *extra,
+    bool parallel_hash
+) {
+    Cost startup_cost = 0;
+    Cost run_cost = 0;
+
+    /* --- Distributions must exist (no fallback path) --- */
+    Assert(outer_path->rows_dist &&
+        outer_path->rows_dist->sample_count > 0 &&
+        outer_path->rows_dist->probs &&
+        outer_path->rows_dist->vals);
+
+    Assert(inner_path->rows_dist &&
+        inner_path->rows_dist->sample_count > 0 &&
+        inner_path->rows_dist->probs &&
+        inner_path->rows_dist->vals);
+
+    /* --- E[rows] for outer and inner (do NOT mutate distributions) --- */
+    double outer_E_rows = 0.0;
+    {
+        Distribution *d = outer_path->rows_dist;
+        double psum = 0.0, wsum = 0.0;
+        for (int i = 0; i < d->sample_count; i++) {
+            double p = d->probs[i];
+            double v = d->vals[i];
+            Assert(isfinite(p) && isfinite(v) && p >= 0.0 && v >= 0.0);
+            psum += p;
+            wsum += p * v;
+        }
+        Assert(psum > 0.0);
+        outer_E_rows = wsum / psum;
+        if (outer_E_rows <= 0.0) outer_E_rows = 1.0; /* keep planner invariants */
+    }
+
+    double inner_E_rows = 0.0; /* per-participant if partial/parallel */
+    {
+        Distribution *d = inner_path->rows_dist;
+        double psum = 0.0, wsum = 0.0;
+        for (int i = 0; i < d->sample_count; i++) {
+            double p = d->probs[i];
+            double v = d->vals[i];
+            Assert(isfinite(p) && isfinite(v) && p >= 0.0 && v >= 0.0);
+            psum += p;
+            wsum += p * v;
+        }
+        Assert(psum > 0.0);
+        inner_E_rows = wsum / psum;
+        if (inner_E_rows <= 0.0) inner_E_rows = 1.0;
+    }
+
+    /* --- Total inner rows for a shared (parallel) hash table --- */
+    const double ph_divisor = parallel_hash ? get_parallel_divisor(inner_path) : 1.0;
+    const double inner_E_rows_total = inner_E_rows * ph_divisor;
+
+    const int num_hashclauses = list_length(hashclauses);
+
+    /* === Source data costs: added once (same as upstream) =================== */
+    startup_cost += outer_path->startup_cost;
+    run_cost += outer_path->total_cost - outer_path->startup_cost;
+    startup_cost += inner_path->total_cost;
+
+    /* === Hashing CPU (linear in rows → use expectations) ==================== */
+    startup_cost += (cpu_operator_cost * num_hashclauses + cpu_tuple_cost) * inner_E_rows; /* build hash + insert */
+    run_cost += cpu_operator_cost * num_hashclauses * outer_E_rows; /* probe-side hashing */
+
+    /* === Expected batching I/O (nonlinear; integrate over inner dist) ======= */
+    /*
+     * We compute:
+     *   E[startup extra] = seq_page_cost * E[ innerpages * I(batched) ]
+     *   E[run extra]     = seq_page_cost * E[ innerpages * I(batched) ]
+     *                      + seq_page_cost * 2 * E[outerpages] * P(batched)
+     * where:
+     *   innerpages = page_size(n_inner, inner_width)
+     *   outerpages = page_size(n_outer, outer_width)
+     *   I(batched) is decided via ExecChooseHashTableSize(n_inner_total, ...)
+     * Independence assumption: outer size is independent of inner batching.
+     */
+
+    /* E[outerpages] by integrating over the outer distribution */
+    double E_outer_pages = 0.0;
+    {
+        Distribution *d = outer_path->rows_dist;
+        double psum = 0.0;
+        for (int i = 0; i < d->sample_count; i++) {
+            double p = d->probs[i];
+            double n = d->vals[i];
+            Assert(isfinite(p) && p >= 0.0);
+            if (n <= 0.0) n = 1.0;
+            E_outer_pages += p * page_size(n, outer_path->pathtarget->width);
+            psum += p;
+        }
+        Assert(psum > 0.0);
+        E_outer_pages /= psum; /* normalize expectation */
+    }
+
+    /* Integrate inner-side batching and inner pages under batching */
+    double E_inner_pages_if_batched = 0.0; /* normalized by Σp at end */
+    double P_batched = 0.0; /* normalized by Σp at end */
+    {
+        Distribution *d = inner_path->rows_dist;
+        double psum = 0.0;
+
+        for (int i = 0; i < d->sample_count; i++) {
+            double p_in = d->probs[i];
+            double n_in = d->vals[i]; /* per-participant if parallel */
+            Assert(isfinite(p_in) && p_in >= 0.0);
+            if (n_in <= 0.0) n_in = 1.0;
+
+            /* total rows used by executor sizing for this sample */
+            double n_in_total = n_in * ph_divisor;
+
+            size_t space_allowed_dummy;
+            int nb_i, nbat_i, nskew_i;
+
+            ExecChooseHashTableSize(n_in_total,
+                                    inner_path->pathtarget->width,
+                                    true, /* useskew */
+                                    parallel_hash, /* try_combined_hash_mem */
+                                    outer_path->parallel_workers,
+                                    &space_allowed_dummy,
+                                    &nb_i,
+                                    &nbat_i,
+                                    &nskew_i);
+
+            if (nbat_i > 1) {
+                double inner_pages_i = page_size(n_in, inner_path->pathtarget->width);
+                E_inner_pages_if_batched += p_in * inner_pages_i;
+                P_batched += p_in;
+            }
+            psum += p_in;
+        }
+
+        Assert(psum > 0.0);
+        E_inner_pages_if_batched /= psum;
+        P_batched /= psum;
+    }
+
+    /* Add expected batching I/O */
+    startup_cost += seq_page_cost * E_inner_pages_if_batched;
+    run_cost += seq_page_cost * (E_inner_pages_if_batched +
+                                 2.0 * E_outer_pages * P_batched);
+
+    /* === CPU costs left for final_cost_hashjoin (unchanged) ================ */
+
+    /* --- Fill workspace outputs (expected values) --- */
+    workspace->startup_cost = startup_cost;
+    workspace->total_cost = startup_cost + run_cost;
+    workspace->run_cost = run_cost;
+
+    /* Scalar hash-table sizing at E[inner_total_rows] for downstream use */
+    {
+        size_t space_allowed_dummy;
+        int numbuckets, numbatches, num_skew_mcvs;
+
+        ExecChooseHashTableSize(inner_E_rows_total,
+                                inner_path->pathtarget->width,
+                                true, /* useskew */
+                                parallel_hash, /* try_combined_hash_mem */
+                                outer_path->parallel_workers,
+                                &space_allowed_dummy,
+                                &numbuckets,
+                                &numbatches,
+                                &num_skew_mcvs);
+
+        workspace->numbuckets = numbuckets;
+        workspace->numbatches = numbatches;
+        workspace->inner_rows_total = inner_E_rows_total;
+    }
 }
 
 /*
@@ -4419,6 +6003,241 @@ final_cost_hashjoin(PlannerInfo *root, HashPath *path,
     path->jpath.path.total_cost = startup_cost + run_cost;
 }
 
+/*
+ * final_cost_hashjoin_exp
+ *   Distribution-aware final cost and result size for a Hash Join path.
+ *
+ * This version:
+ *   - Computes expected input row counts E[rows] in-place from
+ *     outer_path->rows_dist and inner_path->rows_dist (no fallback).
+ *   - Replaces all uses of outer_path_rows / inner_path_rows with
+ *     their expectations (outer_E_rows / inner_E_rows).
+ *   - Keeps workspace-derived numbuckets/numbatches/inner_rows_total
+ *     (decided in initial_cost_hashjoin_exp) to drive bucket math.
+ *   - Preserves upstream semantics for quals/CPU/tlist costs.
+ *
+ * NOTE: If Asserts are disabled in production, convert critical Asserts
+ *       to explicit checks + elog(ERROR, ...) to avoid UB.
+ */
+void
+final_cost_hashjoin_exp(
+    PlannerInfo *root, HashPath *path,
+    JoinCostWorkspace *workspace,
+    JoinPathExtraData *extra
+) {
+    Path *outer_path = path->jpath.outerjoinpath;
+    Path *inner_path = path->jpath.innerjoinpath;
+
+    /* Distributions must exist (no fallback) */
+    Assert(outer_path->rows_dist &&
+        outer_path->rows_dist->sample_count > 0 &&
+        outer_path->rows_dist->probs &&
+        outer_path->rows_dist->vals);
+
+    Assert(inner_path->rows_dist &&
+        inner_path->rows_dist->sample_count > 0 &&
+        inner_path->rows_dist->probs &&
+        inner_path->rows_dist->vals);
+
+    /* In-place expected rows (do NOT mutate distributions) */
+    double outer_E_rows = 0.0;
+    {
+        Distribution *d = outer_path->rows_dist;
+        double psum = 0.0, wsum = 0.0;
+        for (int i = 0; i < d->sample_count; i++) {
+            double p = d->probs[i];
+            double v = d->vals[i];
+            Assert(isfinite(p) && isfinite(v) && p >= 0.0 && v >= 0.0);
+            psum += p;
+            wsum += p * v;
+        }
+        Assert(psum > 0.0);
+        outer_E_rows = wsum / psum;
+        if (outer_E_rows <= 0.0) outer_E_rows = 1.0;
+    }
+
+    double inner_E_rows = 0.0;
+    {
+        Distribution *d = inner_path->rows_dist;
+        double psum = 0.0, wsum = 0.0;
+        for (int i = 0; i < d->sample_count; i++) {
+            double p = d->probs[i];
+            double v = d->vals[i];
+            Assert(isfinite(p) && isfinite(v) && p >= 0.0 && v >= 0.0);
+            psum += p;
+            wsum += p * v;
+        }
+        Assert(psum > 0.0);
+        inner_E_rows = wsum / psum;
+        if (inner_E_rows <= 0.0) inner_E_rows = 1.0;
+    }
+
+    /* Pull expected costs & table sizing from workspace (already expected values) */
+    Cost startup_cost = workspace->startup_cost;
+    Cost run_cost = workspace->run_cost;
+    int numbuckets = workspace->numbuckets;
+    int numbatches = workspace->numbatches;
+
+    /* Total inner rows for all participants (sum over partials) from initial phase */
+    double inner_rows_total = workspace->inner_rows_total;
+
+    List *hashclauses = path->path_hashclauses;
+    Cost cpu_per_tuple;
+    QualCost hash_qual_cost;
+    QualCost qp_qual_cost;
+
+    double hashjointuples;
+    double virtualbuckets;
+    Selectivity innerbucketsize;
+    Selectivity innermcvfreq;
+    ListCell *hcl;
+
+    /* Mark the path with the correct output row estimate (unchanged upstream logic) */
+    if (path->jpath.path.param_info) {
+        path->jpath.path.rows = path->jpath.path.param_info->ppi_rows;
+        path->jpath.path.rows_dist = path->jpath.path.param_info->rows_dist;
+    } else {
+        path->jpath.path.rows = path->jpath.path.parent->rows;
+        path->jpath.path.rows_dist = path->jpath.path.parent->rows_dist;
+    }
+
+    /* For partial paths, scale output estimate */
+    if (path->jpath.path.parallel_workers > 0) {
+        double parallel_divisor = get_parallel_divisor(&path->jpath.path);
+        path->jpath.path.rows =
+                clamp_row_est(path->jpath.path.rows / parallel_divisor);
+    }
+
+    /* Optional disable penalty */
+    if (!enable_hashjoin)
+        startup_cost += disable_cost;
+
+    /* Save estimated # of batches for executor */
+    path->num_batches = numbatches;
+    path->inner_rows_total = inner_rows_total;
+
+    /* Compute # of "virtual" buckets over all batches */
+    virtualbuckets = (double) numbuckets * (double) numbatches;
+
+    /*
+     * Bucketsize fraction and MCV frequency for inner rel.
+     * Keep upstream approach: take the minimum bucketsize / MCV freq across
+     * hash clauses (conservative). If inner is UniquePath, it's ideal.
+     */
+    if (IsA(inner_path, UniquePath)) {
+        innerbucketsize = 1.0 / virtualbuckets;
+        innermcvfreq = 0.0;
+    } else {
+        innerbucketsize = 1.0;
+        innermcvfreq = 1.0;
+
+        foreach(hcl, hashclauses) {
+            RestrictInfo *restrictinfo = lfirst_node(RestrictInfo, hcl);
+            Selectivity thisbucketsize;
+            Selectivity thismcvfreq;
+
+            if (bms_is_subset(restrictinfo->right_relids, inner_path->parent->relids)) {
+                /* inner side is RHS */
+                thisbucketsize = restrictinfo->right_bucketsize;
+                if (thisbucketsize < 0) {
+                    estimate_hash_bucket_stats(root,
+                                               get_rightop(restrictinfo->clause),
+                                               virtualbuckets,
+                                               &restrictinfo->right_mcvfreq,
+                                               &restrictinfo->right_bucketsize);
+                    thisbucketsize = restrictinfo->right_bucketsize;
+                }
+                thismcvfreq = restrictinfo->right_mcvfreq;
+            } else {
+                Assert(bms_is_subset(restrictinfo->left_relids, inner_path->parent->relids));
+                /* inner side is LHS */
+                thisbucketsize = restrictinfo->left_bucketsize;
+                if (thisbucketsize < 0) {
+                    estimate_hash_bucket_stats(root,
+                                               get_leftop(restrictinfo->clause),
+                                               virtualbuckets,
+                                               &restrictinfo->left_mcvfreq,
+                                               &restrictinfo->left_bucketsize);
+                    thisbucketsize = restrictinfo->left_bucketsize;
+                }
+                thismcvfreq = restrictinfo->left_mcvfreq;
+            }
+
+            if (innerbucketsize > thisbucketsize)
+                innerbucketsize = thisbucketsize;
+            if (innermcvfreq > thismcvfreq)
+                innermcvfreq = thismcvfreq;
+        }
+    }
+
+    /*
+     * If the inner MCV bucket would exceed hash_mem, discourage hash join.
+     * Use expected inner rows (inner_E_rows) for this threshold check.
+     */
+    if (relation_byte_size(clamp_row_est(inner_E_rows * innermcvfreq),
+                           inner_path->pathtarget->width) > get_hash_memory_limit())
+        startup_cost += disable_cost;
+
+    /* Cost quals separately (unchanged) */
+    cost_qual_eval(&hash_qual_cost, hashclauses, root);
+    cost_qual_eval(&qp_qual_cost, path->jpath.joinrestrictinfo, root);
+    qp_qual_cost.startup -= hash_qual_cost.startup;
+    qp_qual_cost.per_tuple -= hash_qual_cost.per_tuple;
+
+    /* CPU costs for hash join proper */
+    if (path->jpath.jointype == JOIN_SEMI ||
+        path->jpath.jointype == JOIN_ANTI ||
+        extra->inner_unique) {
+        double outer_matched_rows;
+        Selectivity inner_scan_frac;
+
+        /* Stop after first match on inner side. Use expected outer matches. */
+        outer_matched_rows = rint(outer_E_rows * extra->semifactors.outer_match_frac);
+
+        /* Fuzzed fraction for scanning within matching bucket */
+        inner_scan_frac = 2.0 / (extra->semifactors.match_count + 1.0);
+
+        startup_cost += hash_qual_cost.startup;
+
+        /* Matching outer rows probing inner buckets */
+        run_cost += hash_qual_cost.per_tuple *
+                outer_matched_rows *
+                clamp_row_est(inner_E_rows * innerbucketsize * inner_scan_frac) * 0.5;
+
+        /* Unmatched outer: probe average bucket size ~ inner_E_rows / virtualbuckets */
+        run_cost += hash_qual_cost.per_tuple *
+                (outer_E_rows - outer_matched_rows) *
+                clamp_row_est(inner_E_rows / virtualbuckets) * 0.05;
+
+        /* Rows passing hashquals */
+        if (path->jpath.jointype == JOIN_ANTI)
+            hashjointuples = outer_E_rows - outer_matched_rows;
+        else
+            hashjointuples = outer_matched_rows;
+    } else {
+        /* Typical bucket comparisons ~ outer * (inner * bucketsize) */
+        startup_cost += hash_qual_cost.startup;
+        run_cost += hash_qual_cost.per_tuple *
+                outer_E_rows *
+                clamp_row_est(inner_E_rows * innerbucketsize) * 0.5;
+
+        /* Approx inner-join passing tuples via JOIN_INNER semantics */
+        hashjointuples = approx_tuple_count(root, &path->jpath, hashclauses);
+    }
+
+    /* Per-output tuple CPU (qp quals) */
+    startup_cost += qp_qual_cost.startup;
+    cpu_per_tuple = cpu_tuple_cost + qp_qual_cost.per_tuple;
+    run_cost += cpu_per_tuple * hashjointuples;
+
+    /* tlist eval cost: per output row */
+    startup_cost += path->jpath.path.pathtarget->cost.startup;
+    run_cost += path->jpath.path.pathtarget->cost.per_tuple *
+            path->jpath.path.rows;
+
+    path->jpath.path.startup_cost = startup_cost;
+    path->jpath.path.total_cost = startup_cost + run_cost;
+}
 
 /*
  * cost_subplan
@@ -5210,7 +7029,9 @@ set_baserel_size_estimates(PlannerInfo *root, RelOptInfo *rel) {
 
     set_rel_width(root, rel);
 
-    rel->rows_dist = make_fake_dist(rel->rows);
+    if (enable_rows_dist) {
+        rel->rows_dist = make_fake_dist(rel->rows);
+    }
 }
 
 /*
@@ -5283,6 +7104,10 @@ set_joinrel_size_estimates(PlannerInfo *root, RelOptInfo *rel,
                                            inner_rel->rows,
                                            sjinfo,
                                            restrictlist);
+
+    if (enable_rows_dist) {
+        rel->rows_dist = make_fake_dist(rel->rows);
+    }
 }
 
 /*

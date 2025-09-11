@@ -41,8 +41,8 @@ Distribution *make_single_point_dist(double val) {
     dist->vals = palloc0(sizeof(double));
 
     /* Single Point distribution */
-    dist->probs[0] = val;
-    dist->vals[0] = 1.0;
+    dist->probs[0] = 1.0;
+    dist->vals[0] = val;
 
     elog(LOG, "make_single_point_dist::[end]");
     return dist;

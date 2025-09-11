@@ -1997,6 +1997,15 @@ struct config_bool ConfigureNamesBool[] =
 		NULL, NULL, NULL
 	},
 
+	{
+		 {"enable_rows_dist", PGC_USERSET, DEVELOPER_OPTIONS,
+		 	gettext_noop("Set whether the distribution of rows is enabled when estimating costs."),
+		 },
+		&enable_rows_dist,
+		false,
+		NULL, NULL, NULL
+	},
+
 	/* End-of-list marker */
 	{
 		{NULL, 0, 0, NULL, NULL}, NULL, false, NULL, NULL, NULL

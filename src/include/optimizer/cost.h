@@ -17,6 +17,7 @@
 #include "nodes/pathnodes.h"
 #include "nodes/plannodes.h"
 
+extern bool enable_rows_dist;
 
 /* defaults for costsize.c's Cost parameters */
 /* NB: cost-estimation code should use the variables, not these constants! */
@@ -101,7 +102,18 @@ extern void cost_index(
     double loop_count, bool partial_path
 );
 
+extern void cost_index_exp(
+    IndexPath *path, PlannerInfo *root,
+    double loop_count, bool partial_path
+);
+
 extern void cost_bitmap_heap_scan(
+    Path *path, PlannerInfo *root, RelOptInfo *baserel,
+    ParamPathInfo *param_info,
+    Path *bitmapqual, double loop_count
+);
+
+extern void cost_bitmap_heap_scan_exp(
     Path *path, PlannerInfo *root, RelOptInfo *baserel,
     ParamPathInfo *param_info,
     Path *bitmapqual, double loop_count
@@ -124,7 +136,18 @@ extern void cost_tidscan(
     RelOptInfo *baserel, List *tidquals, ParamPathInfo *param_info
 );
 
+extern void cost_tidscan_exp(
+    Path *path, PlannerInfo *root,
+    RelOptInfo *baserel, List *tidquals, ParamPathInfo *param_info
+);
+
 extern void cost_tidrangescan(
+    Path *path, PlannerInfo *root,
+    RelOptInfo *baserel, List *tidrangequals,
+    ParamPathInfo *param_info
+);
+
+extern void cost_tidrangescan_exp(
     Path *path, PlannerInfo *root,
     RelOptInfo *baserel, List *tidrangequals,
     ParamPathInfo *param_info
@@ -173,6 +196,13 @@ extern void cost_recursive_union(
 extern void cost_sort(
     Path *path, PlannerInfo *root,
     List *pathkeys, Cost input_cost, double tuples, int width,
+    Cost comparison_cost, int sort_mem,
+    double limit_tuples
+);
+
+extern void cost_sort_exp(
+    Path *path, PlannerInfo *root,
+    List *pathkeys, Cost input_cost, Distribution *tuples_dist, int width,
     Cost comparison_cost, int sort_mem,
     double limit_tuples
 );
@@ -234,7 +264,21 @@ extern void initial_cost_nestloop(
     JoinPathExtraData *extra
 );
 
+extern void initial_cost_nestloop_exp(
+    PlannerInfo *root,
+    JoinCostWorkspace *workspace,
+    JoinType jointype,
+    Path *outer_path, Path *inner_path,
+    JoinPathExtraData *extra
+);
+
 extern void final_cost_nestloop(
+    PlannerInfo *root, NestPath *path,
+    JoinCostWorkspace *workspace,
+    JoinPathExtraData *extra
+);
+
+extern void final_cost_nestloop_exp(
     PlannerInfo *root, NestPath *path,
     JoinCostWorkspace *workspace,
     JoinPathExtraData *extra
@@ -250,7 +294,23 @@ extern void initial_cost_mergejoin(
     JoinPathExtraData *extra
 );
 
+extern void initial_cost_mergejoin_exp(
+    PlannerInfo *root,
+    JoinCostWorkspace *workspace,
+    JoinType jointype,
+    List *mergeclauses,
+    Path *outer_path, Path *inner_path,
+    List *outersortkeys, List *innersortkeys,
+    JoinPathExtraData *extra
+);
+
 extern void final_cost_mergejoin(
+    PlannerInfo *root, MergePath *path,
+    JoinCostWorkspace *workspace,
+    JoinPathExtraData *extra
+);
+
+extern void final_cost_mergejoin_exp(
     PlannerInfo *root, MergePath *path,
     JoinCostWorkspace *workspace,
     JoinPathExtraData *extra
@@ -266,7 +326,23 @@ extern void initial_cost_hashjoin(
     bool parallel_hash
 );
 
+extern void initial_cost_hashjoin_exp(
+    PlannerInfo *root,
+    JoinCostWorkspace *workspace,
+    JoinType jointype,
+    List *hashclauses,
+    Path *outer_path, Path *inner_path,
+    JoinPathExtraData *extra,
+    bool parallel_hash
+);
+
 extern void final_cost_hashjoin(
+    PlannerInfo *root, HashPath *path,
+    JoinCostWorkspace *workspace,
+    JoinPathExtraData *extra
+);
+
+extern void final_cost_hashjoin_exp(
     PlannerInfo *root, HashPath *path,
     JoinCostWorkspace *workspace,
     JoinPathExtraData *extra
