@@ -28,5 +28,6 @@ OBJS = \
 	tlist.o \
 	var.o \
 	distribution.o \
+	error_profile.o \
 
 include $(top_srcdir)/src/backend/common.mk

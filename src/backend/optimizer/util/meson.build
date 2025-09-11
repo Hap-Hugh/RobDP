@@ -16,4 +16,5 @@ backend_sources += files(
   'tlist.c',
   'var.c',
   'distribution.c',
+  'error_profile.c',
 )

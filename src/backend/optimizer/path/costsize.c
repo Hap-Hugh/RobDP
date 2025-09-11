@@ -87,6 +87,7 @@
 #include "optimizer/clauses.h"
 #include "optimizer/cost.h"
 #include "optimizer/distribution.h"
+#include "optimizer/error_profile.h"
 #include "optimizer/optimizer.h"
 #include "optimizer/pathnode.h"
 #include "optimizer/paths.h"
@@ -7011,17 +7012,17 @@ approx_tuple_count(PlannerInfo *root, JoinPath *path, List *quals) {
  */
 void
 set_baserel_size_estimates(PlannerInfo *root, RelOptInfo *rel) {
-    double nrows;
+    double nrows, sel;
 
     /* Should only be applied to base relations */
     Assert(rel->relid > 0);
 
-    nrows = rel->tuples *
-            clauselist_selectivity(root,
-                                   rel->baserestrictinfo,
-                                   0,
-                                   JOIN_INNER,
-                                   NULL);
+    sel = clauselist_selectivity(root,
+                                 rel->baserestrictinfo,
+                                 0,
+                                 JOIN_INNER,
+                                 NULL);
+    nrows = rel->tuples * sel;
 
     rel->rows = clamp_row_est(nrows);
 
@@ -7030,7 +7031,31 @@ set_baserel_size_estimates(PlannerInfo *root, RelOptInfo *rel) {
     set_rel_width(root, rel);
 
     if (enable_rows_dist) {
-        rel->rows_dist = make_fake_dist(rel->rows);
+        ErrorProfile ep;
+        RangeTblEntry *rte = root->simple_rte_array[rel->relid];
+        if (load_error_profile("/opt/err", rte->eref->aliasname, &ep) != 0) {
+            elog(LOG, "failed to load error profile for relation %s, "
+                 "using single point distribution.", rte->eref->aliasname);
+            rel->rows_dist = make_single_point_dist(sel);
+            return;
+        }
+
+        double e0 = sel;
+        int n_samples = 20;
+        double h_est = 0.0;
+        double h_true = 0.0;
+
+        Distribution *dist = build_conditional_distribution(&ep, e0, n_samples, h_est, h_true, 42);
+        // 使用 d->vals / d->probs 即可
+        for (int i = 0; i < dist->sample_count; i++) {
+            elog(LOG, "%g (p = %g)\n", dist->vals[i], dist->probs[i]);
+        }
+        rel->rows_dist = dist;
+        if (!dist) {
+            elog(LOG, "failed to build conditional distribution for relation %s, "
+                 "using single point distribution.", rte->eref->aliasname);
+            rel->rows_dist = make_single_point_dist(sel);
+        }
     }
 }
 
