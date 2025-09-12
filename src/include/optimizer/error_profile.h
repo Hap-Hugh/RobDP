@@ -7,34 +7,71 @@
 
 #include "distribution.h"
 
+/*
+ * One sample in the error profile.
+ * true_sel ∈ [0,1]  : the actual selectivity observed
+ * est_sel  ∈ [0,1]  : the estimated selectivity reported by the planner
+ */
 typedef struct EPSample {
-    double true_sel; // T \in [0,1]
-    double est_sel; // Ê \in [0,1]
+    double true_sel;
+    double est_sel;
 } EPSample;
 
+/*
+ * ErrorProfile
+ *  - Stores a collection of (true_sel, est_sel) samples
+ *  - Optionally caches some basic statistics (stddevs)
+ */
 typedef struct ErrorProfile {
     EPSample *data;
     int n;
-    // 可缓存一些统计量
     double est_std;
     double true_std;
 } ErrorProfile;
 
-// 读取 /opt/17a/<alias>.txt 到 ErrorProfile
-// 返回 0 成功；非 0 失败
+/*
+ * Load an error profile from "<base_dir>/<alias>.txt".
+ * Each line in the file must contain two doubles: <true_sel> <est_sel>.
+ *
+ * On success:
+ *   - fills *out with allocated data and statistics
+ *   - returns 0
+ * On failure:
+ *   - leaves *out zeroed
+ *   - returns nonzero error code
+ */
 int load_error_profile(
-    const char *base_dir, const char *alias, ErrorProfile *out
+    const char *base_dir,
+    const char *alias,
+    ErrorProfile *out
 );
 
-// 释放 ErrorProfile
-void free_error_profile(ErrorProfile *ep);
+/*
+ * Free resources held by an ErrorProfile.
+ * Safe to call on a partially filled or empty profile.
+ */
+void free_error_profile(
+    ErrorProfile *ep
+);
 
-// 生成条件分布 p(T | Ê = e0) 的抽样近似（核加权自助法）
-// n_samples: 生成的样本数（如 20）
-// h_est: 估计轴的核带宽（<=0 则自动估计）
-// h_true: 对 true 值添加的高斯抖动带宽（<=0 则自动估计一个较小值）
-// seed: 随机种子（0 用内部熵）
-// 返回 Distribution*（需调用 free_distribution 释放）；失败返回 NULL
+/*
+ * Build a conditional distribution p(T | Ê = e0) as a sampling approximation.
+ * Method:
+ *   - Kernel-weighted resampling in the estimated axis (est_sel)
+ *   - Gaussian jitter in the true axis (true_sel)
+ *
+ * Parameters:
+ *   ep         : error profile (must be non-null and non-empty)
+ *   e0         : conditioning value of estimated selectivity
+ *   n_samples  : number of output samples (e.g., 20)
+ *   h_est      : bandwidth in the estimated axis; <=0 triggers auto-estimation
+ *   h_true     : jitter bandwidth in the true axis; <=0 triggers auto-estimation
+ *   seed       : RNG seed (0 uses time(NULL))
+ *
+ * Returns:
+ *   - A newly allocated Distribution* (caller must free with free_distribution)
+ *   - NULL on failure
+ */
 Distribution *build_conditional_distribution(
     const ErrorProfile *ep,
     double e0,
@@ -44,7 +81,26 @@ Distribution *build_conditional_distribution(
     unsigned int seed
 );
 
-// 释放 Distribution
-void free_distribution(Distribution *dist);
+/*
+ * Scale all values in a Distribution by a constant factor.
+ * Example: convert selectivity samples into row-count samples
+ * by multiplying with rel->tuples.
+ *
+ * Returns:
+ *   - A newly allocated Distribution with scaled values
+ *   - NULL on failure
+ */
+Distribution *scale_distribution(
+    const Distribution *src,
+    double factor
+);
 
-#endif // ERROR_PROFILE_H
+/*
+ * Free resources held by a Distribution.
+ * Safe to call on NULL.
+ */
+void free_distribution(
+    Distribution *dist
+);
+
+#endif /* ERROR_PROFILE_H */

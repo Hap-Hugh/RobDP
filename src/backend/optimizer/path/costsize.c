@@ -7027,7 +7027,7 @@ approx_tuple_count(PlannerInfo *root, JoinPath *path, List *quals) {
  */
 void
 set_baserel_size_estimates(PlannerInfo *root, RelOptInfo *rel) {
-    double nrows, sel;
+    double nrows, est_sel;
 
     /* Should only be applied to base relations */
     Assert(rel->relid > 0);
@@ -7039,14 +7039,16 @@ set_baserel_size_estimates(PlannerInfo *root, RelOptInfo *rel) {
      * Use varRelid = rel->relid (not 0) to ensure proper treatment of
      * correlation and "only-this-rel" semantics in clauselist_selectivity.
      */
-    sel = clauselist_selectivity(root,
-                                 rel->baserestrictinfo,
-                                 rel->relid, /* FIXED: use rel->relid */
-                                 JOIN_INNER,
-                                 NULL);
+    est_sel = clauselist_selectivity(
+        root,
+        rel->baserestrictinfo,
+        rel->relid, /* FIXED: use rel->relid */
+        JOIN_INNER,
+        NULL
+    );
 
     /* Convert to row estimate and clamp. */
-    nrows = rel->tuples * sel;
+    nrows = rel->tuples * est_sel;
     rel->rows = clamp_row_est(nrows);
 
     /* Cost to evaluate baserestrictinfo (startup/per-tuple are filled). */
@@ -7056,52 +7058,66 @@ set_baserel_size_estimates(PlannerInfo *root, RelOptInfo *rel) {
     set_rel_width(root, rel);
 
     /*
-     * Optional: build a distribution over the selectivity (or rows).
+     * Build a distribution over the selectivity (and rows).
      * If loading the error profile fails, fall back to a single-point mass.
      */
-    if (enable_rows_dist) {
-        ErrorProfile ep;
-        RangeTblEntry *rte = root->simple_rte_array[rel->relid];
-
-        /* Avoid hardcoding paths in production code; see notes below. */
-        if (load_error_profile("/opt/err", rte->eref->aliasname, &ep) != 0) {
-            elog(LOG,
-                 "failed to load error profile for relation %s, using single point distribution.",
-                 rte->eref->aliasname);
-
-            /* Here we encode the current point-estimate selectivity as a degenerate dist. */
-            rel->rows_dist = make_single_point_dist(sel);
-            return; /* Nothing more to do for the dist path. */
-        }
-
-        /* Build a conditional distribution p(true_sel | est_sel=e0). */
-        const double e0 = sel; /* current point estimate as the condition */
-        const int n_samples = 20; /* TODO: consider a GUC */
-        double h_est = 0.0; /* out-params if supported by builder */
-        double h_true = 0.0;
-
-        Distribution *dist =
-                build_conditional_distribution(&ep, e0, n_samples, h_est, h_true, 42 /*seed*/);
-
-        if (!dist) {
-            elog(LOG,
-                 "failed to build conditional distribution for relation %s, using single point distribution.",
-                 rte->eref->aliasname);
-            rel->rows_dist = make_single_point_dist(sel);
-            return;
-        }
-
-        /* Debug-print produced samples (value = sel, prob = weight). */
-        for (int i = 0; i < dist->sample_count; i++)
-            elog(LOG, "rows_dist(sel) sample: %g  (p = %g)", dist->vals[i], dist->probs[i]);
-
-        /*
-         * NOTE: Currently dist encodes a distribution over SELECTIVITY.
-         * If callers expect a distribution over ROWS, multiply by rel->tuples here
-         * (or convert later in a helper) to keep type semantics consistent.
-         */
-        rel->rows_dist = dist;
+    if (!enable_rows_dist) {
+        return;
     }
+    ErrorProfile *ep = palloc0(sizeof(ErrorProfile));
+    RangeTblEntry *rte = root->simple_rte_array[rel->relid];
+    elog(LOG, "considering relation %s", rte->eref->aliasname);
+
+    /* Load the error profile. */
+    if (load_error_profile("/opt/err", rte->eref->aliasname, ep) != 0) {
+        elog(LOG, "failed to load error profile for relation %s, using single point distribution.",
+             rte->eref->aliasname);
+
+        /* Here we encode the current point-estimate selectivity as a degenerate dist. */
+        rel->rows_dist = make_single_point_dist(est_sel * rel->tuples);
+        return; /* Nothing more to do for the dist path. */
+    }
+
+    /* We would like to save the error profile for future use. */
+    rel->sel_error_profile = ep;
+
+    /* Build a conditional distribution p(true_sel | est_sel=e0). */
+    const double e0 = est_sel; /* current point estimate as the condition */
+    const int n_samples = 20; /* TODO: consider a GUC */
+    double h_est = 0.0; /* out-params if supported by builder */
+    double h_true = 0.0;
+
+    /*
+         * Now we have estimated selectivity and error profile, we can calculate
+         * the distribution of the true selectivity (`true_sel_dist`).
+         */
+    Distribution *true_sel_dist = build_conditional_distribution(
+        ep, e0, n_samples, h_est, h_true, 42
+    );
+
+    if (!true_sel_dist) {
+        elog(LOG, "failed to build conditional distribution for relation %s, using single point distribution.",
+             rte->eref->aliasname);
+        rel->rows_dist = make_single_point_dist(est_sel * rel->tuples);
+        return;
+    }
+
+    /* Debug-print produced samples (value = sel, prob = weight). */
+    for (int i = 0; i < true_sel_dist->sample_count; i++) {
+        elog(DEBUG1, "rows_dist(sel) sample: %g (p = %g)",
+             true_sel_dist->vals[i], true_sel_dist->probs[i]);
+    }
+
+    rel->rows_dist = scale_distribution(true_sel_dist, rel->tuples);
+    double dist_mean = 0.0;
+    for (int i = 0; i < rel->rows_dist->sample_count; i++) {
+        dist_mean += rel->rows_dist->probs[i] * rel->rows_dist->vals[i];
+        elog(DEBUG1, "%g %g %g", rel->rows_dist->probs[i], rel->rows_dist->vals[i], dist_mean);
+    }
+    elog(LOG, "rows original: %g -> rows_dist mean: %g",
+         rel->rows, dist_mean);
+    rel->rows = clamp_row_est(dist_mean);
+    free_distribution(true_sel_dist);
 }
 
 /*
@@ -7166,37 +7182,140 @@ set_joinrel_size_estimates(PlannerInfo *root, RelOptInfo *rel,
                            RelOptInfo *inner_rel,
                            SpecialJoinInfo *sjinfo,
                            List *restrictlist) {
-    ListCell *lc = NULL;
+    /* --- Always compute a baseline scalar row estimate first --- */
+    rel->rows = calc_joinrel_size_estimate(
+        root, rel, outer_rel, inner_rel,
+        outer_rel->rows, inner_rel->rows,
+        sjinfo, restrictlist);
+    rel->rows = clamp_row_est(rel->rows);
+
+    /* If we don't build a distribution, we're done. */
+    if (!enable_rows_dist)
+        return;
+
+    /* --- Try to build a filename key for the join error profile --- */
+    char filename[64];
+    MemSet(filename, 0, sizeof(filename));
+
+    ListCell *lc;
     foreach(lc, restrictlist) {
         RestrictInfo *rinfo = (RestrictInfo *) lfirst(lc);
-        if (IsA(rinfo->clause, OpExpr)) {
-            OpExpr *opexpr = (OpExpr *) rinfo->clause;
-            Var *leftvar = linitial(opexpr->args);
-            Var *rightvar = lsecond(opexpr->args);
+        if (!IsA(rinfo->clause, OpExpr))
+            continue;
 
-            if (bms_is_member(leftvar->varno, outer_rel->relids) &&
-                bms_is_member(rightvar->varno, inner_rel->relids)) {
-                elog(LOG, "Join Key: %s.%d = %s.%d",
-                     root->simple_rte_array[leftvar->varno]->eref->aliasname, leftvar->varattno,
-                     root->simple_rte_array[rightvar->varno]->eref->aliasname, rightvar->varattno);
-            }
+        OpExpr *opexpr = (OpExpr *) rinfo->clause;
+        if (list_length(opexpr->args) != 2)
+            continue;
+
+        /* Be defensive: both sides must be Vars (skip RelabelType etc.). */
+        Node *l = linitial(opexpr->args);
+        Node *r = lsecond(opexpr->args);
+        if (!IsA(l, Var) || !IsA(r, Var))
+            continue;
+
+        Var *leftvar = (Var *) l;
+        Var *rightvar = (Var *) r;
+
+        /* Accept either orientation: (outer,left)-(inner,right) or swapped. */
+        bool l_in_outer = bms_is_member(leftvar->varno, outer_rel->relids);
+        bool r_in_inner = bms_is_member(rightvar->varno, inner_rel->relids);
+        bool r_in_outer = bms_is_member(rightvar->varno, outer_rel->relids);
+        bool l_in_inner = bms_is_member(leftvar->varno, inner_rel->relids);
+
+        if ((l_in_outer && r_in_inner) || (r_in_outer && l_in_inner)) {
+            const char *left = root->simple_rte_array[leftvar->varno]->eref->aliasname;
+            const char *right = root->simple_rte_array[rightvar->varno]->eref->aliasname;
+
+            /* Canonicalize order to avoid duplicate “A=B” vs “B=A”. */
+            if (strcmp(left, right) < 0)
+                snprintf(filename, sizeof(filename), "%s=%s", left, right);
+            else
+                snprintf(filename, sizeof(filename), "%s=%s", right, left);
+
+            elog(LOG, "Filename: %s; Join Key: %s.%d = %s.%d",
+                 filename,
+                 root->simple_rte_array[leftvar->varno]->eref->aliasname, leftvar->varattno,
+                 root->simple_rte_array[rightvar->varno]->eref->aliasname, rightvar->varattno);
+            break;
         }
     }
 
-    rel->rows = calc_joinrel_size_estimate(
+    /* --- Estimated selectivity for conditioning p(true_sel | est_sel=e0) --- */
+    double est_sel = clauselist_selectivity(
         root,
-        rel,
-        outer_rel,
-        inner_rel,
-        outer_rel->rows,
-        inner_rel->rows,
-        sjinfo,
-        restrictlist
+        restrictlist,
+        0, /* varRelid=0 for joins */
+        sjinfo->jointype, /* FIX: respect actual jointype (was JOIN_INNER) */
+        sjinfo
     );
 
-    if (enable_rows_dist) {
-        rel->rows_dist = make_fake_dist(rel->rows);
+    /* --- Load error profile and build conditional selectivity distribution --- */
+    ErrorProfile *ep = palloc0(sizeof(ErrorProfile));
+
+    if (filename[0] == '\0' ||
+        load_error_profile("/opt/err", filename, ep) != 0) {
+        /* No suitable key or load failed: fall back to a degenerate ROWS dist. */
+        if (filename[0] == '\0')
+            elog(LOG, "no equi-join key found; using single-point rows distribution.");
+        else
+            elog(LOG, "failed to load error profile for %s; using single-point rows distribution.", filename);
+
+        rel->rows_dist = make_single_point_dist(rel->rows);
+        pfree(ep); /* avoid leaking the shell struct */
+        return;
     }
+
+    /* Keep the profile for later (must be freed with free_error_profile + pfree). */
+    rel->sel_error_profile = ep;
+
+    /* Build a conditional distribution p(true_sel | est_sel=e0). */
+    const double e0 = est_sel; /* current point estimate as the condition */
+    const int n_samples = 20; /* TODO: consider a GUC */
+    double h_est = 0.0; /* out-params if supported by builder */
+    double h_true = 0.0;
+
+    /*
+     * Now we have estimated selectivity and error profile, we can calculate
+     * the distribution of the true selectivity (`true_sel_dist`).
+     */
+    Distribution *true_sel_dist = build_conditional_distribution(
+        ep, e0, n_samples, h_est, h_true, 42
+    );
+
+    if (!true_sel_dist) {
+        elog(LOG, "failed to build conditional selectivity distribution; using single-point rows distribution.");
+        rel->rows_dist = make_single_point_dist(rel->rows);
+        return;
+    }
+
+    /* Debug: these are SELECTIVITY samples. */
+    for (int i = 0; i < true_sel_dist->sample_count; i++)
+        elog(DEBUG1, "rows_dist(sel) sample: %g (p = %g)",
+         true_sel_dist->vals[i], true_sel_dist->probs[i]);
+
+    /* Push selectivity uncertainty through the join-size model to get ROWS dist. */
+    rel->rows_dist = calc_joinrel_size_estimate_exp(
+        root, rel, outer_rel, inner_rel, true_sel_dist, sjinfo, restrictlist
+    );
+
+    /* Done with selectivity samples. */
+    free_distribution(true_sel_dist);
+
+    if (!rel->rows_dist) {
+        elog(LOG, "calc_joinrel_size_estimate_exp() returned NULL; using single-point rows distribution.");
+        rel->rows_dist = make_single_point_dist(rel->rows);
+        return;
+    }
+
+    /* Update rel->rows to the mean of the rows distribution. */
+    double dist_mean = 0.0;
+    for (int i = 0; i < rel->rows_dist->sample_count; i++) {
+        dist_mean += rel->rows_dist->probs[i] * rel->rows_dist->vals[i];
+        elog(DEBUG1, "%g %g %g", rel->rows_dist->probs[i], rel->rows_dist->vals[i], dist_mean);
+    }
+
+    elog(LOG, "rows original: %g -> rows_dist mean: %g", rel->rows, dist_mean);
+    rel->rows = clamp_row_est(dist_mean);
 }
 
 /*

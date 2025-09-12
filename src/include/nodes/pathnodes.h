@@ -23,9 +23,11 @@
 #include "storage/block.h"
 
 /*
- * Forward declaration of Distribution.
+ * Forward declaration of Distribution and ErrorProfile.
  */
 typedef struct Distribution Distribution;
+
+typedef struct ErrorProfile ErrorProfile;
 
 /*
  * Relids
@@ -1035,6 +1037,9 @@ typedef struct RelOptInfo
 
 	/* Rows distribution of the current relation */
 	Distribution *rows_dist pg_node_attr(read_write_ignore);
+
+	/* Error profile of the current relation. */
+	ErrorProfile *sel_error_profile pg_node_attr(read_write_ignore);
 } RelOptInfo;
 
 /*

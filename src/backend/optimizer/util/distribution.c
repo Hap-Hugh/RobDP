@@ -6,8 +6,6 @@
 #include "optimizer/distribution.h"
 
 Distribution *make_fake_dist(double factor) {
-    elog(LOG, "make_fake_dist::[begin]");
-
     int sample_count = 5;
 
     Distribution *dist = palloc0(sizeof(Distribution));
@@ -28,13 +26,10 @@ Distribution *make_fake_dist(double factor) {
     dist->vals[3] = factor * 1.0;
     dist->vals[4] = factor * 0.6;
 
-    elog(LOG, "make_fake_dist::[end]");
     return dist;
 }
 
 Distribution *make_single_point_dist(double val) {
-    elog(LOG, "make_single_point_dist::[begin]");
-
     Distribution *dist = palloc0(sizeof(Distribution));
     dist->sample_count = 1;
     dist->probs = palloc0(sizeof(double));
@@ -44,6 +39,5 @@ Distribution *make_single_point_dist(double val) {
     dist->probs[0] = 1.0;
     dist->vals[0] = val;
 
-    elog(LOG, "make_single_point_dist::[end]");
     return dist;
 }

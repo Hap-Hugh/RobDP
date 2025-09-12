@@ -230,42 +230,19 @@ static int knn_indices_by_est(const ErrorProfile *ep, double e0, int k, int *out
     return m;
 }
 
-/*
- * Build a conditional distribution of true selectivity given an estimated
- * selectivity e0:
- *   p(true_sel | est_sel = e0)
- *
- * Approach:
- *  1) Compute kernel weights in the estimated axis using Gaussian kernel with
- *     bandwidth h_est. If weights underflow, fall back to KNN with equal weights.
- *  2) Create a CDF over samples proportional to the kernel (or KNN) weights.
- *  3) Draw n_samples indices from that categorical distribution and add small
- *     Gaussian jitter in the true axis with bandwidth h_true for continuity.
- *
- * Returns:
- *  - A newly allocated Distribution with 'sample_count' samples and uniform
- *    probabilities summing to 1.0. dist->vals[j] are in [0,1] (clamped).
- *  - NULL on failure.
- *
- * Notes:
- *  - If you need a distribution over ROWS rather than SELECTIVITY, the caller
- *    should scale values by rel->tuples and adjust semantics accordingly.
- *  - 'h_est' and 'h_true' can be <= 0 to request auto-bandwidth selection.
- *  - 'seed' controls the random draws; if 0, time(NULL) is used.
- */
 Distribution *build_conditional_distribution(
     const ErrorProfile *ep,
     double e0,
     int n_samples,
     double h_est,
-    double h_true,
+    double h_true, /* now used as log-error bandwidth */
     unsigned int seed
 ) {
     if (!ep || ep->n == 0 || n_samples <= 0) return NULL;
 
     if (seed == 0) seed = (unsigned int) time(NULL);
 
-    /* Auto-select bandwidth for the estimated axis (robust to outliers via IQR). */
+    /* ---------- 1) KDE bandwidth in est_sel axis (unchanged) ---------- */
     if (h_est <= 0) {
         double *tmp = (double *) malloc(ep->n * sizeof(double));
         if (!tmp) return NULL;
@@ -273,27 +250,58 @@ Distribution *build_conditional_distribution(
 
         double mean, std;
         mean_std(tmp, ep->n, &mean, &std);
-
         double iqr = estimate_iqr(tmp, ep->n);
         free(tmp);
 
-        /* Robust sigma: min(std, IQR/1.349); then Silverman with a small floor. */
         double robust_sigma = (iqr > 0) ? mind(std, iqr / 1.349) : std;
         h_est = silverman_bandwidth(robust_sigma, ep->n);
         h_est = maxd(h_est, 1e-3);
     }
 
-    /* Auto-select small jitter bandwidth in the true axis. */
+    /* ---------- 2) Precompute log-errors: eps_i = log(T_i) - log(E_i) ---------- */
+    const double EPS = 1e-15; /* avoid log(0). Tune if needed. */
+    int n = ep->n;
+    double *errs = (double *) malloc(n * sizeof(double));
+    if (!errs) return NULL;
+
+    for (int i = 0; i < n; i++) {
+        double T = ep->data[i].true_sel;
+        double E = ep->data[i].est_sel;
+        /* clamp into (0,1]; keep 1 as-is, floor near 0 to EPS */
+        double Tc = (T <= 0.0) ? EPS : T;
+        double Ec = (E <= 0.0) ? EPS : E;
+        errs[i] = log(Tc) - log(Ec);
+    }
+
+    /* ---------- 3) Bandwidth in log-error axis (if not provided) ---------- */
     if (h_true <= 0) {
-        double s = (ep->true_std > 0) ? ep->true_std : 0.05;
-        h_true = 0.25 * silverman_bandwidth(s, ep->n);
+        /* Use std/IQR of errs for a robust bandwidth in log-error space */
+        double mean, std;
+        mean_std(errs, n, &mean, &std);
+
+        /* Build a scratch copy for IQR (estimate_iqr sorts in-place) */
+        double *tmp2 = (double *) malloc(n * sizeof(double));
+        if (!tmp2) {
+            free(errs);
+            return NULL;
+        }
+        for (int i = 0; i < n; i++) tmp2[i] = errs[i];
+
+        double iqr = estimate_iqr(tmp2, n);
+        free(tmp2);
+
+        double robust_sigma = (iqr > 0) ? mind(std, iqr / 1.349) : std;
+        /* Smaller jitter than KDE bandwidth; feel free to tune factor (e.g., 0.5) */
+        h_true = 0.25 * silverman_bandwidth(robust_sigma, n);
         h_true = maxd(h_true, 1e-3);
     }
 
-    /* Compute kernel weights in the estimated axis. */
-    int n = ep->n;
+    /* ---------- 4) Kernel weights in est_sel axis (unchanged) ---------- */
     double *w = (double *) malloc(n * sizeof(double));
-    if (!w) return NULL;
+    if (!w) {
+        free(errs);
+        return NULL;
+    }
 
     double sumw = 0.0, inv_h = 1.0 / h_est;
     for (int i = 0; i < n; i++) {
@@ -303,12 +311,13 @@ Distribution *build_conditional_distribution(
         sumw += wi;
     }
 
-    /* If all weights are ~0 (e.g., far from data), fall back to KNN with equal weights. */
+    /* KNN fallback if all weights ~ 0 (unchanged logic) */
     if (sumw < 1e-12) {
         int k = (int) fmin((double) n, fmax(50.0, sqrt((double) n)));
         int *idx = (int *) malloc(k * sizeof(int));
         if (!idx) {
             free(w);
+            free(errs);
             return NULL;
         }
         int m = knn_indices_by_est(ep, e0, k, idx);
@@ -320,10 +329,11 @@ Distribution *build_conditional_distribution(
         free(idx);
     }
 
-    /* Build normalized CDF for inverse-CDF sampling. */
+    /* ---------- 5) Build CDF for inverse-CDF sampling (unchanged) ---------- */
     double *cdf = (double *) malloc(n * sizeof(double));
     if (!cdf) {
         free(w);
+        free(errs);
         return NULL;
     }
 
@@ -333,18 +343,17 @@ Distribution *build_conditional_distribution(
             acc += w[i] / sumw;
             cdf[i] = acc;
         }
-        /* Ensure final CDF entry is exactly 1.0 to avoid edge-off-by-epsilon. */
         cdf[n - 1] = 1.0;
     } else {
-        /* Extreme fallback: uniform over all samples. */
         for (int i = 0; i < n; i++) cdf[i] = (i + 1) / (double) n;
     }
 
-    /* Allocate the output Distribution (uniform weights over n_samples). */
+    /* ---------- 6) Allocate output Distribution ---------- */
     Distribution *dist = (Distribution *) malloc(sizeof(Distribution));
     if (!dist) {
         free(cdf);
         free(w);
+        free(errs);
         return NULL;
     }
 
@@ -357,15 +366,14 @@ Distribution *build_conditional_distribution(
         free(dist);
         free(cdf);
         free(w);
+        free(errs);
         return NULL;
     }
 
-    /* Draw n_samples: sample an index by inverse-CDF, then add small Gaussian jitter in true axis. */
+    /* ---------- 7) Sample err ~ p(err | est≈e0), then map to true_sel via exp ---------- */
     for (int j = 0; j < n_samples; j++) {
-        /* u ~ Uniform(0,1) using rand_r(). */
         double u = (rand_r(&seed) + 1.0) / ((double) RAND_MAX + 2.0);
 
-        /* Lower-bound binary search on CDF for u. */
         int lo = 0, hi = n - 1;
         while (lo < hi) {
             int mid = lo + (hi - lo) / 2;
@@ -374,16 +382,43 @@ Distribution *build_conditional_distribution(
         }
         int pick = lo;
 
-        double t = ep->data[pick].true_sel;
-        double t_jitter = clamp01(t + h_true * randn(&seed));
+        double err_draw = errs[pick] + h_true * randn(&seed); /* log-error jitter */
+        double t_draw = e0 * exp(err_draw);
 
-        dist->vals[j] = t_jitter;
+        /* Clamp to [0,1]; e0=0 degenerates to 0 as desired. */
+        dist->vals[j] = clamp01(t_draw);
         dist->probs[j] = 1.0 / (double) n_samples;
     }
 
     free(cdf);
     free(w);
+    free(errs);
     return dist;
+}
+
+Distribution *scale_distribution(const Distribution *src, double factor) {
+    if (!src) {
+        return NULL;
+    }
+    Distribution *dst = malloc(sizeof(Distribution));
+    if (!dst) {
+        return NULL;
+    }
+    dst->sample_count = src->sample_count;
+    dst->probs = malloc(dst->sample_count * sizeof(double));
+    dst->vals = malloc(dst->sample_count * sizeof(double));
+
+    if (!dst->probs || !dst->vals) {
+        free(dst->probs);
+        free(dst->vals);
+        free(dst);
+        return NULL;
+    }
+    for (int i = 0; i < dst->sample_count; i++) {
+        dst->probs[i] = src->probs[i];
+        dst->vals[i] = src->vals[i] * factor;
+    }
+    return dst;
 }
 
 /* Free storage inside a Distribution. */
