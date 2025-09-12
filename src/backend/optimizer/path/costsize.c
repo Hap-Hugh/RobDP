@@ -101,6 +101,11 @@
 #include "utils/spccache.h"
 #include "utils/tuplesort.h"
 
+#include "postgres.h"
+#include "utils/palloc.h"
+#include <math.h>
+#include <stdlib.h>
+
 /* GUC Parameters */
 bool enable_rows_dist = true;
 
@@ -198,6 +203,16 @@ static double calc_joinrel_size_estimate(
     RelOptInfo *inner_rel,
     double outer_rows,
     double inner_rows,
+    SpecialJoinInfo *sjinfo,
+    List *restrictlist
+);
+
+static Distribution *calc_joinrel_size_estimate_exp(
+    PlannerInfo *root,
+    RelOptInfo *joinrel,
+    RelOptInfo *outer_rel,
+    RelOptInfo *inner_rel,
+    Distribution *sel_dist,
     SpecialJoinInfo *sjinfo,
     List *restrictlist
 );
@@ -6996,19 +7011,19 @@ approx_tuple_count(PlannerInfo *root, JoinPath *path, List *quals) {
     return clamp_row_est(tuples);
 }
 
-
 /*
  * set_baserel_size_estimates
- *		Set the size estimates for the given base relation.
+ *    Set size estimates for a base relation (RelOptInfo *rel).
  *
- * The rel's targetlist and restrictinfo list must have been constructed
- * already, and rel->tuples must be set.
+ * Preconditions:
+ *  - rel->targetlist and rel->baserestrictinfo have been built.
+ *  - rel->tuples is already set (estimated total tuples before restriction).
  *
- * We set the following fields of the rel node:
- *	rows: the estimated number of output tuples (after applying
- *		  restriction clauses).
- *	width: the estimated average output tuple width in bytes.
- *	baserestrictcost: estimated cost of evaluating baserestrictinfo clauses.
+ * Effects:
+ *  - rel->rows: estimated output rows after applying base restriction clauses.
+ *  - rel->width: estimated average output tuple width in bytes.
+ *  - rel->baserestrictcost: cost of evaluating baserestrictinfo clauses.
+ *  - rel->rows_dist (optional): if enabled, a distribution over selectivity/rows.
  */
 void
 set_baserel_size_estimates(PlannerInfo *root, RelOptInfo *rel) {
@@ -7016,46 +7031,76 @@ set_baserel_size_estimates(PlannerInfo *root, RelOptInfo *rel) {
 
     /* Should only be applied to base relations */
     Assert(rel->relid > 0);
+    /* Optional (stricter) sanity: enforce base rel kind */
+    /* Assert(root->simple_rte_array[rel->relid]->rtekind == RTE_RELATION); */
 
+    /*
+     * Estimate selectivity of base restrictions for THIS rel.
+     * Use varRelid = rel->relid (not 0) to ensure proper treatment of
+     * correlation and "only-this-rel" semantics in clauselist_selectivity.
+     */
     sel = clauselist_selectivity(root,
                                  rel->baserestrictinfo,
-                                 0,
+                                 rel->relid, /* FIXED: use rel->relid */
                                  JOIN_INNER,
                                  NULL);
-    nrows = rel->tuples * sel;
 
+    /* Convert to row estimate and clamp. */
+    nrows = rel->tuples * sel;
     rel->rows = clamp_row_est(nrows);
 
+    /* Cost to evaluate baserestrictinfo (startup/per-tuple are filled). */
     cost_qual_eval(&rel->baserestrictcost, rel->baserestrictinfo, root);
 
+    /* Estimate output tuple width. */
     set_rel_width(root, rel);
 
+    /*
+     * Optional: build a distribution over the selectivity (or rows).
+     * If loading the error profile fails, fall back to a single-point mass.
+     */
     if (enable_rows_dist) {
         ErrorProfile ep;
         RangeTblEntry *rte = root->simple_rte_array[rel->relid];
+
+        /* Avoid hardcoding paths in production code; see notes below. */
         if (load_error_profile("/opt/err", rte->eref->aliasname, &ep) != 0) {
-            elog(LOG, "failed to load error profile for relation %s, "
-                 "using single point distribution.", rte->eref->aliasname);
+            elog(LOG,
+                 "failed to load error profile for relation %s, using single point distribution.",
+                 rte->eref->aliasname);
+
+            /* Here we encode the current point-estimate selectivity as a degenerate dist. */
+            rel->rows_dist = make_single_point_dist(sel);
+            return; /* Nothing more to do for the dist path. */
+        }
+
+        /* Build a conditional distribution p(true_sel | est_sel=e0). */
+        const double e0 = sel; /* current point estimate as the condition */
+        const int n_samples = 20; /* TODO: consider a GUC */
+        double h_est = 0.0; /* out-params if supported by builder */
+        double h_true = 0.0;
+
+        Distribution *dist =
+                build_conditional_distribution(&ep, e0, n_samples, h_est, h_true, 42 /*seed*/);
+
+        if (!dist) {
+            elog(LOG,
+                 "failed to build conditional distribution for relation %s, using single point distribution.",
+                 rte->eref->aliasname);
             rel->rows_dist = make_single_point_dist(sel);
             return;
         }
 
-        double e0 = sel;
-        int n_samples = 20;
-        double h_est = 0.0;
-        double h_true = 0.0;
+        /* Debug-print produced samples (value = sel, prob = weight). */
+        for (int i = 0; i < dist->sample_count; i++)
+            elog(LOG, "rows_dist(sel) sample: %g  (p = %g)", dist->vals[i], dist->probs[i]);
 
-        Distribution *dist = build_conditional_distribution(&ep, e0, n_samples, h_est, h_true, 42);
-        // 使用 d->vals / d->probs 即可
-        for (int i = 0; i < dist->sample_count; i++) {
-            elog(LOG, "%g (p = %g)\n", dist->vals[i], dist->probs[i]);
-        }
+        /*
+         * NOTE: Currently dist encodes a distribution over SELECTIVITY.
+         * If callers expect a distribution over ROWS, multiply by rel->tuples here
+         * (or convert later in a helper) to keep type semantics consistent.
+         */
         rel->rows_dist = dist;
-        if (!dist) {
-            elog(LOG, "failed to build conditional distribution for relation %s, "
-                 "using single point distribution.", rte->eref->aliasname);
-            rel->rows_dist = make_single_point_dist(sel);
-        }
     }
 }
 
@@ -7121,14 +7166,33 @@ set_joinrel_size_estimates(PlannerInfo *root, RelOptInfo *rel,
                            RelOptInfo *inner_rel,
                            SpecialJoinInfo *sjinfo,
                            List *restrictlist) {
-    rel->rows = calc_joinrel_size_estimate(root,
-                                           rel,
-                                           outer_rel,
-                                           inner_rel,
-                                           outer_rel->rows,
-                                           inner_rel->rows,
-                                           sjinfo,
-                                           restrictlist);
+    ListCell *lc = NULL;
+    foreach(lc, restrictlist) {
+        RestrictInfo *rinfo = (RestrictInfo *) lfirst(lc);
+        if (IsA(rinfo->clause, OpExpr)) {
+            OpExpr *opexpr = (OpExpr *) rinfo->clause;
+            Var *leftvar = linitial(opexpr->args);
+            Var *rightvar = lsecond(opexpr->args);
+
+            if (bms_is_member(leftvar->varno, outer_rel->relids) &&
+                bms_is_member(rightvar->varno, inner_rel->relids)) {
+                elog(LOG, "Join Key: %s.%d = %s.%d",
+                     root->simple_rte_array[leftvar->varno]->eref->aliasname, leftvar->varattno,
+                     root->simple_rte_array[rightvar->varno]->eref->aliasname, rightvar->varattno);
+            }
+        }
+    }
+
+    rel->rows = calc_joinrel_size_estimate(
+        root,
+        rel,
+        outer_rel,
+        inner_rel,
+        outer_rel->rows,
+        inner_rel->rows,
+        sjinfo,
+        restrictlist
+    );
 
     if (enable_rows_dist) {
         rel->rows_dist = make_fake_dist(rel->rows);
@@ -7317,6 +7381,284 @@ calc_joinrel_size_estimate(PlannerInfo *root,
     }
 
     return clamp_row_est(nrows);
+}
+
+/*
+ * Result compression strategy
+ * ---------------------------
+ * We compress an arbitrary discrete distribution down to K samples by
+ * "equal-probability binning":
+ *   1) Normalize probabilities to sum to 1.0 (skip non-positive probs).
+ *   2) Sort samples by 'val' ascending.
+ *   3) Cut the CDF into K equal-mass bins (target mass ~= 1/K per bin).
+ *   4) For each bin, output one representative sample whose:
+ *        - prob  = sum of probs in the bin
+ *        - val   = probability-weighted mean value within the bin
+ *   5) Renormalize tiny numerical drift so probs sum exactly to 1.0.
+ *
+ * This preserves the CDF shape better than naive top-K or uniform-value binning,
+ * and avoids exploding sample_count after multiplications.
+ */
+static int
+cmp_by_val_asc(const void *a, const void *b) {
+    const int ia = *(const int *) a;
+    const int ib = *(const int *) b;
+    /* The caller passes parallel arrays; compare by vals[ia] vs vals[ib].
+     * We stash pointers via a static for simplicity; see wrapper below. */
+    extern const double *__g_vals_for_sort;
+    double va = __g_vals_for_sort[ia];
+    double vb = __g_vals_for_sort[ib];
+    if (va < vb) return -1;
+    if (va > vb) return 1;
+    return 0;
+}
+
+/* Global pointer used only during qsort compare (reentrant w.r.t single thread). */
+const double *__g_vals_for_sort = NULL;
+
+/*
+ * compress_distribution_equal_mass
+ * --------------------------------
+ * Reduce 'src' to exactly 'target_samples' points using equal-probability
+ * (quantile) binning. Returns a freshly palloc'd Distribution.
+ *
+ * Requirements:
+ *   - target_samples >= 1
+ *   - src may contain arbitrary sample_count >= 1
+ */
+static Distribution *
+compress_distribution_equal_mass(const Distribution *src, int target_samples) {
+    Assert(target_samples >= 1);
+    Assert(src && src->sample_count >= 1);
+
+    /* 1) Filter out non-positive probabilities and compute total mass. */
+    int n = src->sample_count;
+    double total_mass = 0.0;
+    for (int i = 0; i < n; i++)
+        if (src->probs[i] > 0.0 && isfinite(src->probs[i]) && isfinite(src->vals[i]))
+            total_mass += src->probs[i];
+
+    /* Edge case: if no positive mass, fall back to a single zero sample. */
+    if (total_mass <= 0.0) {
+        Distribution *empty = palloc(sizeof(Distribution));
+        empty->sample_count = 1;
+        empty->probs = palloc(sizeof(double));
+        empty->vals = palloc(sizeof(double));
+        empty->probs[0] = 1.0;
+        empty->vals[0] = 0.0;
+        return empty;
+    }
+
+    /* 2) Build index array of valid samples and normalize probs. */
+    int *idx = palloc(sizeof(int) * n);
+    int m = 0;
+    for (int i = 0; i < n; i++) {
+        if (src->probs[i] > 0.0 && isfinite(src->probs[i]) && isfinite(src->vals[i]))
+            idx[m++] = i;
+    }
+    if (m == 0) {
+        /* Should not happen due to total_mass check, but keep safe. */
+        Distribution *empty = palloc(sizeof(Distribution));
+        empty->sample_count = 1;
+        empty->probs = palloc(sizeof(double));
+        empty->vals = palloc(sizeof(double));
+        empty->probs[0] = 1.0;
+        empty->vals[0] = 0.0;
+        pfree(idx);
+        return empty;
+    }
+
+    /* 3) Sort by value ascending via index indirection. */
+    __g_vals_for_sort = src->vals;
+    qsort(idx, m, sizeof(int), cmp_by_val_asc);
+    __g_vals_for_sort = NULL;
+
+    /* 4) Sweep and form K equal-mass bins. */
+    Distribution *dst = palloc(sizeof(Distribution));
+    dst->sample_count = target_samples;
+    dst->probs = palloc(sizeof(double) * target_samples);
+    dst->vals = palloc(sizeof(double) * target_samples);
+
+    double target_bin_mass = 1.0 / (double) target_samples;
+    double carry_mass = 0.0;
+    double bin_mass = 0.0;
+    double bin_weighted_val = 0.0;
+    int out_k = 0;
+
+    /* Normalize on the fly: prob_norm = prob / total_mass */
+    for (int t = 0; t < m; t++) {
+        int i = idx[t];
+        double p = src->probs[i] / total_mass;
+        double v = src->vals[i];
+
+        double remaining = p;
+        while (remaining > 0.0 && out_k < target_samples) {
+            double capacity = target_bin_mass - bin_mass;
+            double take = remaining;
+            if (take > capacity) take = capacity;
+
+            bin_mass += take;
+            bin_weighted_val += take * v;
+            remaining -= take;
+
+            /* Bin completed: flush one output sample. */
+            if (bin_mass >= target_bin_mass - 1e-15) {
+                /* Numerical guard: ensure positive mass. */
+                double pmass = bin_mass;
+                double vmean = (pmass > 0.0) ? (bin_weighted_val / pmass) : v;
+
+                dst->probs[out_k] = pmass;
+                dst->vals[out_k] = vmean;
+                out_k++;
+
+                /* Reset accumulators for next bin. */
+                bin_mass = 0.0;
+                bin_weighted_val = 0.0;
+            }
+        }
+    }
+
+    /* If we have leftover mass (due to rounding), assign it to the last bin. */
+    if (out_k < target_samples) {
+        /* Fill any missing bins by cloning the last known value with zero mass. */
+        double last_val = (out_k > 0) ? dst->vals[out_k - 1] : 0.0;
+        while (out_k < target_samples) {
+            double pmass = (out_k == target_samples - 1) ? bin_mass : 0.0;
+            double vmean = (bin_mass > 0.0) ? (bin_weighted_val / (bin_mass)) : last_val;
+            dst->probs[out_k] = pmass;
+            dst->vals[out_k] = vmean;
+            out_k++;
+            bin_mass = 0.0;
+            bin_weighted_val = 0.0;
+        }
+    } else if (bin_mass > 0.0) {
+        /* All K bins emitted but a tiny tail remains; add it to the last bin. */
+        dst->probs[target_samples - 1] += bin_mass;
+        double vtail = (bin_weighted_val > 0.0 && bin_mass > 0.0)
+                           ? (bin_weighted_val / bin_mass)
+                           : dst->vals[target_samples - 1];
+        /* Recompute last bin's weighted mean with the tail merged. */
+        double p_old = dst->probs[target_samples - 1] - bin_mass;
+        double v_old = dst->vals[target_samples - 1];
+        if (dst->probs[target_samples - 1] > 0.0) {
+            dst->vals[target_samples - 1] =
+                    (p_old * v_old + bin_mass * vtail) / dst->probs[target_samples - 1];
+        }
+    }
+
+    /* 5) Final renormalization to fix FP drift: force sum(probs) == 1.0 */
+    double sum_check = 0.0;
+    for (int k = 0; k < target_samples; k++)
+        sum_check += dst->probs[k];
+    if (sum_check > 0.0 && fabs(sum_check - 1.0) > 1e-12) {
+        double scale = 1.0 / sum_check;
+        for (int k = 0; k < target_samples; k++)
+            dst->probs[k] *= scale;
+    }
+
+    pfree(idx);
+    return dst;
+}
+
+/*
+ * multiply_distributions_for_join
+ * --------------------------------
+ * Triple product convolution:
+ *   rows = outer_rows * inner_rows * selectivity
+ * Produces a (potentially large) intermediate Distribution.
+ */
+static Distribution *
+multiply_distributions_for_join(const Distribution *outer_rows_dist,
+                                const Distribution *inner_rows_dist,
+                                const Distribution *sel_dist) {
+    int nO = outer_rows_dist->sample_count;
+    int nI = inner_rows_dist->sample_count;
+    int nS = sel_dist->sample_count;
+    int total = nO * nI * nS;
+
+    Distribution *res = palloc(sizeof(Distribution));
+    res->sample_count = total;
+    res->probs = palloc(sizeof(double) * total);
+    res->vals = palloc(sizeof(double) * total);
+
+    int idx = 0;
+    for (int i = 0; i < nO; i++) {
+        double pO = outer_rows_dist->probs[i];
+        double vO = outer_rows_dist->vals[i];
+        if (pO <= 0.0 || !isfinite(pO) || !isfinite(vO))
+            continue;
+
+        for (int j = 0; j < nI; j++) {
+            double pI = inner_rows_dist->probs[j];
+            double vI = inner_rows_dist->vals[j];
+            if (pI <= 0.0 || !isfinite(pI) || !isfinite(vI))
+                continue;
+
+            for (int k = 0; k < nS; k++) {
+                double pS = sel_dist->probs[k];
+                double vS = sel_dist->vals[k];
+                if (pS <= 0.0 || !isfinite(pS) || !isfinite(vS))
+                    continue;
+
+                double p = pO * pI * pS;
+                double v = vO * vI * vS;
+
+                res->probs[idx] = p;
+                res->vals[idx] = v;
+                idx++;
+            }
+        }
+    }
+
+    /* If some samples were skipped due to invalids, shrink arrays. */
+    if (idx < total) {
+        res->sample_count = idx;
+        res->probs = repalloc(res->probs, sizeof(double) * idx);
+        res->vals = repalloc(res->vals, sizeof(double) * idx);
+    }
+
+    return res;
+}
+
+/*
+ * join_rows_distribution
+ * ----------------------
+ * Convenience wrapper:
+ *   1) Multiply three input distributions (outer, inner, selectivity).
+ *   2) Compress the resulting distribution to 'target_samples' points.
+ */
+Distribution *
+join_rows_distribution(const Distribution *outer_rows_dist,
+                       const Distribution *inner_rows_dist,
+                       const Distribution *sel_dist,
+                       int target_samples) {
+    Distribution *raw = multiply_distributions_for_join(outer_rows_dist,
+                                                        inner_rows_dist,
+                                                        sel_dist);
+    Distribution *compressed = compress_distribution_equal_mass(raw, target_samples);
+
+    /* Free the big intermediate to control memory bloat. */
+    if (raw) {
+        if (raw->probs) pfree(raw->probs);
+        if (raw->vals) pfree(raw->vals);
+        pfree(raw);
+    }
+    return compressed;
+}
+
+static Distribution *calc_joinrel_size_estimate_exp(
+    PlannerInfo *root,
+    RelOptInfo *joinrel,
+    RelOptInfo *outer_rel,
+    RelOptInfo *inner_rel,
+    Distribution *sel_dist,
+    SpecialJoinInfo *sjinfo,
+    List *restrictlist
+) {
+    return join_rows_distribution(
+        outer_rel->rows_dist, inner_rel->rows_dist,
+        sel_dist, 20
+    );
 }
 
 /*
