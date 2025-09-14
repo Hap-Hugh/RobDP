@@ -4558,6 +4558,16 @@ struct config_string ConfigureNamesString[] =
 		check_debug_io_direct, assign_debug_io_direct, NULL
 	},
 
+	{
+		{"error_profile_path", PGC_USERSET, DEVELOPER_OPTIONS,
+			gettext_noop("The the path of error profile for the current query."),
+			NULL
+		},
+		&error_profile_path,
+		"/opt/err",
+		NULL, NULL, NULL
+	},
+
 	/* End-of-list marker */
 	{
 		{NULL, 0, 0, NULL, NULL}, NULL, NULL, NULL, NULL, NULL

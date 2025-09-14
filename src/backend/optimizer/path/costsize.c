@@ -108,6 +108,7 @@
 
 /* GUC Parameters */
 bool enable_rows_dist = true;
+char *error_profile_path = NULL;
 
 #define LOG2(x)  (log(x) / 0.693147180559945)
 
@@ -7069,7 +7070,7 @@ set_baserel_size_estimates(PlannerInfo *root, RelOptInfo *rel) {
     elog(LOG, "considering relation %s", rte->eref->aliasname);
 
     /* Load the error profile. */
-    if (load_error_profile("/opt/err", rte->eref->aliasname, ep) != 0) {
+    if (load_error_profile(error_profile_path, rte->eref->aliasname, ep) != 0) {
         elog(LOG, "failed to load error profile for relation %s, using single point distribution.",
              rte->eref->aliasname);
 
@@ -7253,7 +7254,7 @@ set_joinrel_size_estimates(PlannerInfo *root, RelOptInfo *rel,
     ErrorProfile *ep = palloc0(sizeof(ErrorProfile));
 
     if (filename[0] == '\0' ||
-        load_error_profile("/opt/err", filename, ep) != 0) {
+        load_error_profile(error_profile_path, filename, ep) != 0) {
         /* No suitable key or load failed: fall back to a degenerate ROWS dist. */
         if (filename[0] == '\0')
             elog(LOG, "no equi-join key found; using single-point rows distribution.");

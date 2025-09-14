@@ -18,6 +18,7 @@
 #include "nodes/plannodes.h"
 
 extern bool enable_rows_dist;
+extern char *error_profile_path;
 
 /* defaults for costsize.c's Cost parameters */
 /* NB: cost-estimation code should use the variables, not these constants! */
