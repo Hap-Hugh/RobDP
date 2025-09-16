@@ -17,6 +17,9 @@
 #include "nodes/pathnodes.h"
 #include "nodes/plannodes.h"
 
+/* GUC Parameters */
+extern bool enable_rows_dist;
+extern char *error_profile_path;
 
 /* defaults for costsize.c's Cost parameters */
 /* NB: cost-estimation code should use the variables, not these constants! */

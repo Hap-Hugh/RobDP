@@ -91,6 +91,7 @@
 #include "optimizer/paths.h"
 #include "optimizer/placeholder.h"
 #include "optimizer/plancat.h"
+#include "optimizer/dist.h"
 #include "optimizer/planmain.h"
 #include "optimizer/restrictinfo.h"
 #include "parser/parsetree.h"
@@ -99,6 +100,9 @@
 #include "utils/spccache.h"
 #include "utils/tuplesort.h"
 
+/* GUC Parameters */
+bool enable_rows_dist = true;
+char *error_profile_path = NULL;
 
 #define LOG2(x)  (log(x) / 0.693147180559945)
 
@@ -4792,22 +4796,26 @@ approx_tuple_count(PlannerInfo *root, JoinPath *path, List *quals) {
 void
 set_baserel_size_estimates(PlannerInfo *root, RelOptInfo *rel) {
     double nrows;
+    double est_sel;
 
     /* Should only be applied to base relations */
     Assert(rel->relid > 0);
 
-    nrows = rel->tuples *
-            clauselist_selectivity(root,
-                                   rel->baserestrictinfo,
-                                   0,
-                                   JOIN_INNER,
-                                   NULL);
+    est_sel = clauselist_selectivity(
+        root, rel->baserestrictinfo, 0, JOIN_INNER,NULL
+    );
+
+    nrows = rel->tuples * est_sel;
 
     rel->rows = clamp_row_est(nrows);
 
     cost_qual_eval(&rel->baserestrictcost, rel->baserestrictinfo, root);
 
     set_rel_width(root, rel);
+
+    if (enable_rows_dist) {
+        set_baserel_rows_dist(root, rel, error_profile_path, est_sel);
+    }
 }
 
 /*
@@ -4880,6 +4888,11 @@ set_joinrel_size_estimates(PlannerInfo *root, RelOptInfo *rel,
                                            inner_rel->rows,
                                            sjinfo,
                                            restrictlist);
+    if (enable_rows_dist) {
+        set_joinrel_rows_dist(
+            root, rel, outer_rel, inner_rel, sjinfo, restrictlist, error_profile_path
+        );
+    }
 }
 
 /*

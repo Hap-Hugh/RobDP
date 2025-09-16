@@ -1997,6 +1997,15 @@ struct config_bool ConfigureNamesBool[] =
 		NULL, NULL, NULL
 	},
 
+	{
+		 {"enable_rows_dist", PGC_USERSET, DEVELOPER_OPTIONS,
+		 	gettext_noop("Set whether the distribution of rows is enabled when estimating costs."),
+		 },
+		&enable_rows_dist,
+		false,
+		NULL, NULL, NULL
+	},
+
 	/* End-of-list marker */
 	{
 		{NULL, 0, 0, NULL, NULL}, NULL, false, NULL, NULL, NULL
@@ -4547,6 +4556,16 @@ struct config_string ConfigureNamesString[] =
 		&debug_io_direct_string,
 		"",
 		check_debug_io_direct, assign_debug_io_direct, NULL
+	},
+
+	{
+		{"error_profile_path", PGC_USERSET, DEVELOPER_OPTIONS,
+			gettext_noop("The the path of error profile for the current query."),
+			NULL
+		},
+		&error_profile_path,
+		"/opt/err",
+		NULL, NULL, NULL
 	},
 
 	/* End-of-list marker */

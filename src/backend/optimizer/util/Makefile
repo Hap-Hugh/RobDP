@@ -26,6 +26,7 @@ OBJS = \
 	relnode.o \
 	restrictinfo.o \
 	tlist.o \
-	var.o
+	var.o \
+	dist.o \
 
 include $(top_srcdir)/src/backend/common.mk

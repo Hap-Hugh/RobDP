@@ -22,6 +22,12 @@
 #include "nodes/parsenodes.h"
 #include "storage/block.h"
 
+/*
+ * Forward declaration of Distribution and ErrorProfile.
+ */
+typedef struct Distribution Distribution;
+
+typedef struct ErrorProfile ErrorProfile;
 
 /*
  * Relids
@@ -1028,6 +1034,12 @@ typedef struct RelOptInfo
 	List	  **partexprs pg_node_attr(read_write_ignore);
 	/* Nullable partition key expressions */
 	List	  **nullable_partexprs pg_node_attr(read_write_ignore);
+
+	/* Rows distribution of the current relation */
+	Distribution *rows_dist pg_node_attr(read_write_ignore);
+
+	/* Error profile of the current relation. */
+	ErrorProfile *sel_error_profile pg_node_attr(read_write_ignore);
 } RelOptInfo;
 
 /*
@@ -1548,6 +1560,9 @@ typedef struct ParamPathInfo
 	Cardinality ppi_rows;		/* estimated number of result tuples */
 	List	   *ppi_clauses;	/* join clauses available from outer rels */
 	Bitmapset  *ppi_serials;	/* set of rinfo_serial for enforced quals */
+
+	/* distribution of the rows */
+	Distribution *rows_dist pg_node_attr(read_write_ignore);
 } ParamPathInfo;
 
 
@@ -1631,6 +1646,9 @@ typedef struct Path
 
 	/* sort ordering of path's output; a List of PathKey nodes; see above */
 	List	   *pathkeys;
+
+	/* distribution of the rows */
+	Distribution *rows_dist pg_node_attr(read_write_ignore);
 } Path;
 
 /* Macro for extracting a path's parameterization relids; beware double eval */

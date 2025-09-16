@@ -15,4 +15,5 @@ backend_sources += files(
   'restrictinfo.c',
   'tlist.c',
   'var.c',
+  'dist.c',
 )
