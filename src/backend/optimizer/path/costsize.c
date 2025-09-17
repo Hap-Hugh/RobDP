@@ -4807,7 +4807,18 @@ set_baserel_size_estimates(PlannerInfo *root, RelOptInfo *rel) {
 
     nrows = rel->tuples * est_sel;
 
+    /* Note: We also want to keep the original rows. */
     rel->rows = clamp_row_est(nrows);
+    /*
+     * If we disable rows distribution function, then `rel->rows` will remain unchanged.
+     * Otherwise, `rel->rows` will be adjusted to the expectation of the calculated rows
+     * distributon. However, `rel->rows_original` will still remain unchanged.
+     */
+    rel->rows_original = rel->rows;
+    /*
+     * `rel->rows_original` is important since we need to use this value to further adjust
+     * the `ppi->ppi_rows` and `ppi_rows_dist` of a parameterized path.
+     */
 
     cost_qual_eval(&rel->baserestrictcost, rel->baserestrictinfo, root);
 
@@ -4888,6 +4899,17 @@ set_joinrel_size_estimates(PlannerInfo *root, RelOptInfo *rel,
                                            inner_rel->rows,
                                            sjinfo,
                                            restrictlist);
+    /*
+     * If we disable rows distribution function, then `rel->rows` will remain unchanged.
+     * Otherwise, `rel->rows` will be adjusted to the expectation of the calculated rows
+     * distributon. However, `rel->rows_original` will still remain unchanged.
+     */
+    rel->rows_original = rel->rows;
+    /*
+     * `rel->rows_original` is important since we need to use this value to further adjust
+     * the `ppi->ppi_rows` and `ppi_rows_dist` of a parameterized path.
+     */
+
     if (enable_rows_dist) {
         set_joinrel_rows_dist(
             root, rel, outer_rel, inner_rel, sjinfo, restrictlist, error_profile_path

@@ -866,6 +866,7 @@ typedef struct RelOptInfo
 	 */
 	/* estimated number of result tuples */
 	Cardinality rows;
+	Cardinality rows_original;
 
 	/*
 	 * per-relation planner control flags
@@ -1558,6 +1559,7 @@ typedef struct ParamPathInfo
 
 	Relids		ppi_req_outer;	/* rels supplying parameters used by path */
 	Cardinality ppi_rows;		/* estimated number of result tuples */
+	Cardinality ppi_rows_original;
 	List	   *ppi_clauses;	/* join clauses available from outer rels */
 	Bitmapset  *ppi_serials;	/* set of rinfo_serial for enforced quals */
 

@@ -5,6 +5,9 @@
 #include "postgres.h"
 #include "c.h"
 #include "optimizer/dist.h"
+
+#include <assert.h>
+
 #include "optimizer/optimizer.h"
 
 #include <stdio.h>
@@ -517,7 +520,7 @@ void set_baserel_rows_dist(
         dist_mean += rel->rows_dist->probs[i] * rel->rows_dist->vals[i];
         elog(DEBUG1, "%g %g %g", rel->rows_dist->probs[i], rel->rows_dist->vals[i], dist_mean);
     }
-    elog(LOG, "rows original: %g -> rows_dist mean: %g",
+    elog(LOG, "set_baserel_rows_dist::[DIST] rows original: %g -> rows_dist mean: %g",
          rel->rows, dist_mean);
     rel->rows = clamp_row_est(dist_mean);
     free_distribution(true_sel_dist);
@@ -647,8 +650,41 @@ void set_joinrel_rows_dist(
         elog(DEBUG1, "%g %g %g", rel->rows_dist->probs[i], rel->rows_dist->vals[i], dist_mean);
     }
 
-    elog(LOG, "rows original: %g -> rows_dist mean: %g", rel->rows, dist_mean);
+    elog(LOG, "set_joinrel_rows_dist::[DIST] rows original: %g -> rows_dist mean: %g", rel->rows, dist_mean);
     rel->rows = clamp_row_est(dist_mean);
+}
+
+void set_ppi_rows_dist(
+    RelOptInfo *rel,
+    ParamPathInfo *ppi
+) {
+    Assert(ppi != NULL);
+    /* The rel's rows distribution must be calculated first. */
+    Assert(rel->rows_dist != NULL);
+
+    double rel_rows_original = rel->rows_original;
+    double ppi_rows_original = ppi->ppi_rows_original;
+    double ratio = ppi_rows_original / rel_rows_original;
+    /*
+    * Since `ppi_rows_original` is calculated with more quals,
+    * We expect that ppi's selectivity is smaller than the rel's one.
+    * Therefore, the originally estimated rows is smaller.
+    */
+    Assert(ratio <= 1.0);
+
+    /* Now we use the ratio to scale the rel's rows distribution. */
+    ppi->rows_dist = scale_distribution(rel->rows_dist, ratio);
+
+    Assert(ppi->rows_dist != NULL);
+
+    double dist_mean = 0.0;
+    for (int i = 0; i < ppi->rows_dist->sample_count; i++) {
+        dist_mean += ppi->rows_dist->probs[i] * ppi->rows_dist->vals[i];
+        elog(DEBUG1, "%g %g %g", ppi->rows_dist->probs[i], ppi->rows_dist->vals[i], dist_mean);
+    }
+    ppi->ppi_rows = clamp_row_est(dist_mean);
+    elog(LOG, "set_ppi_rows_dist::[DIST] rows original: %g -> rows_dist mean: %g",
+         ppi->ppi_rows_original, ppi->ppi_rows);
 }
 
 /* Free storage inside an ErrorProfile (safe on partially-filled structs). */

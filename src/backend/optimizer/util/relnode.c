@@ -21,6 +21,7 @@
 #include "optimizer/appendinfo.h"
 #include "optimizer/clauses.h"
 #include "optimizer/cost.h"
+#include "optimizer/dist.h"
 #include "optimizer/inherit.h"
 #include "optimizer/pathnode.h"
 #include "optimizer/paths.h"
@@ -1536,7 +1537,7 @@ get_baserel_parampathinfo(PlannerInfo *root, RelOptInfo *baserel,
 	Relids		joinrelids;
 	List	   *pclauses;
 	Bitmapset  *pserials;
-	double		rows;
+	double		rows_original;
 	ListCell   *lc;
 
 	/* If rel has LATERAL refs, every path for it should account for them */
@@ -1589,15 +1590,23 @@ get_baserel_parampathinfo(PlannerInfo *root, RelOptInfo *baserel,
 	}
 
 	/* Estimate the number of rows returned by the parameterized scan */
-	rows = get_parameterized_baserel_size(root, baserel, pclauses);
+	rows_original = get_parameterized_baserel_size(root, baserel, pclauses);
 
 	/* And now we can build the ParamPathInfo */
 	ppi = makeNode(ParamPathInfo);
 	ppi->ppi_req_outer = required_outer;
-	ppi->ppi_rows = rows;
+	ppi->ppi_rows = rows_original;
+	/* Keep the original estimated `ppi->rows` */
+	ppi->ppi_rows_original = rows_original;
+	ppi->rows_dist = NULL;
 	ppi->ppi_clauses = pclauses;
 	ppi->ppi_serials = pserials;
 	baserel->ppilist = lappend(baserel->ppilist, ppi);
+
+	/* Set the ppi rows, and rows distribution if enabled */
+	if (enable_rows_dist) {
+		set_ppi_rows_dist(baserel, ppi);
+	}
 
 	return ppi;
 }
@@ -1645,7 +1654,7 @@ get_joinrel_parampathinfo(PlannerInfo *root, RelOptInfo *joinrel,
 	List	   *pclauses;
 	List	   *eclauses;
 	List	   *dropped_ecs;
-	double		rows;
+	double		rows_original;
 	ListCell   *lc;
 
 	/* If rel has LATERAL refs, every path for it should account for them */
@@ -1794,7 +1803,7 @@ get_joinrel_parampathinfo(PlannerInfo *root, RelOptInfo *joinrel,
 		return ppi;
 
 	/* Estimate the number of rows returned by the parameterized join */
-	rows = get_parameterized_joinrel_size(root, joinrel,
+	rows_original = get_parameterized_joinrel_size(root, joinrel,
 										  outer_path,
 										  inner_path,
 										  sjinfo,
@@ -1809,10 +1818,18 @@ get_joinrel_parampathinfo(PlannerInfo *root, RelOptInfo *joinrel,
 	 */
 	ppi = makeNode(ParamPathInfo);
 	ppi->ppi_req_outer = required_outer;
-	ppi->ppi_rows = rows;
+	ppi->ppi_rows = rows_original;
+	/* Keep the original estimated `ppi->rows` */
+	ppi->ppi_rows_original = rows_original;
+	ppi->rows_dist = NULL;
 	ppi->ppi_clauses = NIL;
 	ppi->ppi_serials = NULL;
 	joinrel->ppilist = lappend(joinrel->ppilist, ppi);
+
+	/* Set the ppi rows, and rows distribution if enabled */
+	if (enable_rows_dist) {
+		set_ppi_rows_dist(joinrel, ppi);
+	}
 
 	return ppi;
 }

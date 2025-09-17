@@ -80,6 +80,11 @@ void set_joinrel_rows_dist(
     char *error_profile_path
 );
 
+void set_ppi_rows_dist(
+    RelOptInfo *rel,
+    ParamPathInfo *ppi
+);
+
 /*
  * Free resources held by an ErrorProfile.
  * Safe to call on a partially filled or empty profile.
