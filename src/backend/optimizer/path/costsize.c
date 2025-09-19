@@ -4802,7 +4802,7 @@ set_baserel_size_estimates(PlannerInfo *root, RelOptInfo *rel) {
     Assert(rel->relid > 0);
 
     est_sel = clauselist_selectivity(
-        root, rel->baserestrictinfo, 0, JOIN_INNER,NULL
+        root, rel->baserestrictinfo, 0, JOIN_INNER, NULL
     );
 
     nrows = rel->tuples * est_sel;

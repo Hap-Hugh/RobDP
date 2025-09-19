@@ -470,13 +470,18 @@ void set_baserel_rows_dist(
     ErrorProfile *ep = palloc0(sizeof(ErrorProfile));
 
     /* Load the error profile. */
-    const char *std_alias = get_std_alias(root, rel->relid);
-    if (load_error_profile(error_profile_path, std_alias, ep) != 0) {
-        elog(LOG, "failed to load error profile for relation %s, using single point distribution.", std_alias);
+    const char *alias = get_alias(root, rel->relid);
+    if (load_error_profile(error_profile_path, alias, ep) == 2) {
+        elog(LOG, "failed to load error profile using alias; retrying for standard alias ...");
 
-        /* Here we encode the current point-estimate selectivity as a degenerate dist. */
-        rel->rows_dist = make_single_point_dist(est_sel * rel->tuples);
-        return; /* Nothing more to do for the dist path. */
+        const char *std_alias = get_std_alias(root, rel->relid);
+        if (load_error_profile(error_profile_path, std_alias, ep) != 0) {
+            elog(LOG, "failed to load error profile for relation %s, using single point distribution.", std_alias);
+
+            /* Here we encode the current point-estimate selectivity as a degenerate dist. */
+            rel->rows_dist = make_single_point_dist(est_sel * rel->tuples);
+            return; /* Nothing more to do for the dist path. */
+        }
     }
 
     /* We would like to save the error profile for future use. */
@@ -497,8 +502,7 @@ void set_baserel_rows_dist(
     );
 
     if (!true_sel_dist) {
-        elog(LOG, "failed to build conditional distribution for relation %s, using single point distribution.",
-             std_alias);
+        elog(LOG, "failed to build conditional distribution for relation %s, using single point distribution.", alias);
         rel->rows_dist = make_single_point_dist(est_sel * rel->tuples);
         return;
     }
@@ -533,6 +537,8 @@ void set_joinrel_rows_dist(
     /* --- Try to build a filename key for the join error profile --- */
     char filename[64];
     MemSet(filename, 0, sizeof(filename));
+    char std_filename[64];
+    MemSet(std_filename, 0, sizeof(std_filename));
 
     ListCell *lc;
     foreach(lc, restrictlist) {
@@ -560,19 +566,33 @@ void set_joinrel_rows_dist(
         bool l_in_inner = bms_is_member(leftvar->varno, inner_rel->relids);
 
         if ((l_in_outer && r_in_inner) || (r_in_outer && l_in_inner)) {
+            const char *left_rel_alias = get_alias(root, leftvar->varno);
+            const char *right_rel_alias = get_alias(root, rightvar->varno);
             const char *left_rel_std_alias = get_std_alias(root, leftvar->varno);
             const char *right_rel_std_alias = get_std_alias(root, rightvar->varno);
 
             /* Canonicalize order to avoid duplicate “A=B” vs “B=A”. */
-            if (strcmp(left_rel_std_alias, right_rel_std_alias) < 0)
-                snprintf(filename, sizeof(filename), "%s=%s", left_rel_std_alias, right_rel_std_alias);
+            if (strcmp(left_rel_alias, right_rel_alias) < 0)
+                snprintf(filename, sizeof(filename), "%s=%s", left_rel_alias, right_rel_alias);
             else
-                snprintf(filename, sizeof(filename), "%s=%s", right_rel_std_alias, left_rel_std_alias);
+                snprintf(filename, sizeof(filename), "%s=%s", right_rel_alias, left_rel_alias);
 
             elog(LOG, "Filename: %s; Join Key: %s.%d = %s.%d",
                  filename,
+                 left_rel_alias, leftvar->varattno,
+                 right_rel_alias, rightvar->varattno);
+
+            /* Canonicalize order to avoid duplicate “A=B” vs “B=A”. */
+            if (strcmp(left_rel_std_alias, right_rel_std_alias) < 0)
+                snprintf(std_filename, sizeof(std_filename), "%s=%s", left_rel_std_alias, right_rel_std_alias);
+            else
+                snprintf(std_filename, sizeof(std_filename), "%s=%s", right_rel_std_alias, left_rel_std_alias);
+
+            elog(LOG, "Standard filename: %s; Join Key: %s.%d = %s.%d",
+                 std_filename,
                  left_rel_std_alias, leftvar->varattno,
                  right_rel_std_alias, rightvar->varattno);
+
             break;
         }
     }
@@ -590,16 +610,21 @@ void set_joinrel_rows_dist(
     ErrorProfile *ep = palloc0(sizeof(ErrorProfile));
 
     if (filename[0] == '\0' ||
-        load_error_profile(error_profile_path, filename, ep) != 0) {
-        /* No suitable key or load failed: fall back to a degenerate ROWS dist. */
-        if (filename[0] == '\0')
-            elog(LOG, "no equi-join key found; using single-point rows distribution.");
-        else
-            elog(LOG, "failed to load error profile for %s; using single-point rows distribution.", filename);
+        load_error_profile(error_profile_path, filename, ep) == 2) {
+        elog(LOG, "failed to load error profile using alias; retrying for standard alias ...");
 
-        rel->rows_dist = make_single_point_dist(rel->rows);
-        pfree(ep); /* avoid leaking the shell struct */
-        return;
+        if (std_filename[0] == '\0' ||
+            load_error_profile(error_profile_path, std_filename, ep) != 0) {
+            /* No suitable key or load failed: fall back to a degenerate ROWS dist. */
+            if (std_filename[0] == '\0')
+                elog(LOG, "no equi-join key found; using single-point rows distribution.");
+            else
+                elog(LOG, "failed to load error profile for %s; using single-point rows distribution.", filename);
+
+            rel->rows_dist = make_single_point_dist(rel->rows);
+            pfree(ep); /* avoid leaking the shell struct */
+            return;
+        }
     }
 
     /* Keep the profile for later (must be freed with free_error_profile + pfree). */
@@ -885,6 +910,14 @@ void free_distribution(Distribution *dist) {
     pfree(dist->probs);
     pfree(dist->vals);
     pfree(dist);
+}
+
+char *get_alias(const PlannerInfo *root, Index relid) {
+    Assert(relid > 0);
+    RangeTblEntry *rte = root->simple_rte_array[relid];
+    char *alias = rte->eref->aliasname;
+    elog(LOG, "considering relation: %s", alias);
+    return pstrdup(alias);
 }
 
 char *get_std_alias(const PlannerInfo *root, Index relid) {

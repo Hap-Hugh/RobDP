@@ -44,6 +44,8 @@ struct ErrorProfile {
     double true_std;
 };
 
+char *get_alias(const PlannerInfo *root, Index relid);
+
 char *get_std_alias(const PlannerInfo *root, Index relid);
 
 Distribution *make_single_point_dist(double val);
