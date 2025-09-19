@@ -468,13 +468,11 @@ void set_baserel_rows_dist(
     double est_sel
 ) {
     ErrorProfile *ep = palloc0(sizeof(ErrorProfile));
-    RangeTblEntry *rte = root->simple_rte_array[rel->relid];
-    elog(LOG, "considering relation %s", rte->eref->aliasname);
 
     /* Load the error profile. */
-    if (load_error_profile(error_profile_path, rte->eref->aliasname, ep) != 0) {
-        elog(LOG, "failed to load error profile for relation %s, using single point distribution.",
-             rte->eref->aliasname);
+    const char *std_alias = get_std_alias(root, rel->relid);
+    if (load_error_profile(error_profile_path, std_alias, ep) != 0) {
+        elog(LOG, "failed to load error profile for relation %s, using single point distribution.", std_alias);
 
         /* Here we encode the current point-estimate selectivity as a degenerate dist. */
         rel->rows_dist = make_single_point_dist(est_sel * rel->tuples);
@@ -500,14 +498,14 @@ void set_baserel_rows_dist(
 
     if (!true_sel_dist) {
         elog(LOG, "failed to build conditional distribution for relation %s, using single point distribution.",
-             rte->eref->aliasname);
+             std_alias);
         rel->rows_dist = make_single_point_dist(est_sel * rel->tuples);
         return;
     }
 
     /* Debug-print produced samples (value = sel, prob = weight). */
     for (int i = 0; i < true_sel_dist->sample_count; i++) {
-        elog(DEBUG1, "rows_dist(sel) sample: %g (p = %g)",
+        elog(LOG, "rows_dist(sel) sample: %g (p = %g)",
              true_sel_dist->vals[i], true_sel_dist->probs[i]);
     }
 
@@ -515,7 +513,7 @@ void set_baserel_rows_dist(
     double dist_mean = 0.0;
     for (int i = 0; i < rel->rows_dist->sample_count; i++) {
         dist_mean += rel->rows_dist->probs[i] * rel->rows_dist->vals[i];
-        elog(DEBUG1, "%g %g %g", rel->rows_dist->probs[i], rel->rows_dist->vals[i], dist_mean);
+        elog(LOG, "%g %g %g", rel->rows_dist->probs[i], rel->rows_dist->vals[i], dist_mean);
     }
     elog(LOG, "rows original: %g -> rows_dist mean: %g",
          rel->rows, dist_mean);
@@ -562,19 +560,19 @@ void set_joinrel_rows_dist(
         bool l_in_inner = bms_is_member(leftvar->varno, inner_rel->relids);
 
         if ((l_in_outer && r_in_inner) || (r_in_outer && l_in_inner)) {
-            const char *left = root->simple_rte_array[leftvar->varno]->eref->aliasname;
-            const char *right = root->simple_rte_array[rightvar->varno]->eref->aliasname;
+            const char *left_rel_std_alias = get_std_alias(root, leftvar->varno);
+            const char *right_rel_std_alias = get_std_alias(root, rightvar->varno);
 
             /* Canonicalize order to avoid duplicate “A=B” vs “B=A”. */
-            if (strcmp(left, right) < 0)
-                snprintf(filename, sizeof(filename), "%s=%s", left, right);
+            if (strcmp(left_rel_std_alias, right_rel_std_alias) < 0)
+                snprintf(filename, sizeof(filename), "%s=%s", left_rel_std_alias, right_rel_std_alias);
             else
-                snprintf(filename, sizeof(filename), "%s=%s", right, left);
+                snprintf(filename, sizeof(filename), "%s=%s", right_rel_std_alias, left_rel_std_alias);
 
             elog(LOG, "Filename: %s; Join Key: %s.%d = %s.%d",
                  filename,
-                 root->simple_rte_array[leftvar->varno]->eref->aliasname, leftvar->varattno,
-                 root->simple_rte_array[rightvar->varno]->eref->aliasname, rightvar->varattno);
+                 left_rel_std_alias, leftvar->varattno,
+                 right_rel_std_alias, rightvar->varattno);
             break;
         }
     }
@@ -629,7 +627,7 @@ void set_joinrel_rows_dist(
 
     /* Debug: these are SELECTIVITY samples. */
     for (int i = 0; i < true_sel_dist->sample_count; i++)
-        elog(DEBUG1, "rows_dist(sel) sample: %g (p = %g)",
+        elog(LOG, "rows_dist(sel) sample: %g (p = %g)",
          true_sel_dist->vals[i], true_sel_dist->probs[i]);
 
     /* Push selectivity uncertainty through the join-size model to get ROWS dist. */
@@ -644,7 +642,7 @@ void set_joinrel_rows_dist(
     double dist_mean = 0.0;
     for (int i = 0; i < rel->rows_dist->sample_count; i++) {
         dist_mean += rel->rows_dist->probs[i] * rel->rows_dist->vals[i];
-        elog(DEBUG1, "%g %g %g", rel->rows_dist->probs[i], rel->rows_dist->vals[i], dist_mean);
+        elog(LOG, "%g %g %g", rel->rows_dist->probs[i], rel->rows_dist->vals[i], dist_mean);
     }
 
     elog(LOG, "rows original: %g -> rows_dist mean: %g", rel->rows, dist_mean);
@@ -887,6 +885,23 @@ void free_distribution(Distribution *dist) {
     pfree(dist->probs);
     pfree(dist->vals);
     pfree(dist);
+}
+
+char *get_std_alias(const PlannerInfo *root, Index relid) {
+    Assert(relid > 0);
+    RangeTblEntry *rte = root->simple_rte_array[relid];
+    char *alias = rte->eref->aliasname;
+    char *std_alias = pstrdup(alias);
+    char *ch = std_alias;
+    while (*ch != '\0') {
+        if (*ch >= '0' && *ch <= '9') {
+            *ch = '\0'; // *ch is a digit, break now
+            break;
+        }
+        ++ch;
+    }
+    elog(LOG, "considering relation: %s -> %s", alias, std_alias);
+    return std_alias;
 }
 
 Distribution *make_single_point_dist(double val) {
