@@ -491,7 +491,7 @@ void set_baserel_rows_dist(
     const double e0 = est_sel; /* current point estimate as the condition */
     const int n_samples = 20; /* TODO: consider a GUC */
     double h_est = 0.0; /* out-params if supported by builder */
-    double h_true = 0.0;
+    double h_true = 0.5; /* we use 0.5 to keep consistant with PAR2QO */
 
     /*
      * Now we have estimated selectivity and error profile, we can calculate
@@ -634,7 +634,7 @@ void set_joinrel_rows_dist(
     const double e0 = est_sel; /* current point estimate as the condition */
     const int n_samples = 20; /* TODO: consider a GUC */
     double h_est = 0.0; /* out-params if supported by builder */
-    double h_true = 0.0;
+    double h_true = 0.5; /* we use 0.5 to keep consistant with PAR2QO */
 
     /*
      * Now we have estimated selectivity and error profile, we can calculate
@@ -757,6 +757,7 @@ Distribution *build_conditional_distribution(
     }
 
     /* ---------- 3) Bandwidth in log-error axis (if not provided) ---------- */
+    /* Always set to 0.5 */
     if (h_true <= 0) {
         /* Use std/IQR of errs for a robust bandwidth in log-error space */
         double mean, std;
@@ -805,8 +806,10 @@ Distribution *build_conditional_distribution(
         }
         int m = knn_indices_by_est(ep, e0, k, idx);
 
-        for (int i = 0; i < n; i++) w[i] = 0.0;
-        for (int j = 0; j < m; j++) w[idx[j]] = 1.0;
+        for (int i = 0; i < n; i++)
+            w[i] = 0.0;
+        for (int j = 0; j < m; j++)
+            w[idx[j]] = 1.0;
         sumw = (double) m;
 
         pfree(idx);
@@ -828,7 +831,8 @@ Distribution *build_conditional_distribution(
         }
         cdf[n - 1] = 1.0;
     } else {
-        for (int i = 0; i < n; i++) cdf[i] = (i + 1) / (double) n;
+        for (int i = 0; i < n; i++)
+            cdf[i] = (i + 1) / (double) n;
     }
 
     /* ---------- 6) Allocate output Distribution ---------- */
