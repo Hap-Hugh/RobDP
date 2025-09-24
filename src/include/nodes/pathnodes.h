@@ -22,6 +22,7 @@
 #include "nodes/parsenodes.h"
 #include "storage/block.h"
 
+typedef struct Distribution Distribution;
 
 /*
  * Relids
@@ -1028,6 +1029,9 @@ typedef struct RelOptInfo
 	List	  **partexprs pg_node_attr(read_write_ignore);
 	/* Nullable partition key expressions */
 	List	  **nullable_partexprs pg_node_attr(read_write_ignore);
+
+	/* Rows distribution of the current relation */
+	Distribution *rows_dist pg_node_attr(read_write_ignore);
 } RelOptInfo;
 
 /*

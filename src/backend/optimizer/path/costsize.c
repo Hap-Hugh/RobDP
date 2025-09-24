@@ -86,6 +86,7 @@
 #include "nodes/nodeFuncs.h"
 #include "optimizer/clauses.h"
 #include "optimizer/cost.h"
+#include "optimizer/dist.h"
 #include "optimizer/optimizer.h"
 #include "optimizer/pathnode.h"
 #include "optimizer/paths.h"
@@ -4999,23 +5000,26 @@ approx_tuple_count(PlannerInfo *root, JoinPath *path, List *quals)
 void
 set_baserel_size_estimates(PlannerInfo *root, RelOptInfo *rel)
 {
-	double		nrows;
+	double		nrows, est_sel;
 
 	/* Should only be applied to base relations */
 	Assert(rel->relid > 0);
 
-	nrows = rel->tuples *
-		clauselist_selectivity(root,
-							   rel->baserestrictinfo,
-							   0,
-							   JOIN_INNER,
-							   NULL);
+	est_sel = clauselist_selectivity(
+		root, rel->baserestrictinfo, 0, JOIN_INNER, NULL
+	);
+
+	nrows = rel->tuples * est_sel;
 
 	rel->rows = clamp_row_est(nrows);
 
 	cost_qual_eval(&rel->baserestrictcost, rel->baserestrictinfo, root);
 
 	set_rel_width(root, rel);
+
+	if (enable_rows_dist) {
+		set_baserel_rows_dist(root, rel, est_sel);
+	}
 }
 
 /*
@@ -5090,6 +5094,22 @@ set_joinrel_size_estimates(PlannerInfo *root, RelOptInfo *rel,
 										   inner_rel->rows,
 										   sjinfo,
 										   restrictlist);
+
+	if (enable_rows_dist) {
+		/* Estimated selectivity for conditioning p(true_sel | est_sel=e0).
+		 * Notes: we assume that the join type is always JOIN_INNER. */
+		double sel_est = clauselist_selectivity(
+			root,
+			restrictlist,
+			0,
+			sjinfo->jointype,
+			sjinfo
+		);
+
+		set_joinrel_rows_dist(
+			root, rel, outer_rel, inner_rel, restrictlist, sel_est
+		);
+	}
 }
 
 /*
