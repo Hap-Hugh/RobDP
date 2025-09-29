@@ -10,7 +10,9 @@
 #include "nodes/pathnodes.h"
 #include "nodes/pg_list.h"
 
-#define EP_MAX_SAMPLE 1024
+#define EP_MAX_SAMPLE     1024
+#define DIST_MAX_SAMPLE   128
+#define EP_MAX_BIN        8
 
 /* GUC Parameters */
 extern bool enable_rows_dist;
@@ -22,12 +24,14 @@ typedef struct Distribution Distribution;
 
 typedef struct ErrorProfileSample ErrorProfileSample;
 
+typedef struct ErrorDistParams ErrorDistParams;
+
 typedef struct ErrorProfile ErrorProfile;
 
 struct Distribution {
     int sample_count;
-    double *probs;
-    double *vals;
+    double probs[DIST_MAX_SAMPLE];
+    double vals[DIST_MAX_SAMPLE];
 };
 
 struct ErrorProfileSample {
@@ -35,11 +39,25 @@ struct ErrorProfileSample {
     double sel_est;
 };
 
+/* Parameters of each bin’s error distribution */
+struct ErrorDistParams {
+    int bin_index;
+    int n_points; /* number of raw samples in this bin */
+    double bandwidth_h; /* KDE bandwidth (if needed later) */
+    double mean_logratio; /* mean of log(sel_true/sel_est) */
+    double std_logratio; /* std of log(sel_true/sel_est) */
+    double sel_est_lo; /* left boundary of sel_est */
+    double sel_est_hi; /* right boundary of sel_est */
+};
+
 struct ErrorProfile {
     int sample_count;
     double std_true;
     double std_est;
-    ErrorProfileSample data[EP_MAX_SAMPLE];
+    double error_dist_thresh[EP_MAX_BIN]; /* sel_est threshold of each bin */
+    ErrorDistParams params[EP_MAX_BIN]; /* parameters of each bin */
+    Distribution error_dist[EP_MAX_BIN]; /* discrete distributions (optional) */
+    ErrorProfileSample data[EP_MAX_SAMPLE]; /* input samples */
 };
 
 double clamp01(
@@ -70,6 +88,11 @@ Distribution *make_single_point_dist(
 Distribution *scale_distribution(
     const Distribution *src,
     double factor
+);
+
+Distribution *get_conditional_distribution(
+    const ErrorProfile *ep,
+    double sel_est
 );
 
 void free_distribution(

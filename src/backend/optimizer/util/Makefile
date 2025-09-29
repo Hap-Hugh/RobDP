@@ -28,6 +28,7 @@ OBJS = \
 	tlist.o \
 	var.o \
 	dist.o \
+	joindist.o \
 	kde.o \
 
 include $(top_srcdir)/src/backend/common.mk

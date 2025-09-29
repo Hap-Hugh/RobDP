@@ -4,10 +4,11 @@
 //
 
 #include "postgres.h"
-#include "utils/memutils.h"
-#include "utils/smem.h"
 
 #include <dirent.h>
+#include "utils/memutils.h"
+#include "utils/smem.h"
+#include "optimizer/kde.h"
 
 /* GUC Parameters */
 char *error_profile_path = NULL;
@@ -157,6 +158,7 @@ void SessionMemLoadAll(const char *dirname, void *extra) {
         elog(LOG, "Loading file %s", fullpath);
         ErrorProfile *ep = palloc0(sizeof(ErrorProfile));
         read_error_profile(fullpath, ep);
+        calc_error_dist(ep);
 
         // Save the error profiles to session memory
         SessionMemSave(filename, ep);

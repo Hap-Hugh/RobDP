@@ -1,5 +1,6 @@
 //
 // Created by Xuan Chen on 2025/9/22.
+// Created by Xuan Chen on 2025/9/28.
 //
 
 #ifndef KDE_H
@@ -9,19 +10,20 @@
 
 /* GUC Parameters */
 extern double error_sample_kde_bandwidth;
+extern int error_bin_count;
 
 /* Forward Declarations */
 typedef Distribution Distribution;
 
 typedef ErrorProfile ErrorProfile;
 
-Distribution *build_conditional_distribution(
+void calc_error_dist(
+    ErrorProfile *ep
+);
+
+int find_bin_by_sel_est(
     const ErrorProfile *ep,
-    double est_sel,
-    int n_samples,
-    double h_est,
-    double h_true,
-    unsigned int seed
+    double sel_est
 );
 
 #endif // KDE_H

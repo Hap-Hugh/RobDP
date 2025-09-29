@@ -3523,7 +3523,7 @@ struct config_int ConfigureNamesInt[] =
 			NULL
 		},
 		&error_sample_count,
-		20, 5, 100,
+		20, 4, 64,
 		NULL, NULL, NULL
 	},
 
@@ -3534,6 +3534,16 @@ struct config_int ConfigureNamesInt[] =
 		},
 		&error_sample_seed,
 		42, 1, INT_MAX,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"error_bin_count", PGC_USERSET, DEVELOPER_OPTIONS,
+			gettext_noop("Sets the number of bins of selectivity distributions."),
+			NULL
+		},
+		&error_bin_count,
+		1, 1, 8,
 		NULL, NULL, NULL
 	},
 

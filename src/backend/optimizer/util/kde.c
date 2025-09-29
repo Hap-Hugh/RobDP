@@ -38,284 +38,284 @@
 #include "optimizer/dist.h"
 #include "optimizer/kde.h"
 
+static const double EPS = 1e-12;
+double error_kde_sigma_span = 4.0;
+
 /* GUC Parameters */
+int error_bin_count = 1;
 double error_sample_kde_bandwidth = 0.0;
 
-/* ---------- Types ---------- */
-
-/* (distance, index) pair for sorting by distance while remembering original i */
-typedef struct {
-    double dist;
-    int idx;
-} DistIndexPair;
-
-/* ---------- Small helpers ---------- */
-
-static double
-maxd(double a, double b) { return (a > b) ? a : b; }
-
-static double
-mind(double a, double b) { return (a < b) ? a : b; }
-
-/*
- * Silverman's rule-of-thumb for 1D KDE bandwidth:
- *   h = 1.06 * sigma * n^(-1/5)
- * Falls back to a small positive value if n < 2 or sigma <= 0.
- */
-static double
-silverman_bandwidth(double sigma, int n) {
-    if (n < 2 || sigma <= 0.0)
-        return 1e-3;
-    return 1.06 * sigma * pow(n, -0.2);
+/* ---------------- Utilities ---------------- */
+/* Comparator for sorting by sel_est ascending */
+static int cmp_sel_est_asc(const void *a, const void *b) {
+    const ErrorProfileSample *pa = (const ErrorProfileSample *) a;
+    const ErrorProfileSample *pb = (const ErrorProfileSample *) b;
+    if (pa->sel_est < pb->sel_est) return -1;
+    if (pa->sel_est > pb->sel_est) return 1;
+    return 0;
 }
 
-/* qsort comparator for doubles (ascending). */
-static int
-cmp_double(const void *a, const void *b) {
-    const double x = *(const double *) a;
-    const double y = *(const double *) b;
-    return (x < y) ? -1 : ((x > y) ? 1 : 0);
+/* Comparator for sorting doubles ascending (for sampled vals) */
+static int cmp_double_asc(const void *a, const void *b) {
+    double da = *(const double *) a;
+    double db = *(const double *) b;
+    if (da < db) return -1;
+    if (da > db) return 1;
+    return 0;
 }
 
-/*
- * Estimate IQR (Q3 - Q1) using simple index-based quartiles after sorting.
- * Mutates the given array by sorting it in-place.
- */
-static double
-estimate_iqr(double *tmp, int n) {
-    qsort(tmp, n, sizeof(double), cmp_double);
-
-    /* Use simple linear indices; robust enough for bandwidth purposes. */
-    const int q1i = (int) floor(0.25 * (n - 1));
-    const int q3i = (int) floor(0.75 * (n - 1));
-    return tmp[q3i] - tmp[q1i];
+/* Safe log ratio: log(max(sel_true,EPS)/max(sel_est,EPS)) */
+static inline double safe_log_ratio(double sel_true, double sel_est) {
+    double t = fmax(sel_true, EPS);
+    double e = fmax(sel_est, EPS);
+    return log(t / e);
 }
 
-/*
- * Gaussian kernel (unnormalized): K(u) = exp(-0.5*u^2).
- * We don’t need the normalization constant for relative weights.
- */
-static double
-gaussian_kernel_u(double u) {
-    return exp(-0.5 * u * u);
+/* ---------------- RNG (LCG + Box-Muller) ----------------
+   Uses the same LCG update as sample_from_distribution.
+   - rng_uniform01(): uniform in [0,1)
+   - rng_std_normal(): standard normal N(0,1) via Box–Muller
+*/
+static inline unsigned int lcg_next(unsigned int s) {
+    return s * 1664525u + 1013904223u;
 }
 
-/* Uniform(0, 1) via rand_r(), avoiding exact 0/1 endpoints. */
-static double
-uniform01(unsigned int *state) {
-    /* +1 / +2 trick keeps result in (0, 1), not including endpoints. */
-    return (rand_r(state) + 1.0) / ((double) RAND_MAX + 2.0);
+static inline double rng_uniform01(unsigned int *seed) {
+    /* Generate u in [0,1). We mimic your style (mod 1e6) to keep consistency. */
+    double u = (double) (*seed % 1000000u) / 1000000.0;
+    *seed = lcg_next(*seed);
+    return u;
 }
 
-/*
- * Box–Muller normal(0, 1) using rand_r()-based uniform(0, 1).
- * Reentrant w.r.t. the passed-in PRNG state.
- */
-static double
-randn(unsigned int *state) {
-    const double u1 = uniform01(state);
-    const double u2 = uniform01(state);
-    return sqrt(-2.0 * log(u1)) * cos(2.0 * M_PI * u2);
+static double rng_std_normal(unsigned int *seed) {
+    /* Box–Muller transform */
+    double u1 = rng_uniform01(seed);
+    double u2 = rng_uniform01(seed);
+    if (u1 <= 0.0) u1 = 1e-12; /* guard log(0) */
+    double r = sqrt(-2.0 * log(u1));
+    double theta = 2.0 * M_PI * u2;
+    return r * cos(theta); /* one normal draw */
 }
 
-/* qsort comparator for DistIndexPair by ascending distance. */
-static int
-cmp_pair_by_d(const void *a, const void *b) {
-    const double x = ((const DistIndexPair *) a)->dist;
-    const double y = ((const DistIndexPair *) b)->dist;
-    return (x < y) ? -1 : ((x > y) ? 1 : 0);
-}
+/* ---------------- KDE helpers (deterministic, no RNG) ---------------- */
 
-/*
- * Return indices of the k nearest neighbors in 'ep' w.r.t. |est_sel - e0|.
- * Writes into out_idx[0..k-1]. Returns the number of indices written (<= k).
- * Complexity: O(n log n) due to sorting; fine for moderate n.
- */
-static int
-knn_indices_by_est(const ErrorProfile *ep, double e0, int k, int *out_idx) {
-    const int n = ep->sample_count;
-    DistIndexPair *arr = palloc0(n * sizeof(DistIndexPair));
-
+/* Evaluate Gaussian KDE density at z:
+   f(z) = (1/(n*h*sqrt(2*pi))) * sum_i exp(-0.5*((z - x_i)/h)^2) */
+static double kde_eval_gaussian(const double *x, int n, double h, double z) {
+    if (n <= 0 || h <= 0.0) return 0.0;
+    const double inv_h = 1.0 / h;
+    const double norm = 1.0 / (n * h * sqrt(2.0 * M_PI));
+    double s = 0.0;
     for (int i = 0; i < n; ++i) {
-        arr[i].dist = fabs(ep->data[i].sel_est - e0);
-        arr[i].idx = i;
+        double u = (z - x[i]) * inv_h;
+        s += exp(-0.5 * u * u);
     }
-    qsort(arr, n, sizeof(DistIndexPair), cmp_pair_by_d);
-
-    const int m = (k < n) ? k : n;
-    for (int j = 0; j < m; ++j)
-        out_idx[j] = arr[j].idx;
-
-    pfree(arr);
-    return m;
+    return norm * s;
 }
 
-/* =========================================================================
- * Public entry: build_conditional_distribution()
- * -------------------------------------------------------------------------
- * Build an empirical Distribution of true selectivity conditioned on an
- * estimate est_sel, using:
- *   - KDE weights on the estimate axis
- *   - log-error jittering in log true/est space
- *
- * If h_est <= 0, it is chosen via robust Silverman rule on {sel_est}.
- * If h_true <= 0, it is chosen via a shrunk Silverman rule on {log-errors}.
- *
- * Returns a Distribution* with n_samples values, each with equal mass.
- * On (rare) degenerate cases (e.g., est_sel far outside support), falls back
- * to a KNN mask before building the CDF.
- * =========================================================================
- */
-Distribution *
-build_conditional_distribution(
-    const ErrorProfile *ep,
-    const double est_sel,
-    const int n_samples,
-    double h_est,
-    double h_true,
-    unsigned int seed
+/* ===== Discretize KDE by SAMPLING (no grid; writes into fixed arrays) =====
+   Steps:
+   1) Draw M samples y_k from KDE:
+      - pick i ~ Uniform{0..n-1}
+      - y_k = x[i] + h * Z, Z ~ N(0,1)
+   2) Sort y_k increasingly.
+   3) Estimate local width w_k:
+        w0 = y1 - y0; w_{M-1} = y_{M-1} - y_{M-2};
+        wk = 0.5 * (y_{k+1} - y_{k-1})
+      clip to small positive if needed.
+   4) Weight pk ∝ f(y_k) * w_k; normalize to sum=1.
+   Output: out->vals=y_k; out->probs=pk; out->sample_count=M_used.
+*/
+static void discretize_kde_by_sampling(
+    const double *x, int n, double h,
+    int sample_count,
+    unsigned int *seed,
+    Distribution *out
 ) {
-    if (ep == NULL || ep->sample_count <= 0 || n_samples <= 0)
-        return NULL;
+    out->sample_count = 0;
 
-    const double EPS = 1e-15;
-    const int n = ep->sample_count;
+    if (n <= 0 || sample_count <= 0) return;
+    if (h <= 0.0) h = 1e-6;
 
-    /* ---------- 1) Bandwidth on estimate axis (robust Silverman) ---------- */
-    if (h_est <= 0.0) {
-        double *tmp = palloc0(n * sizeof(double));
-        for (int i = 0; i < n; ++i)
-            tmp[i] = ep->data[i].sel_est;
+    /* cap to fixed capacity */
+    int M = sample_count;
+    if (M > DIST_MAX_SAMPLE) M = DIST_MAX_SAMPLE;
 
-        double mean = 0.0, std = 0.0;
-        calc_mean_std(tmp, n, &mean, &std);
+    /* 1) draw samples */
+    double *samples = (double *) malloc(sizeof(double) * M);
+    if (!samples) return;
 
-        /* estimate_iqr sorts in-place, so reuse tmp directly */
-        const double iqr = estimate_iqr(tmp, n);
-        const double robust_sigma = (iqr > 0.0) ? mind(std, iqr / 1.349) : std;
-
-        h_est = silverman_bandwidth(robust_sigma, n);
-        h_est = maxd(h_est, 1e-3);
-
-        pfree(tmp);
+    for (int k = 0; k < M; ++k) {
+        double u = rng_uniform01(seed);
+        int idx = (int) (u * n);
+        if (idx >= n) idx = n - 1;
+        double z = rng_std_normal(seed);
+        samples[k] = x[idx] + h * z;
     }
 
-    /* ---------- 2) Precompute per-sample log-errors: log(T) - log(E) ------ */
-    double *errs = palloc0(n * sizeof(double));
+    /* 2) sort samples */
+    qsort(samples, (size_t)M, sizeof(double), cmp_double_asc);
 
-    for (int i = 0; i < n; ++i) {
-        const double T = ep->data[i].sel_true;
-        const double E = ep->data[i].sel_est;
-
-        /* Clamp only to avoid non-positive arguments to log(). */
-        const double Tc = (T <= 0.0) ? EPS : T;
-        const double Ec = (E <= 0.0) ? EPS : E;
-
-        errs[i] = log(Tc) - log(Ec);
+    /* 3) local widths */
+    double *width = (double *) malloc(sizeof(double) * M);
+    if (!width) {
+        free(samples);
+        return;
     }
 
-    /* ---------- 3) Bandwidth on log-error axis (if not provided) ---------- */
-    if (h_true <= 0.0) {
-        double mean = 0.0, std = 0.0;
-        calc_mean_std(errs, n, &mean, &std);
-
-        /* Build a scratch copy for IQR (estimate_iqr sorts in-place). */
-        double *tmp2 = palloc0(n * sizeof(double));
-        for (int i = 0; i < n; ++i)
-            tmp2[i] = errs[i];
-
-        const double iqr = estimate_iqr(tmp2, n);
-        const double robust_sigma = (iqr > 0.0) ? mind(std, iqr / 1.349) : std;
-
-        /* Slightly smaller than Silverman’s: tune factor as desired (e.g., 0.25). */
-        h_true = 0.25 * silverman_bandwidth(robust_sigma, n);
-        h_true = maxd(h_true, 1e-3);
-
-        pfree(tmp2);
-    }
-
-    /* ---------- 4) Kernel weights on estimate axis ------------------------ */
-    double *w = palloc0(n * sizeof(double));
-
-    double sumw = 0.0;
-    const double inv_h = 1.0 / h_est;
-
-    for (int i = 0; i < n; ++i) {
-        const double u = (ep->data[i].sel_est - est_sel) * inv_h;
-        const double wi = gaussian_kernel_u(u);
-        w[i] = wi;
-        sumw += wi;
-    }
-
-    /*
-     * KNN fallback if weights are vanishingly small (e.g., est_sel far outside
-     * support or h_est too tiny). Use ~max(50, sqrt(n)) neighbors.
-     */
-    if (sumw < 1e-12) {
-        const int k = (int) fmin(n, fmax(50.0, sqrt(n)));
-        int *idx = palloc0(k * sizeof(int));
-        const int m = knn_indices_by_est(ep, est_sel, k, idx);
-
-        /* Convert to a simple mask over indices returned by KNN. */
-        for (int i = 0; i < n; ++i)
-            w[i] = 0.0;
-        for (int j = 0; j < m; ++j)
-            w[idx[j]] = 1.0;
-        sumw = (double) m;
-
-        pfree(idx);
-    }
-
-    /* ---------- 5) Build CDF over sample weights -------------------------- */
-    double *cdf = palloc0(n * sizeof(double));
-
-    if (sumw > 0.0) {
-        double acc = 0.0;
-        for (int i = 0; i < n; ++i) {
-            acc += w[i] / sumw;
-            cdf[i] = acc;
-        }
-        cdf[n - 1] = 1.0; /* ensure exact 1.0 at the end */
+    if (M == 1) {
+        width[0] = 1.0;
     } else {
-        /* Shouldn’t happen due to the KNN fallback, but keep a guard. */
-        for (int i = 0; i < n; ++i)
-            cdf[i] = (i + 1) / (double) n;
-    }
-
-    /* ---------- 6) Allocate output Distribution --------------------------- */
-    Distribution *dist = palloc0(sizeof(Distribution));
-    dist->sample_count = n_samples;
-    dist->probs = (double *) palloc0(n_samples * sizeof(double));
-    dist->vals = (double *) palloc0(n_samples * sizeof(double));
-
-    /* ---------- 7) Draw samples via inverse-CDF + log-error jitter -------- */
-    for (int j = 0; j < n_samples; ++j) {
-        /* Inverse-CDF pick. */
-        const double u = uniform01(&seed);
-
-        int lo = 0, hi = n - 1;
-        while (lo < hi) {
-            int mid = lo + (hi - lo) / 2;
-            if (cdf[mid] < u)
-                lo = mid + 1;
-            else
-                hi = mid;
+        width[0] = samples[1] - samples[0];
+        width[M - 1] = samples[M - 1] - samples[M - 2];
+        for (int k = 1; k < M - 1; ++k) {
+            width[k] = 0.5 * (samples[k + 1] - samples[k - 1]);
         }
-        const int pick = lo;
-
-        /* Add Normal(0, h_true^2) jitter in log-error space. */
-        const double err_draw = errs[pick] + h_true * randn(&seed);
-        const double t_draw = est_sel * exp(err_draw);
-
-        /* Clamp to [0, 1]; for est_sel=0, this naturally collapses to 0. */
-        dist->vals[j] = clamp01(t_draw);
-        dist->probs[j] = 1.0 / (double) n_samples;
+        for (int k = 0; k < M; ++k) {
+            if (!(width[k] > 0.0)) width[k] = 1e-12;
+        }
     }
 
-    /* ---------- 8) Cleanup and return ------------------------------------- */
-    pfree(cdf);
-    pfree(w);
-    pfree(errs);
+    /* 4) probs ~ density * local width; write to fixed arrays */
+    double sumw = 0.0;
+    for (int k = 0; k < M; ++k) {
+        double fk = kde_eval_gaussian(x, n, h, samples[k]);
+        double wk = fk * width[k];
+        out->vals[k] = samples[k];
+        out->probs[k] = wk;
+        sumw += wk;
+    }
 
-    return dist;
+    if (sumw <= 0.0 || !isfinite(sumw)) {
+        for (int k = 0; k < M; ++k) out->probs[k] = 1.0 / (double) M;
+    } else {
+        for (int k = 0; k < M; ++k) out->probs[k] /= sumw;
+    }
+
+    out->sample_count = M;
+
+    free(width);
+    free(samples);
+}
+
+/* ===================== Build thresholds + params + dists ===================== */
+
+/* Build per-bin distributions and store thresholds/params into ep. */
+void calc_error_dist(ErrorProfile *ep) {
+    Assert(ep != NULL);
+    Assert(ep->sample_count > 0);
+    Assert(error_bin_count >= 1 && error_bin_count <= EP_MAX_BIN);
+
+    /* 1) sort by sel_est */
+    qsort((void*)ep->data, (size_t)ep->sample_count,
+          sizeof(ErrorProfileSample), cmp_sel_est_asc);
+
+    const int N = ep->sample_count;
+    int start = 0;
+    double prev_hi = -INFINITY;
+
+    for (int b = 0; b < error_bin_count; ++b) {
+        /* 2) equal-count binning on sel_est */
+        int end = (int) llround(((long long) (b + 1) * (long long) N) / (double) error_bin_count);
+        if (end > N) end = N;
+        if (b == error_bin_count - 1) end = N;
+        int count = end - start;
+
+        double sel_lo = (b == 0) ? -INFINITY : ep->error_dist_thresh[b - 1];
+        double sel_hi = (count > 0)
+                            ? ep->data[end - 1].sel_est
+                            : ((b == 0) ? INFINITY : prev_hi);
+
+        ep->error_dist_thresh[b] = sel_hi;
+        prev_hi = sel_hi;
+
+        /* 3) collect x = log(sel_true/sel_est) for this bin */
+        double *x = NULL;
+        if (count > 0) {
+            x = (double *) malloc(sizeof(double) * count);
+            Assert(x != NULL);
+            for (int i = 0; i < count; ++i) {
+                const ErrorProfileSample *s = &ep->data[start + i];
+                x[i] = safe_log_ratio(s->sel_true, s->sel_est);
+            }
+        }
+
+        /* 4) stats of x */
+        double mean_x = 0.0, std_x = 0.0;
+        if (count > 0) {
+            calc_mean_std(x, count, &mean_x, &std_x);
+        }
+
+        /* 5) record params */
+        double h = (error_sample_kde_bandwidth > 0.0) ? error_sample_kde_bandwidth : 1e-6;
+        ep->params[b].bin_index = b;
+        ep->params[b].n_points = count;
+        ep->params[b].bandwidth_h = h;
+        ep->params[b].mean_logratio = mean_x;
+        ep->params[b].std_logratio = std_x;
+        ep->params[b].sel_est_lo = sel_lo;
+        ep->params[b].sel_est_hi = sel_hi;
+
+        /* 6) build per-bin distribution BY SAMPLING (writes into fixed arrays) */
+        ep->error_dist[b].sample_count = 0; /* reset */
+        if (error_sample_count > 0 && count > 0) {
+            /* decorrelate bins a bit */
+            unsigned int bin_seed = error_sample_seed ^ (0x9E3779B9u * (unsigned int) b);
+            discretize_kde_by_sampling(
+                x, count, h,
+                error_sample_count,
+                &bin_seed,
+                &ep->error_dist[b]
+            );
+        }
+
+        if (x) free(x);
+        start = end;
+    }
+
+    /* clear remaining bins (if any) */
+    for (int b = error_bin_count; b < EP_MAX_BIN; ++b) {
+        ep->error_dist_thresh[b] = NAN;
+        ep->params[b].bin_index = -1;
+        ep->params[b].n_points = 0;
+        ep->params[b].bandwidth_h = 0.0;
+        ep->params[b].mean_logratio = 0.0;
+        ep->params[b].std_logratio = 0.0;
+        ep->params[b].sel_est_lo = NAN;
+        ep->params[b].sel_est_hi = NAN;
+        ep->error_dist[b].sample_count = 0;
+        /* vals/probs arrays remain as-is; sample_count=0 means "empty" */
+    }
+}
+
+/* ------------------------------- Sampling ------------------------------- */
+
+/* Draw one value from a Distribution according to its probabilities.
+   - u is generated from the provided seed via a simple LCG update.
+   - Returns the last value as a fallback if numerical rounding leaves a small tail. */
+double sample_from_distribution(const Distribution *dist, unsigned int *seed) {
+    double u = (double) (*seed % 1000000) / 1000000.0; /* simple uniform in [0,1) */
+    *seed = *seed * 1664525u + 1013904223u; /* LCG update */
+    double cdf = 0.0;
+    for (int i = 0; i < dist->sample_count; i++) {
+        cdf += dist->probs[i];
+        if (u <= cdf) return dist->vals[i];
+    }
+    return dist->vals[dist->sample_count - 1];
+}
+
+/* Optional helper: find bin by sel_est using (thresh[b-1], thresh[b]].
+   Returns -1 if none found. */
+int find_bin_by_sel_est(const ErrorProfile *ep, double sel_est) {
+    if (error_bin_count <= 0) return -1;
+    for (int b = 0; b < error_bin_count; ++b) {
+        double lo = (b == 0) ? -INFINITY : ep->error_dist_thresh[b - 1];
+        double hi = ep->error_dist_thresh[b];
+        if (sel_est > lo && sel_est <= hi) return b;
+    }
+    /* fallback: the last non-empty bin */
+    for (int b = error_bin_count - 1; b >= 0; --b) {
+        if (ep->params[b].n_points > 0) return b;
+    }
+    return -1;
 }
