@@ -46,6 +46,23 @@ int error_bin_count = 1;
 double error_sample_kde_bandwidth = 0.0;
 
 /* ---------------- Utilities ---------------- */
+
+/* Global/static variable to hold context for comparator */
+static const Distribution *g_dist_for_sort = NULL;
+
+/* Standard qsort comparator: no ctx argument */
+static int cmp_index_desc(const void *a, const void *b) {
+    int ia = *(const int *) a;
+    int ib = *(const int *) b;
+
+    if (g_dist_for_sort->probs[ia] < g_dist_for_sort->probs[ib])
+        return 1; /* larger prob first */
+    else if (g_dist_for_sort->probs[ia] > g_dist_for_sort->probs[ib])
+        return -1;
+    else
+        return 0;
+}
+
 /* Comparator for sorting by sel_est ascending */
 static int cmp_sel_est_asc(const void *a, const void *b) {
     const ErrorProfileSample *pa = (const ErrorProfileSample *) a;
@@ -186,6 +203,7 @@ static void discretize_kde_by_sampling(
         sumw += wk;
     }
 
+    /* normalize probabilities */
     if (sumw <= 0.0 || !isfinite(sumw)) {
         for (int k = 0; k < M; ++k) out->probs[k] = 1.0 / (double) M;
     } else {
@@ -193,6 +211,29 @@ static void discretize_kde_by_sampling(
     }
 
     out->sample_count = M;
+
+    /* sort indices by prob descending */
+    int *idx = palloc(sizeof(int) * M);
+    for (int k = 0; k < M; ++k) idx[k] = k;
+
+    g_dist_for_sort = out; /* set global context */
+    qsort(idx, M, sizeof(int), cmp_index_desc);
+
+    /* apply permutation */
+    double *tmp_probs = palloc(sizeof(double) * M);
+    double *tmp_vals = palloc(sizeof(double) * M);
+    for (int k = 0; k < M; ++k) {
+        tmp_probs[k] = out->probs[idx[k]];
+        tmp_vals[k] = out->vals[idx[k]];
+    }
+    for (int k = 0; k < M; ++k) {
+        out->probs[k] = tmp_probs[k];
+        out->vals[k] = tmp_vals[k];
+    }
+
+    pfree(idx);
+    pfree(tmp_probs);
+    pfree(tmp_vals);
 
     free(width);
     free(samples);
