@@ -1,6 +1,7 @@
 //
 // Created by Xuan Chen on 2025/9/22.
 // Modified by Xuan Chen on 2025/9/24.
+// Modified by Xuan Chen on 2025/10/2.
 //
 
 #ifndef SMEM_H
@@ -8,7 +9,7 @@
 
 #include "hsearch.h"
 #include "palloc.h"
-#include "optimizer/dist.h"
+#include "optimizer/ep.h"
 
 #define SM_KEY_LEN 64
 
@@ -21,6 +22,8 @@ typedef struct SessionMemKey SessionMemKey;
 typedef struct SessionMemEntry SessionMemEntry;
 
 typedef struct SessionMem SessionMem;
+
+typedef struct ErrorProfile ErrorProfile;
 
 /* Definitions */
 struct SessionMemKey {

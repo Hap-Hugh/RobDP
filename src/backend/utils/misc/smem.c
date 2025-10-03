@@ -1,6 +1,7 @@
 //
 // Created by Xuan Chen on 2025/9/22.
 // Modified by Xuan Chen on 2025/9/24.
+// Modified by Xuan Chen on 2025/10/2.
 //
 
 #include "postgres.h"
@@ -158,7 +159,7 @@ void SessionMemLoadAll(const char *dirname, void *extra) {
         elog(LOG, "Loading file %s", fullpath);
         ErrorProfile *ep = palloc0(sizeof(ErrorProfile));
         read_error_profile(fullpath, ep);
-        calc_error_dist(ep);
+        make_error_sample(ep);
 
         // Save the error profiles to session memory
         SessionMemSave(filename, ep);

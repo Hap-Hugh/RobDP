@@ -86,7 +86,7 @@
 #include "nodes/nodeFuncs.h"
 #include "optimizer/clauses.h"
 #include "optimizer/cost.h"
-#include "optimizer/dist.h"
+#include "optimizer/sample.h"
 #include "optimizer/optimizer.h"
 #include "optimizer/pathnode.h"
 #include "optimizer/paths.h"
@@ -5018,7 +5018,7 @@ set_baserel_size_estimates(PlannerInfo *root, RelOptInfo *rel)
 	set_rel_width(root, rel);
 
 	if (enable_rows_dist) {
-		set_baserel_rows_dist(root, rel, est_sel);
+		set_baserel_rows_sample(root, rel, est_sel);
 	}
 }
 
@@ -5098,7 +5098,7 @@ set_joinrel_size_estimates(PlannerInfo *root, RelOptInfo *rel,
 	if (enable_rows_dist) {
 		/* Estimated selectivity for conditioning p(true_sel | est_sel=e0).
 		 * Notes: we assume that the join type is always JOIN_INNER. */
-		double sel_est = clauselist_selectivity(
+		const double sel_est = clauselist_selectivity(
 			root,
 			restrictlist,
 			0,
@@ -5106,7 +5106,7 @@ set_joinrel_size_estimates(PlannerInfo *root, RelOptInfo *rel,
 			sjinfo
 		);
 
-		set_joinrel_rows_dist(
+		set_joinrel_rows_sample(
 			root, rel, outer_rel, inner_rel, restrictlist, sel_est
 		);
 	}

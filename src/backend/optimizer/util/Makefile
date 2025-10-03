@@ -27,8 +27,8 @@ OBJS = \
 	restrictinfo.o \
 	tlist.o \
 	var.o \
-	dist.o \
-	joindist.o \
+	sample.o \
+	ep.o \
 	kde.o \
 
 include $(top_srcdir)/src/backend/common.mk
