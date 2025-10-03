@@ -2,6 +2,7 @@
 // Created by Xuan Chen on 2025/9/22.
 // Modified by Xuan Chen on 2025/9/24.
 // Modified by Xuan Chen on 2025/10/2.
+// Modified by Xuan Chen on 2025/10/3.
 //
 
 #ifndef SAMPLE_H
@@ -59,11 +60,10 @@ Sample *make_sample_by_bin(
     double sel_est
 );
 
-Sample *make_sample_by_join_sample(
+Sample *make_single_sample_by_join_sample(
     const Sample *outer_rows_sample,
     const Sample *inner_rows_sample,
-    const Sample *sel_sample,
-    int target_samples
+    const Sample *sel_sample
 );
 
 /* ------------------------------- Relations ------------------------------- */

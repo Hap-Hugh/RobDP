@@ -2,6 +2,7 @@
 // Created by Xuan Chen on 2025/9/22.
 // Modified by Xuan Chen on 2025/9/24.
 // Modified by Xuan Chen on 2025/10/2.
+// Modified by Xuan Chen on 2025/10/3.
 //
 
 #include "optimizer/sample.h"
@@ -137,67 +138,30 @@ Sample *make_sample_by_bin(const ErrorProfile *ep, const double sel_est) {
     return out;
 }
 
-Sample *make_sample_by_join_sample(
+Sample *make_single_sample_by_join_sample(
     const Sample *outer_rows_sample,
     const Sample *inner_rows_sample,
-    const Sample *sel_sample,
-    const int target_samples
+    const Sample *sel_sample
 ) {
-    /* Each input must be either a scalar (sample_count==1) or have target_samples */
-    Assert(outer_rows_sample->sample_count == 1 || outer_rows_sample->sample_count == target_samples);
-    Assert(inner_rows_sample->sample_count == 1 || inner_rows_sample->sample_count == target_samples);
-    Assert(sel_sample->sample_count == 1 || sel_sample->sample_count == target_samples);
+    /* Outer and inner relation's rows sample must be a scalar (sample_count == 1) */
+    Assert(outer_rows_sample->sample_count == 1);
+    Assert(inner_rows_sample->sample_count == 1);
 
-    /* Whether to broadcast each sample as a constant */
-    const bool outer_to_constant = outer_rows_sample->sample_count == 1;
-    const bool inner_to_constant = inner_rows_sample->sample_count == 1;
-    const bool sel_to_constant = sel_sample->sample_count == 1;
-
-    /* Constant values (used when sample_count==1) */
+    /* Constant values (sample_count == 1) */
     const double outer_const_sample = outer_rows_sample->sample[0];
     const double inner_const_sample = inner_rows_sample->sample[0];
-    const double sel_const_sample = sel_sample->sample[0];
 
-    /* Fast path: if all are constants, multiply once and return a single-point sample */
-    if (outer_to_constant && inner_to_constant && sel_to_constant) {
-        Sample *join_sample = make_sample_by_single_value(
-            outer_const_sample * inner_const_sample * sel_const_sample
-        );
-        return join_sample;
+    /* Find the mean of the selectivity sample */
+    double sel_sample_mean = 0.0;
+    for (int i = 0; i < sel_sample->sample_count; ++i) {
+        sel_sample_mean += sel_sample->sample[i];
     }
+    sel_sample_mean /= (double) sel_sample->sample_count;
 
-    /* Allocate result with target_samples */
-    Sample *join_sample = palloc0(sizeof(Sample));
-    join_sample->sample_count = target_samples;
-
-    /* Element-wise multiply across i; broadcast any scalar inputs */
-    for (int i = 0; i < target_samples; ++i) {
-        double current_sample = 1.0;
-
-        /* Outer: use constant when broadcasting, otherwise use i-th sample */
-        if (outer_to_constant) {
-            current_sample *= outer_const_sample;
-        } else {
-            current_sample *= outer_rows_sample->sample[i];
-        }
-
-        /* Inner: use constant when broadcasting, otherwise use i-th sample */
-        if (inner_to_constant) {
-            current_sample *= inner_const_sample;
-        } else {
-            current_sample *= inner_rows_sample->sample[i];
-        }
-
-        /* Selectivity: use constant when broadcasting, otherwise use i-th sample */
-        if (sel_to_constant) {
-            current_sample *= sel_const_sample;
-        } else {
-            current_sample *= sel_sample->sample[i];
-        }
-
-        join_sample->sample[i] = current_sample;
-    }
-
+    /* Fast path */
+    Sample *join_sample = make_sample_by_single_value(
+        outer_const_sample * inner_const_sample * sel_sample_mean
+    );
     return join_sample;
 }
 
@@ -249,20 +213,18 @@ void set_baserel_rows_sample(
         elog(LOG, "[baserel %s] value = %g.", alias, sel_true_sample->sample[i]);
     }
 
-    /* 4. Scale the `sel_true_sample` -- from selectivity sample to rows sample. */
-    Sample *rows_sample = make_sample_by_scale_factor(sel_true_sample, baserel->tuples);
-
-    /* 5. Calculate the expectation of the rows sample and update the relation's rows estimation. */
+    /* 4. Calculate the expectation of the rows sample and update the relation's rows estimation. */
     double rows_sample_mean = 0.0;
-    for (int i = 0; i < rows_sample->sample_count; ++i) {
-        rows_sample_mean += rows_sample->sample[i];
+    for (int i = 0; i < sel_true_sample->sample_count; ++i) {
+        rows_sample_mean += sel_true_sample->sample[i];
     }
-    rows_sample_mean /= (double) rows_sample->sample_count;
+    rows_sample_mean *= baserel->tuples;
+    rows_sample_mean /= (double) sel_true_sample->sample_count;
 
-    /* 5.1 Save the rows and rows sample. */
+    /* 4.1 Save the rows and rows sample. */
     elog(LOG, "[baserel %s] original: %g rows -> adjusted: %g rows.", alias, baserel->rows, rows_sample_mean);
     baserel->rows = rows_sample_mean;
-    baserel->rows_sample = rows_sample;
+    baserel->rows_sample = make_sample_by_single_value(rows_sample_mean);
 }
 
 void set_joinrel_rows_sample(
@@ -375,19 +337,15 @@ void set_joinrel_rows_sample(
 
     /* 4. Push selectivity uncertainty through the join-size model to get rows sample.
      * Notes: we assume that both outer relation's and inner relation's rows sample exist. */
-    Sample *rows_sample = make_sample_by_join_sample(
+    Sample *rows_sample = make_single_sample_by_join_sample(
         outer_rel->rows_sample,
         inner_rel->rows_sample,
-        sel_true_sample,
-        error_sample_count
+        sel_true_sample
     );
+    Assert(rows_sample->sample_count == 1);
 
-    /* 5. Calculate the expectation of the rows sample and update the relation's rows estimation. */
-    double rows_sample_mean = 0.0;
-    for (int i = 0; i < rows_sample->sample_count; ++i) {
-        rows_sample_mean += rows_sample->sample[i];
-    }
-    rows_sample_mean /= (double) rows_sample->sample_count;
+    /* 5. Get the expectation of the rows sample and update the relation's rows estimation. */
+    const double rows_sample_mean = rows_sample->sample[0];
 
     /* 5.1 Save the rows and rows sample. */
     elog(LOG, "[joinrel %s] original: %g rows -> adjusted: %g rows.", alias, joinrel->rows, rows_sample_mean);
