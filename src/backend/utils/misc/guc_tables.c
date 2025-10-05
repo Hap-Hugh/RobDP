@@ -3537,16 +3537,6 @@ struct config_int ConfigureNamesInt[] =
 		NULL, NULL, NULL
 	},
 
-	{
-		{"error_bin_count", PGC_USERSET, DEVELOPER_OPTIONS,
-			gettext_noop("Sets the number of bins of selectivity distributions."),
-			NULL
-		},
-		&error_bin_count,
-		1, 1, 8,
-		NULL, NULL, NULL
-	},
-
 	/* End-of-list marker */
 	{
 		{NULL, 0, 0, NULL, NULL}, NULL, 0, 0, 0, NULL, NULL, NULL
@@ -3835,7 +3825,7 @@ struct config_real ConfigureNamesReal[] =
 				"for a given bandwidth.")
 		},
 		&error_sample_kde_bandwidth,
-		0.0, 0.0, 1.0,
+		0.5, 0.0, 1.0,
 		NULL, NULL, NULL
 	},
 

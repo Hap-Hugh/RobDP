@@ -2,6 +2,7 @@
 // Created by Xuan Chen on 2025/9/22.
 // Modified by Xuan Chen on 2025/9/24.
 // Modified by Xuan Chen on 2025/10/2.
+// Modified by Xuan Chen on 2025/10/5.
 //
 
 #include "optimizer/sample.h"
@@ -80,61 +81,6 @@ Sample *make_sample_by_scale_factor(
         dst->sample[i] = src->sample[i] * factor;
     }
     return dst;
-}
-
-/*
- * Build conditional samples of sel_true given sel_est.
- *
- * Source bin stores *samples of log-error*:
- *   log_error = log(sel_true / sel_est)
- *
- * We transform each log-error sample to a sel_true sample via:
- *   y = sel_est * exp(log_error)
- *
- * Output:
- *   - out->sample[k] : the k-th transformed sample y
- *   - out->sample_count : number of samples written (<= DIST_MAX_SAMPLE)
- *
- * Notes:
- *   - This returns *raw samples only* (no probabilities).
- *   - 'ep->error_sample[b]' is assumed to contain log-error samples.
- *   - Static buffer 'out' is overwritten on each call; use palloc0 if needed.
- */
-Sample *make_sample_by_bin(const ErrorProfile *ep, const double sel_est) {
-    Sample *out = palloc0(sizeof(Sample));
-
-    /* reset */
-    out->sample_count = 0;
-    memset(out->sample, 0, sizeof(out->sample));
-
-    if (!ep) {
-        return NULL;
-    }
-    const int b = find_bin_by_sel_est(ep, sel_est);
-    if (b < 0) {
-        return NULL;
-    }
-
-    /* Source bin holds log-error samples */
-    const Sample *src = &ep->error_sample[b];
-    if (src->sample_count <= 0) {
-        return NULL;
-    }
-
-    int m = src->sample_count;
-    if (m > DIST_MAX_SAMPLE) {
-        m = DIST_MAX_SAMPLE;
-    }
-
-    /* Transform: y = sel_est * exp(log_error) */
-    for (int i = 0; i < m; ++i) {
-        /* src->sample[i] stores log(sel_true / sel_est) */
-        const double log_err = src->sample[i];
-        out->sample[i] = sel_est * exp(log_err);
-    }
-    out->sample_count = m;
-
-    return out;
 }
 
 Sample *make_sample_by_join_sample(
@@ -234,7 +180,7 @@ void set_baserel_rows_sample(
     }
 
     /* 3. Get conditional sample p(true_sel | sel_est=e0). */
-    const Sample *sel_true_sample = make_sample_by_bin(ep, sel_est);
+    const Sample *sel_true_sample = make_sample_by_condition(ep, sel_est);
 
     /* 3.1 Fallback to a single sample if we fail to build `sel_true_sample`. */
     if (sel_true_sample == NULL) {
@@ -358,7 +304,7 @@ void set_joinrel_rows_sample(
     }
 
     /* 3. Get conditional sample p(true_sel | sel_est=e0). */
-    const Sample *sel_true_sample = make_sample_by_bin(ep, sel_est);
+    const Sample *sel_true_sample = make_sample_by_condition(ep, sel_est);
 
     /* 3.1 Fallback to single point sample if we fail to build `sel_true_sample`. */
     if (sel_true_sample == NULL) {

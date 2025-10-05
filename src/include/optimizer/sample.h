@@ -2,6 +2,7 @@
 // Created by Xuan Chen on 2025/9/22.
 // Modified by Xuan Chen on 2025/9/24.
 // Modified by Xuan Chen on 2025/10/2.
+// Modified by Xuan Chen on 2025/10/5.
 //
 
 #ifndef SAMPLE_H
@@ -22,8 +23,6 @@ extern int error_sample_seed;
 typedef struct Sample Sample;
 
 typedef struct ErrorProfileRaw ErrorProfileRaw;
-
-typedef struct ErrorSampleParams ErrorSampleParams;
 
 typedef struct ErrorProfile ErrorProfile;
 
@@ -52,11 +51,6 @@ Sample *make_sample_by_single_value(
 Sample *make_sample_by_scale_factor(
     const Sample *src,
     double factor
-);
-
-Sample *make_sample_by_bin(
-    const ErrorProfile *ep,
-    double sel_est
 );
 
 Sample *make_sample_by_join_sample(
