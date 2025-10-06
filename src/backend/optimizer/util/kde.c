@@ -51,27 +51,27 @@ typedef struct {
 
 /* ---------- Small helpers ---------- */
 
-static double
-maxd(double a, double b) { return (a > b) ? a : b; }
+static double maxd(double a, double b) {
+    return (a > b) ? a : b;
+}
 
-static double
-mind(double a, double b) { return (a < b) ? a : b; }
+static double mind(double a, double b) {
+    return (a < b) ? a : b;
+}
 
 /*
  * Silverman's rule-of-thumb for 1D KDE bandwidth:
  *   h = 1.06 * sigma * n^(-1/5)
  * Falls back to a small positive value if n < 2 or sigma <= 0.
  */
-static double
-silverman_bandwidth(double sigma, int n) {
+static double silverman_bandwidth(double sigma, int n) {
     if (n < 2 || sigma <= 0.0)
         return 1e-3;
     return 1.06 * sigma * pow(n, -0.2);
 }
 
 /* qsort comparator for doubles (ascending). */
-static int
-cmp_double(const void *a, const void *b) {
+static int cmp_double(const void *a, const void *b) {
     const double x = *(const double *) a;
     const double y = *(const double *) b;
     return (x < y) ? -1 : ((x > y) ? 1 : 0);
@@ -81,8 +81,7 @@ cmp_double(const void *a, const void *b) {
  * Estimate IQR (Q3 - Q1) using simple index-based quartiles after sorting.
  * Mutates the given array by sorting it in-place.
  */
-static double
-estimate_iqr(double *tmp, int n) {
+static double estimate_iqr(double *tmp, int n) {
     qsort(tmp, n, sizeof(double), cmp_double);
 
     /* Use simple linear indices; robust enough for bandwidth purposes. */
@@ -95,14 +94,12 @@ estimate_iqr(double *tmp, int n) {
  * Gaussian kernel (unnormalized): K(u) = exp(-0.5*u^2).
  * We don’t need the normalization constant for relative weights.
  */
-static double
-gaussian_kernel_u(double u) {
+static double gaussian_kernel_u(double u) {
     return exp(-0.5 * u * u);
 }
 
 /* Uniform(0, 1) via rand_r(), avoiding exact 0/1 endpoints. */
-static double
-uniform01(unsigned int *state) {
+static double uniform01(unsigned int *state) {
     /* +1 / +2 trick keeps result in (0, 1), not including endpoints. */
     return (rand_r(state) + 1.0) / ((double) RAND_MAX + 2.0);
 }
@@ -111,16 +108,14 @@ uniform01(unsigned int *state) {
  * Box–Muller normal(0, 1) using rand_r()-based uniform(0, 1).
  * Reentrant w.r.t. the passed-in PRNG state.
  */
-static double
-randn(unsigned int *state) {
+static double randn(unsigned int *state) {
     const double u1 = uniform01(state);
     const double u2 = uniform01(state);
     return sqrt(-2.0 * log(u1)) * cos(2.0 * M_PI * u2);
 }
 
 /* qsort comparator for DistIndexPair by ascending distance. */
-static int
-cmp_pair_by_d(const void *a, const void *b) {
+static int cmp_pair_by_d(const void *a, const void *b) {
     const double x = ((const DistIndexPair *) a)->dist;
     const double y = ((const DistIndexPair *) b)->dist;
     return (x < y) ? -1 : ((x > y) ? 1 : 0);
@@ -131,8 +126,7 @@ cmp_pair_by_d(const void *a, const void *b) {
  * Writes into out_idx[0..k-1]. Returns the number of indices written (<= k).
  * Complexity: O(n log n) due to sorting; fine for moderate n.
  */
-static int
-knn_indices_by_est(const ErrorProfile *ep, double e0, int k, int *out_idx) {
+static int knn_indices_by_est(const ErrorProfile *ep, double e0, int k, int *out_idx) {
     const int n = ep->sample_count;
     DistIndexPair *arr = palloc0(n * sizeof(DistIndexPair));
 
@@ -166,8 +160,7 @@ knn_indices_by_est(const ErrorProfile *ep, double e0, int k, int *out_idx) {
  * to a KNN mask before building the CDF.
  * =========================================================================
  */
-Distribution *
-build_conditional_distribution(
+Distribution *build_conditional_distribution(
     const ErrorProfile *ep,
     const double est_sel,
     const int n_samples,
@@ -295,7 +288,7 @@ build_conditional_distribution(
 
         int lo = 0, hi = n - 1;
         while (lo < hi) {
-            int mid = lo + (hi - lo) / 2;
+            const int mid = lo + (hi - lo) / 2;
             if (cdf[mid] < u)
                 lo = mid + 1;
             else

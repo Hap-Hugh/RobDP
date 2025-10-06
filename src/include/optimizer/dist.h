@@ -20,7 +20,7 @@ extern int error_sample_seed;
 /* Forward Declarations */
 typedef struct Distribution Distribution;
 
-typedef struct ErrorProfileSample ErrorProfileSample;
+typedef struct ErrorProfileRaw ErrorProfileRaw;
 
 typedef struct ErrorProfile ErrorProfile;
 
@@ -30,7 +30,7 @@ struct Distribution {
     double *vals;
 };
 
-struct ErrorProfileSample {
+struct ErrorProfileRaw {
     double sel_true;
     double sel_est;
 };
@@ -39,7 +39,7 @@ struct ErrorProfile {
     int sample_count;
     double std_true;
     double std_est;
-    ErrorProfileSample data[EP_MAX_SAMPLE];
+    ErrorProfileRaw data[EP_MAX_SAMPLE];
 };
 
 double clamp01(
@@ -63,11 +63,11 @@ void calc_mean_std(
     double *res_std
 );
 
-Distribution *make_single_point_dist(
+Distribution *make_dist_by_single_value(
     double val
 );
 
-Distribution *scale_distribution(
+Distribution *make_dist_by_scale_factor(
     const Distribution *src,
     double factor
 );

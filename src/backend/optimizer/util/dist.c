@@ -1,6 +1,7 @@
 //
 // Created by Xuan Chen on 2025/9/22.
 // Modified by Xuan Chen on 2025/9/24.
+// Modified by Xuan Chen on 2025/10/6.
 //
 
 #include "optimizer/dist.h"
@@ -9,7 +10,6 @@
 #include "utils/smem.h"
 
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
 #include <math.h>
 #include <time.h>
@@ -19,7 +19,7 @@ bool enable_rows_dist;
 int error_sample_count;
 int error_sample_seed;
 
-double clamp01(double sel) {
+double clamp01(const double sel) {
     if (sel < 0.0) {
         return 0.0;
     }
@@ -31,10 +31,10 @@ double clamp01(double sel) {
 
 char *get_alias(
     const PlannerInfo *root,
-    Index relid
+    const Index relid
 ) {
     Assert(relid > 0);
-    RangeTblEntry *rte = root->simple_rte_array[relid];
+    const RangeTblEntry *rte = root->simple_rte_array[relid];
     char *alias = rte->eref->aliasname;
     elog(LOG, "considering relation: %s", alias);
     return pstrdup(alias);
@@ -42,10 +42,10 @@ char *get_alias(
 
 char *get_std_alias(
     const PlannerInfo *root,
-    Index relid
+    const Index relid
 ) {
     Assert(relid > 0);
-    RangeTblEntry *rte = root->simple_rte_array[relid];
+    const RangeTblEntry *rte = root->simple_rte_array[relid];
     char *alias = rte->eref->aliasname;
     char *std_alias = pstrdup(alias);
     char *ch = std_alias;
@@ -76,9 +76,9 @@ void calc_mean_std(
         sum += array[i];
     }
     double sum_of_squares = 0.0;
-    double mean = sum / n_samples;
+    const double mean = sum / n_samples;
     for (int i = 0; i < n_samples; ++i) {
-        double diff = mean - array[i];
+        const double diff = mean - array[i];
         sum_of_squares += diff * diff;
     }
     if (n_samples == 1) {
@@ -88,8 +88,8 @@ void calc_mean_std(
     }
 }
 
-Distribution *make_single_point_dist(
-    double val
+Distribution *make_dist_by_single_value(
+    const double val
 ) {
     Distribution *dist = palloc0(sizeof(Distribution));
     dist->sample_count = 1;
@@ -103,9 +103,9 @@ Distribution *make_single_point_dist(
     return dist;
 }
 
-Distribution *scale_distribution(
+Distribution *make_dist_by_scale_factor(
     const Distribution *src,
-    double factor
+    const double factor
 ) {
     if (!src) {
         return NULL;
@@ -164,7 +164,7 @@ int read_error_profile(
     int sample_count = 0;
     while (true) {
         double sel_true, sel_est;
-        int result = fscanf(fp, "%lf %lf", &sel_true, &sel_est);
+        const int result = fscanf(fp, "%lf %lf", &sel_true, &sel_est);
         if (result == EOF) {
             break;
         }
@@ -238,11 +238,11 @@ bool get_error_profile(
 void set_baserel_rows_dist(
     const PlannerInfo *root,
     RelOptInfo *rel,
-    double sel_est
+    const double sel_est
 ) {
     /* 0. Prepare fallback rows estimation result.
      * Note: we don't use `rel->rows`, which has been clamped already. */
-    double rows_fallback = sel_est * rel->tuples;
+    const double rows_fallback = sel_est * rel->tuples;
 
     /* 1. Resolve relation aliases (original alias and a standard fallback). */
     const char *alias = get_alias(root, rel->relid);
@@ -251,13 +251,13 @@ void set_baserel_rows_dist(
 
     /* 2. Allocate an error profile holder and try to populate it from cache. */
     ErrorProfile *ep;
-    bool found = get_error_profile(alias, alias_fallback, &ep);
+    const bool found = get_error_profile(alias, alias_fallback, &ep);
 
     /* 2.1 If no profile is available, fall back to a degenerate distribution. */
     if (!found) {
         elog(LOG, "[rel %s] no profile is available, using single point distribution.", alias);
         rel->rows = rows_fallback;
-        rel->rows_dist = make_single_point_dist(rows_fallback);
+        rel->rows_dist = make_dist_by_single_value(rows_fallback);
         return;
     }
 
@@ -276,7 +276,7 @@ void set_baserel_rows_dist(
     if (sel_true_dist == NULL) {
         elog(LOG, "[rel %s] failed to build conditional distribution, using single point distribution.", alias);
         rel->rows = rows_fallback;
-        rel->rows_dist = make_single_point_dist(rows_fallback);
+        rel->rows_dist = make_dist_by_single_value(rows_fallback);
         return;
     }
 
@@ -286,7 +286,7 @@ void set_baserel_rows_dist(
     }
 
     /* 4. Scale the `sel_true_dist` -- from selectivity distribution to rows distribution. */
-    Distribution *rows_dist = scale_distribution(sel_true_dist, rel->tuples);
+    Distribution *rows_dist = make_dist_by_scale_factor(sel_true_dist, rel->tuples);
 
     /* 4.1 Done with selectivity distribution. */
     free_distribution(sel_true_dist);
@@ -321,15 +321,14 @@ void set_baserel_rows_dist(
  * This preserves the CDF shape better than naive top-K or uniform-value binning,
  * and avoids exploding sample_count after multiplications.
  */
-static int
-cmp_by_val_asc(const void *a, const void *b) {
+static int cmp_by_val_asc(const void *a, const void *b) {
     const int ia = *(const int *) a;
     const int ib = *(const int *) b;
     /* The caller passes parallel arrays; compare by vals[ia] vs vals[ib].
      * We stash pointers via a static for simplicity; see wrapper below. */
     extern const double *g_vals_for_sort;
-    double va = g_vals_for_sort[ia];
-    double vb = g_vals_for_sort[ib];
+    const double va = g_vals_for_sort[ia];
+    const double vb = g_vals_for_sort[ib];
     if (va < vb) return -1;
     if (va > vb) return 1;
     return 0;
@@ -348,8 +347,7 @@ const double *g_vals_for_sort = NULL;
  *   - target_samples >= 1
  *   - src may contain arbitrary sample_count >= 1
  */
-static Distribution *
-compress_distribution_equal_mass(const Distribution *src, int target_samples) {
+static Distribution *compress_distribution_equal_mass(const Distribution *src, int target_samples) {
     Assert(target_samples >= 1);
     Assert(src && src->sample_count >= 1);
 
@@ -401,20 +399,20 @@ compress_distribution_equal_mass(const Distribution *src, int target_samples) {
     dst->probs = palloc(sizeof(double) * target_samples);
     dst->vals = palloc(sizeof(double) * target_samples);
 
-    double target_bin_mass = 1.0 / (double) target_samples;
+    const double target_bin_mass = 1.0 / (double) target_samples;
     double bin_mass = 0.0;
     double bin_weighted_val = 0.0;
     int out_k = 0;
 
     /* Normalize on the fly: prob_norm = prob / total_mass */
     for (int t = 0; t < m; t++) {
-        int i = idx[t];
-        double p = src->probs[i] / total_mass;
-        double v = src->vals[i];
+        const int i = idx[t];
+        const double p = src->probs[i] / total_mass;
+        const double v = src->vals[i];
 
         double remaining = p;
         while (remaining > 0.0 && out_k < target_samples) {
-            double capacity = target_bin_mass - bin_mass;
+            const double capacity = target_bin_mass - bin_mass;
             double take = remaining;
             if (take > capacity) take = capacity;
 
@@ -425,8 +423,8 @@ compress_distribution_equal_mass(const Distribution *src, int target_samples) {
             /* Bin completed: flush one output sample. */
             if (bin_mass >= target_bin_mass - 1e-15) {
                 /* Numerical guard: ensure positive mass. */
-                double pmass = bin_mass;
-                double vmean = (pmass > 0.0) ? (bin_weighted_val / pmass) : v;
+                const double pmass = bin_mass;
+                const double vmean = (pmass > 0.0) ? (bin_weighted_val / pmass) : v;
 
                 dst->probs[out_k] = pmass;
                 dst->vals[out_k] = vmean;
@@ -442,10 +440,10 @@ compress_distribution_equal_mass(const Distribution *src, int target_samples) {
     /* If we have leftover mass (due to rounding), assign it to the last bin. */
     if (out_k < target_samples) {
         /* Fill any missing bins by cloning the last known value with zero mass. */
-        double last_val = (out_k > 0) ? dst->vals[out_k - 1] : 0.0;
+        const double last_val = (out_k > 0) ? dst->vals[out_k - 1] : 0.0;
         while (out_k < target_samples) {
-            double pmass = (out_k == target_samples - 1) ? bin_mass : 0.0;
-            double vmean = (bin_mass > 0.0) ? (bin_weighted_val / (bin_mass)) : last_val;
+            const double pmass = (out_k == target_samples - 1) ? bin_mass : 0.0;
+            const double vmean = (bin_mass > 0.0) ? (bin_weighted_val / (bin_mass)) : last_val;
             dst->probs[out_k] = pmass;
             dst->vals[out_k] = vmean;
             out_k++;
@@ -455,12 +453,12 @@ compress_distribution_equal_mass(const Distribution *src, int target_samples) {
     } else if (bin_mass > 0.0) {
         /* All K bins emitted but a tiny tail remains; add it to the last bin. */
         dst->probs[target_samples - 1] += bin_mass;
-        double vtail = (bin_weighted_val > 0.0 && bin_mass > 0.0)
-                           ? (bin_weighted_val / bin_mass)
-                           : dst->vals[target_samples - 1];
+        const double vtail = (bin_weighted_val > 0.0 && bin_mass > 0.0)
+                                 ? (bin_weighted_val / bin_mass)
+                                 : dst->vals[target_samples - 1];
         /* Recompute last bin's weighted mean with the tail merged. */
-        double p_old = dst->probs[target_samples - 1] - bin_mass;
-        double v_old = dst->vals[target_samples - 1];
+        const double p_old = dst->probs[target_samples - 1] - bin_mass;
+        const double v_old = dst->vals[target_samples - 1];
         if (dst->probs[target_samples - 1] > 0.0) {
             dst->vals[target_samples - 1] =
                     (p_old * v_old + bin_mass * vtail) / dst->probs[target_samples - 1];
@@ -472,7 +470,7 @@ compress_distribution_equal_mass(const Distribution *src, int target_samples) {
     for (int k = 0; k < target_samples; k++)
         sum_check += dst->probs[k];
     if (sum_check > 0.0 && fabs(sum_check - 1.0) > 1e-12) {
-        double scale = 1.0 / sum_check;
+        const double scale = 1.0 / sum_check;
         for (int k = 0; k < target_samples; k++)
             dst->probs[k] *= scale;
     }
@@ -488,16 +486,15 @@ compress_distribution_equal_mass(const Distribution *src, int target_samples) {
  *   rows = outer_rows * inner_rows * selectivity
  * Produces a (potentially large) intermediate Distribution.
  */
-static Distribution *
-multiply_distributions_for_join(
+static Distribution *multiply_distributions_for_join(
     const Distribution *outer_rows_dist,
     const Distribution *inner_rows_dist,
     const Distribution *sel_dist
 ) {
-    int nO = outer_rows_dist->sample_count;
-    int nI = inner_rows_dist->sample_count;
-    int nS = sel_dist->sample_count;
-    int total = nO * nI * nS;
+    const int nO = outer_rows_dist->sample_count;
+    const int nI = inner_rows_dist->sample_count;
+    const int nS = sel_dist->sample_count;
+    const int total = nO * nI * nS;
 
     Distribution *res = palloc(sizeof(Distribution));
     res->sample_count = total;
@@ -506,8 +503,8 @@ multiply_distributions_for_join(
 
     int idx = 0;
     for (int i = 0; i < nO; ++i) {
-        double pO = outer_rows_dist->probs[i];
-        double vO = outer_rows_dist->vals[i];
+        const double pO = outer_rows_dist->probs[i];
+        const double vO = outer_rows_dist->vals[i];
         if (pO <= 0.0 || !isfinite(pO) || !isfinite(vO))
             continue;
 
@@ -518,13 +515,13 @@ multiply_distributions_for_join(
                 continue;
 
             for (int k = 0; k < nS; k++) {
-                double pS = sel_dist->probs[k];
-                double vS = sel_dist->vals[k];
+                const double pS = sel_dist->probs[k];
+                const double vS = sel_dist->vals[k];
                 if (pS <= 0.0 || !isfinite(pS) || !isfinite(vS))
                     continue;
 
-                double p = pO * pI * pS;
-                double v = vO * vI * vS;
+                const double p = pO * pI * pS;
+                const double v = vO * vI * vS;
 
                 res->probs[idx] = p;
                 res->vals[idx] = v;
@@ -550,12 +547,11 @@ multiply_distributions_for_join(
  *   1) Multiply three input distributions (outer, inner, selectivity).
  *   2) Compress the resulting distribution to 'target_samples' points.
  */
-Distribution *
-join_rows_distribution(
+Distribution *join_rows_distribution(
     const Distribution *outer_rows_dist,
     const Distribution *inner_rows_dist,
     const Distribution *sel_dist,
-    int target_samples
+    const int target_samples
 ) {
     Distribution *raw = multiply_distributions_for_join(
         outer_rows_dist, inner_rows_dist, sel_dist
@@ -585,7 +581,7 @@ void set_joinrel_rows_dist(
 ) {
     /* 0. Prepare fallback rows estimation result.
      * Note: we don't use `rel->rows`, which has been clamped already. */
-    double rows_fallback = sel_est * outer_rel->rows * inner_rel->rows;
+    const double rows_fallback = sel_est * outer_rel->rows * inner_rel->rows;
 
     /* 1. Resolve relation aliases (original alias and a standard fallback). */
     // FIXME: We assume that the first `rinfo` we found `can_join`.
@@ -597,11 +593,11 @@ void set_joinrel_rows_dist(
 
     ListCell *lc;
     foreach(lc, restrictlist) {
-        RestrictInfo *rinfo = lfirst(lc);
+        const RestrictInfo *rinfo = lfirst(lc);
         if (!IsA(rinfo->clause, OpExpr))
             continue;
 
-        OpExpr *opexpr = (OpExpr *) rinfo->clause;
+        const OpExpr *opexpr = (OpExpr *) rinfo->clause;
         if (list_length(opexpr->args) != 2)
             continue;
 
@@ -611,14 +607,14 @@ void set_joinrel_rows_dist(
         if (!IsA(l, Var) || !IsA(r, Var))
             continue;
 
-        Var *leftvar = (Var *) l;
-        Var *rightvar = (Var *) r;
+        const Var *leftvar = (Var *) l;
+        const Var *rightvar = (Var *) r;
 
         /* Accept either orientation: (outer,left)-(inner,right) or swapped. */
-        bool l_in_outer = bms_is_member(leftvar->varno, outer_rel->relids);
-        bool r_in_inner = bms_is_member(rightvar->varno, inner_rel->relids);
-        bool r_in_outer = bms_is_member(rightvar->varno, outer_rel->relids);
-        bool l_in_inner = bms_is_member(leftvar->varno, inner_rel->relids);
+        const bool l_in_outer = bms_is_member(leftvar->varno, outer_rel->relids);
+        const bool r_in_inner = bms_is_member(rightvar->varno, inner_rel->relids);
+        const bool r_in_outer = bms_is_member(rightvar->varno, outer_rel->relids);
+        const bool l_in_inner = bms_is_member(leftvar->varno, inner_rel->relids);
 
         if ((l_in_outer && r_in_inner) || (r_in_outer && l_in_inner)) {
             const char *left_rel_alias = get_alias(root, leftvar->varno);
@@ -656,13 +652,13 @@ void set_joinrel_rows_dist(
 
     /* 2. Allocate an error profile holder and try to populate it from cache. */
     ErrorProfile *ep = 0;
-    bool found = get_error_profile(alias, alias_fallback, &ep);
+    const bool found = get_error_profile(alias, alias_fallback, &ep);
 
     /* 2.1 If no profile is available, fall back to a degenerate distribution. */
     if (!found) {
         elog(LOG, "[rel %s] no profile is available, using single point distribution.", alias);
         rel->rows = rows_fallback;
-        rel->rows_dist = make_single_point_dist(rows_fallback);
+        rel->rows_dist = make_dist_by_single_value(rows_fallback);
         return;
     }
 
@@ -676,7 +672,7 @@ void set_joinrel_rows_dist(
     if (sel_true_dist == NULL) {
         elog(LOG, "[rel %s] failed to build conditional distribution, using single point distribution.", alias);
         rel->rows = rows_fallback;
-        rel->rows_dist = make_single_point_dist(rows_fallback);
+        rel->rows_dist = make_dist_by_single_value(rows_fallback);
         return;
     }
 
