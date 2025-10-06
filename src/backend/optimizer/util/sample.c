@@ -137,65 +137,82 @@ Sample *make_sample_by_bin(const ErrorProfile *ep, const double sel_est) {
     return out;
 }
 
+/*
+ * xs32: Xorshift32 PRNG (Marsaglia, 2003)
+ * - Input: pointer to a 32-bit unsigned int state (must not be 0)
+ * - Output: next random 32-bit unsigned int
+ * - Updates the state in place
+ *
+ * Period: 2^32 - 1
+ */
+static uint32_t xs32(uint32_t *s) {
+    uint32_t x = *s;
+    if (x == 0) {
+        x = 0x6d2b79f5u; /* avoid zero state: pick a non-zero constant */
+    }
+    x ^= x << 13;
+    x ^= x >> 17;
+    x ^= x << 5;
+    *s = x;
+    return x;
+}
+
+/*
+ * Build a joined sample distribution by taking the Cartesian product
+ * of three input sample sets (outer, inner, sel) and multiplying
+ * their values. Since the full Cartesian product may be huge
+ * (n_outer * n_inner * n_sel), we down-sample to a fixed number
+ * of target_samples.
+ *
+ * Strategy:
+ *   - Enumerate the full triple nested loops conceptually.
+ *   - Use reservoir sampling to keep exactly target_samples outputs
+ *     chosen uniformly at random from all possible combinations.
+ *
+ * Assumptions:
+ *   - Each input has sample_count >= 1.
+ *   - The target_samples is > 0 and <= DIST_MAX_SAMPLE.
+ */
 Sample *make_sample_by_join_sample(
     const Sample *outer_rows_sample,
     const Sample *inner_rows_sample,
     const Sample *sel_sample,
     const int target_samples
 ) {
-    /* Each input must be either a scalar (sample_count==1) or have target_samples */
-    Assert(outer_rows_sample->sample_count == 1 || outer_rows_sample->sample_count == target_samples);
-    Assert(inner_rows_sample->sample_count == 1 || inner_rows_sample->sample_count == target_samples);
-    Assert(sel_sample->sample_count == 1 || sel_sample->sample_count == target_samples);
+    Assert(target_samples > 0 && target_samples <= DIST_MAX_SAMPLE);
 
-    /* Whether to broadcast each sample as a constant */
-    const bool outer_to_constant = outer_rows_sample->sample_count == 1;
-    const bool inner_to_constant = inner_rows_sample->sample_count == 1;
-    const bool sel_to_constant = sel_sample->sample_count == 1;
+    const int n1 = outer_rows_sample->sample_count;
+    const int n2 = inner_rows_sample->sample_count;
+    const int n3 = sel_sample->sample_count;
 
-    /* Constant values (used when sample_count==1) */
-    const double outer_const_sample = outer_rows_sample->sample[0];
-    const double inner_const_sample = inner_rows_sample->sample[0];
-    const double sel_const_sample = sel_sample->sample[0];
-
-    /* Fast path: if all are constants, multiply once and return a single-point sample */
-    if (outer_to_constant && inner_to_constant && sel_to_constant) {
-        Sample *join_sample = make_sample_by_single_value(
-            outer_const_sample * inner_const_sample * sel_const_sample
-        );
-        return join_sample;
-    }
-
-    /* Allocate result with target_samples */
     Sample *join_sample = palloc0(sizeof(Sample));
     join_sample->sample_count = target_samples;
 
-    /* Element-wise multiply across i; broadcast any scalar inputs */
-    for (int i = 0; i < target_samples; ++i) {
-        double current_sample = 1.0;
+    /* Reservoir sampling */
+    uint64_t count = 0;
+    uint32_t rng = error_sample_seed;
 
-        /* Outer: use constant when broadcasting, otherwise use i-th sample */
-        if (outer_to_constant) {
-            current_sample *= outer_const_sample;
-        } else {
-            current_sample *= outer_rows_sample->sample[i];
+    for (int i = 0; i < n1; ++i) {
+        for (int j = 0; j < n2; ++j) {
+            for (int k = 0; k < n3; ++k) {
+                const double val
+                        = outer_rows_sample->sample[i]
+                          * inner_rows_sample->sample[j]
+                          * sel_sample->sample[k];
+                ++count;
+
+                if (count <= (uint64_t) target_samples) {
+                    /* Fill initial reservoir */
+                    join_sample->sample[count - 1] = val;
+                } else {
+                    /* Replace with decreasing probability */
+                    const uint64_t r = xs32(&rng) % count;
+                    if (r < (uint64_t) target_samples) {
+                        join_sample->sample[r] = val;
+                    }
+                }
+            }
         }
-
-        /* Inner: use constant when broadcasting, otherwise use i-th sample */
-        if (inner_to_constant) {
-            current_sample *= inner_const_sample;
-        } else {
-            current_sample *= inner_rows_sample->sample[i];
-        }
-
-        /* Selectivity: use constant when broadcasting, otherwise use i-th sample */
-        if (sel_to_constant) {
-            current_sample *= sel_const_sample;
-        } else {
-            current_sample *= sel_sample->sample[i];
-        }
-
-        join_sample->sample[i] = current_sample;
     }
 
     return join_sample;
