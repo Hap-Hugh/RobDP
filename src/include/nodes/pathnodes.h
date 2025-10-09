@@ -22,6 +22,8 @@
 #include "nodes/parsenodes.h"
 #include "storage/block.h"
 
+#define JCW_MAX_SAMPLE 64
+
 typedef struct Sample Sample;
 
 /*
@@ -1552,6 +1554,8 @@ typedef struct ParamPathInfo
 	Cardinality ppi_rows;		/* estimated number of result tuples */
 	List	   *ppi_clauses;	/* join clauses available from outer rels */
 	Bitmapset  *ppi_serials;	/* set of rinfo_serial for enforced quals */
+
+	Sample     *ppi_rows_sample pg_node_attr(read_write_ignore);
 } ParamPathInfo;
 
 
@@ -1635,6 +1639,7 @@ typedef struct Path
 
 	/* sort ordering of path's output; a List of PathKey nodes; see above */
 	List	   *pathkeys;
+	Sample     *rows_sample pg_node_attr(read_write_ignore);
 } Path;
 
 /* Macro for extracting a path's parameterization relids; beware double eval */
@@ -3285,6 +3290,7 @@ typedef struct
  */
 typedef struct JoinCostWorkspace
 {
+	/* ------------------------------- Expectation ------------------------------- */
 	/* Preliminary cost estimates --- must not be larger than final ones! */
 	Cost		startup_cost;	/* cost expended before fetching any tuples */
 	Cost		total_cost;		/* total cost (assuming all tuples fetched) */
@@ -3306,6 +3312,29 @@ typedef struct JoinCostWorkspace
 	int			numbuckets;
 	int			numbatches;
 	Cardinality inner_rows_total;
+
+	/* ------------------------------- Samples ------------------------------- */
+	/* Preliminary cost estimates --- must not be larger than final ones! */
+	Cost		startup_cost_sample[JCW_MAX_SAMPLE];	/* cost expended before fetching any tuples */
+	Cost		total_cost_sample[JCW_MAX_SAMPLE];		/* total cost (assuming all tuples fetched) */
+
+	/* Fields below here should be treated as private to costsize.c */
+	Cost		run_cost_sample[JCW_MAX_SAMPLE];		/* non-startup cost components */
+
+	/* private for cost_nestloop code */
+	Cost		inner_run_cost_sample[JCW_MAX_SAMPLE]; /* also used by cost_mergejoin code */
+	Cost		inner_rescan_run_cost_sample[JCW_MAX_SAMPLE];
+
+	/* private for cost_mergejoin code */
+	Cardinality outer_rows_sample[JCW_MAX_SAMPLE];
+	Cardinality inner_rows_sample[JCW_MAX_SAMPLE];
+	Cardinality outer_skip_rows_sample[JCW_MAX_SAMPLE];
+	Cardinality inner_skip_rows_sample[JCW_MAX_SAMPLE];
+
+	/* private for cost_hashjoin code */
+	int			numbuckets_sample[JCW_MAX_SAMPLE];
+	int			numbatches_sample[JCW_MAX_SAMPLE];
+	Cardinality inner_rows_total_sample[JCW_MAX_SAMPLE];
 } JoinCostWorkspace;
 
 /*

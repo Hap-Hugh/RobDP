@@ -9,9 +9,8 @@
 
 #include "postgres.h"
 #include "nodes/pathnodes.h"
-#include "nodes/pg_list.h"
 
-#define DIST_MAX_SAMPLE   128
+#define DIST_MAX_SAMPLE   64
 
 /* GUC Parameters */
 extern bool enable_rows_dist;
