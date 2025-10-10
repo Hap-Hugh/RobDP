@@ -10,7 +10,7 @@
 #include "optimizer/sample.h"
 
 #define EP_MAX_SAMPLE     1024
-#define EP_MAX_BIN        8
+#define EP_MAX_BIN        16
 
 /* Forward Declarations */
 typedef struct Sample Sample;

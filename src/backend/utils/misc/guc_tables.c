@@ -3543,7 +3543,7 @@ struct config_int ConfigureNamesInt[] =
 			NULL
 		},
 		&error_bin_count,
-		1, 1, 8,
+		1, 1, 16,
 		NULL, NULL, NULL
 	},
 
