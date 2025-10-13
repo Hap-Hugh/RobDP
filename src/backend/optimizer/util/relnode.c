@@ -27,6 +27,7 @@
 #include "optimizer/placeholder.h"
 #include "optimizer/plancat.h"
 #include "optimizer/restrictinfo.h"
+#include "optimizer/sample.h"
 #include "optimizer/tlist.h"
 #include "rewrite/rewriteManip.h"
 #include "parser/parse_relation.h"
@@ -1595,6 +1596,7 @@ get_baserel_parampathinfo(PlannerInfo *root, RelOptInfo *baserel,
 	ppi = makeNode(ParamPathInfo);
 	ppi->ppi_req_outer = required_outer;
 	ppi->ppi_rows = rows;
+	ppi->ppi_rows_sample = make_sample_by_single_value(rows);
 	ppi->ppi_clauses = pclauses;
 	ppi->ppi_serials = pserials;
 	baserel->ppilist = lappend(baserel->ppilist, ppi);
@@ -1810,6 +1812,7 @@ get_joinrel_parampathinfo(PlannerInfo *root, RelOptInfo *joinrel,
 	ppi = makeNode(ParamPathInfo);
 	ppi->ppi_req_outer = required_outer;
 	ppi->ppi_rows = rows;
+	ppi->ppi_rows_sample = make_sample_by_single_value(rows);
 	ppi->ppi_clauses = NIL;
 	ppi->ppi_serials = NULL;
 	joinrel->ppilist = lappend(joinrel->ppilist, ppi);
@@ -1849,6 +1852,7 @@ get_appendrel_parampathinfo(RelOptInfo *appendrel, Relids required_outer)
 	ppi = makeNode(ParamPathInfo);
 	ppi->ppi_req_outer = required_outer;
 	ppi->ppi_rows = 0;
+	ppi->ppi_rows_sample = make_sample_by_single_value(0);
 	ppi->ppi_clauses = NIL;
 	ppi->ppi_serials = NULL;
 	appendrel->ppilist = lappend(appendrel->ppilist, ppi);

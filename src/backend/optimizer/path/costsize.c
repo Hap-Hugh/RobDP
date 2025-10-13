@@ -160,6 +160,10 @@ typedef struct {
     QualCost total;
 } cost_qual_eval_context;
 
+void log_join_rows_and_cost_sample(
+    const JoinPath *jpath
+);
+
 static List *extract_nonindex_conditions(
     List *qual_clauses, List *indexclauses
 );
@@ -294,10 +298,13 @@ void cost_seqscan(Path *path, PlannerInfo *root,
     Assert(baserel->rtekind == RTE_RELATION);
 
     /* Mark the path with the correct row estimate */
-    if (param_info)
+    if (param_info) {
         path->rows = param_info->ppi_rows;
-    else
+        path->rows_sample = duplicate_sample(path->param_info->ppi_rows_sample);
+    } else {
         path->rows = baserel->rows;
+        path->rows_sample = duplicate_sample(baserel->rows_sample);
+    }
 
     if (!enable_seqscan)
         startup_cost += disable_cost;
@@ -433,12 +440,16 @@ void cost_gather(GatherPath *path, PlannerInfo *root,
     Cost run_cost = 0;
 
     /* Mark the path with the correct row estimate */
-    if (rows)
+    if (rows) {
         path->path.rows = *rows;
-    else if (param_info)
+        path->path.rows_sample = make_sample_by_single_value(*rows);
+    } else if (param_info) {
         path->path.rows = param_info->ppi_rows;
-    else
+        path->path.rows_sample = param_info->ppi_rows_sample;
+    } else {
         path->path.rows = rel->rows;
+        path->path.rows_sample = rel->rows_sample;
+    }
 
     startup_cost = path->subpath->startup_cost;
 
@@ -473,12 +484,16 @@ void cost_gather_merge(GatherMergePath *path, PlannerInfo *root,
     double logN;
 
     /* Mark the path with the correct row estimate */
-    if (rows)
+    if (rows) {
         path->path.rows = *rows;
-    else if (param_info)
+        path->path.rows_sample = make_sample_by_single_value(*rows);
+    } else if (param_info) {
         path->path.rows = param_info->ppi_rows;
-    else
+        path->path.rows_sample = param_info->ppi_rows_sample;
+    } else {
         path->path.rows = rel->rows;
+        path->path.rows_sample = rel->rows_sample;
+    }
 
     if (!enable_gathermerge)
         startup_cost += disable_cost;
@@ -578,6 +593,7 @@ void cost_index(
      */
     if (path->path.param_info) {
         path->path.rows = path->path.param_info->ppi_rows;
+        path->path.rows_sample = duplicate_sample(path->path.param_info->ppi_rows_sample);
         /* qpquals come from the rel's restriction clauses and ppi_clauses */
         qpquals = list_concat(extract_nonindex_conditions(path->indexinfo->indrestrictinfo,
                                                           path->indexclauses),
@@ -585,6 +601,7 @@ void cost_index(
                                                           path->indexclauses));
     } else {
         path->path.rows = baserel->rows;
+        path->path.rows_sample = duplicate_sample(baserel->rows_sample);
         /* qpquals come from just the rel's restriction clauses */
         qpquals = extract_nonindex_conditions(path->indexinfo->indrestrictinfo,
                                               path->indexclauses);
@@ -800,6 +817,22 @@ void cost_index(
 
     path->path.startup_cost = startup_cost;
     path->path.total_cost = startup_cost + run_cost;
+}
+
+void log_join_rows_and_cost_sample(
+    const JoinPath *jpath
+) {
+    const Sample *rows_sample = jpath->path.rows_sample;
+    const int rows_sample_count = rows_sample->sample_count;
+    for (int sample_idx = 0; sample_idx < rows_sample_count; ++sample_idx) {
+        elog(LOG, "rows_sample[%d] %.3f", sample_idx, rows_sample->sample[sample_idx]);
+    }
+
+    const Sample *total_cost_sample = jpath->path.total_cost_sample;
+    const int total_cost_sample_count = total_cost_sample->sample_count;
+    for (int sample_idx = 0; sample_idx < total_cost_sample_count; ++sample_idx) {
+        elog(LOG, "total_cost_sample[%d] %.3f", sample_idx, total_cost_sample->sample[sample_idx]);
+    }
 }
 
 /*
@@ -1721,10 +1754,13 @@ void cost_resultscan(
     Assert(baserel->rtekind == RTE_RESULT);
 
     /* Mark the path with the correct row estimate */
-    if (param_info)
+    if (param_info) {
         path->rows = param_info->ppi_rows;
-    else
+        path->rows_sample = duplicate_sample(param_info->ppi_rows_sample);
+    } else {
         path->rows = baserel->rows;
+        path->rows_sample = duplicate_sample(baserel->rows_sample);
+    }
 
     /* We charge qual cost plus cpu_tuple_cost */
     get_restriction_qual_cost(root, baserel, param_info, &qpqual_cost);
@@ -2887,20 +2923,14 @@ void initial_cost_nestloop(
     JoinPathExtraData *extra
 ) {
     /* ------------------------------- Initialization ------------------------------- */
-    const Sample *outer_path_rows_sample = outer_path->rows_sample;
-    const Sample *inner_path_rows_sample = inner_path->rows_sample;
-
+    // FIXME: Check the pathtype
+    const Sample *outer_path_rows_sample =
+            IsA(outer_path, IndexPath)
+                ? ((IndexPath *) outer_path)->path.rows_sample
+                : outer_path->rows_sample;
     const int outer_sample_count = outer_path_rows_sample->sample_count;
-    const int inner_sample_count = inner_path_rows_sample->sample_count;
-
     const bool outer_is_const = outer_sample_count == 1;
-    const bool inner_is_const = inner_sample_count == 1;
-
     const double outer_first_rows = outer_path_rows_sample->sample[0];
-
-    if (!outer_is_const || !inner_is_const) {
-        Assert(outer_sample_count == inner_sample_count);
-    }
 
     workspace->sample_count = outer_sample_count;
     /* Public result fields */
@@ -3012,8 +3042,15 @@ void final_cost_nestloop(
     const Path *inner_path = path->jpath.innerjoinpath;
     const int workspace_sample_count = workspace->sample_count;
 
-    const Sample *outer_path_rows_sample = outer_path->rows_sample;
-    const Sample *inner_path_rows_sample = inner_path->rows_sample;
+    // FIXME: Check the pathtype
+    const Sample *outer_path_rows_sample =
+            IsA(outer_path, IndexPath)
+                ? ((IndexPath *) outer_path)->path.rows_sample
+                : outer_path->rows_sample;
+    const Sample *inner_path_rows_sample =
+            IsA(inner_path, IndexPath)
+                ? ((IndexPath *) inner_path)->path.rows_sample
+                : inner_path->rows_sample;
 
     const int outer_sample_count = outer_path_rows_sample->sample_count;
     const int inner_sample_count = inner_path_rows_sample->sample_count;
@@ -3042,11 +3079,17 @@ void final_cost_nestloop(
 
         path->jpath.path.rows = clamp_row_est(path->jpath.path.rows / parallel_divisor);
         Sample *new_sample = make_sample_by_scale_factor(
-            path->jpath.path.param_info->ppi_rows_sample, 1.0 / parallel_divisor
+            path->jpath.path.rows_sample, 1.0 / parallel_divisor
         );
         pfree(path->jpath.path.rows_sample);
         path->jpath.path.rows_sample = new_sample;
     }
+
+    /* Initialize the startup and total cost samples */
+    path->jpath.path.startup_cost = 0.0;
+    path->jpath.path.startup_cost_sample = initialize_sample(workspace_sample_count);
+    path->jpath.path.total_cost = 0.0;
+    path->jpath.path.total_cost_sample = initialize_sample(workspace_sample_count);
 
     /* ------------------------------- Point-to-Point ------------------------------- */
     for (int sample_idx = 0; sample_idx < workspace_sample_count; ++sample_idx) {
@@ -3208,6 +3251,8 @@ void final_cost_nestloop(
     /* ------------------------------- Finalization ------------------------------- */
     path->jpath.path.startup_cost /= (double) workspace_sample_count;
     path->jpath.path.total_cost /= (double) workspace_sample_count;
+
+    log_join_rows_and_cost_sample(&path->jpath);
 }
 
 /*
@@ -3250,8 +3295,15 @@ void initial_cost_mergejoin(
     JoinPathExtraData *extra
 ) {
     /* ------------------------------- Initialization ------------------------------- */
-    const Sample *outer_path_rows_sample = outer_path->rows_sample;
-    const Sample *inner_path_rows_sample = inner_path->rows_sample;
+    // FIXME: Check the pathtype
+    const Sample *outer_path_rows_sample =
+            IsA(outer_path, IndexPath)
+                ? ((IndexPath *) outer_path)->path.rows_sample
+                : outer_path->rows_sample;
+    const Sample *inner_path_rows_sample =
+            IsA(inner_path, IndexPath)
+                ? ((IndexPath *) inner_path)->path.rows_sample
+                : inner_path->rows_sample;
 
     const int outer_sample_count = outer_path_rows_sample->sample_count;
     const int inner_sample_count = inner_path_rows_sample->sample_count;
@@ -3546,7 +3598,7 @@ void final_cost_mergejoin(
 
         path->jpath.path.rows = clamp_row_est(path->jpath.path.rows / parallel_divisor);
         Sample *new_sample = make_sample_by_scale_factor(
-            path->jpath.path.param_info->ppi_rows_sample, 1.0 / parallel_divisor
+            path->jpath.path.rows_sample, 1.0 / parallel_divisor
         );
         pfree(path->jpath.path.rows_sample);
         path->jpath.path.rows_sample = new_sample;
@@ -3790,6 +3842,8 @@ void final_cost_mergejoin(
     /* ------------------------------- Finalization ------------------------------- */
     path->jpath.path.startup_cost /= (double) workspace_sample_count;
     path->jpath.path.total_cost /= (double) workspace_sample_count;
+
+    log_join_rows_and_cost_sample(&path->jpath);
 }
 
 /*
@@ -3882,8 +3936,15 @@ void initial_cost_hashjoin(
     bool parallel_hash
 ) {
     /* ------------------------------- Initialization ------------------------------- */
-    const Sample *outer_path_rows_sample = outer_path->rows_sample;
-    const Sample *inner_path_rows_sample = inner_path->rows_sample;
+    // FIXME: Check the pathtype
+    const Sample *outer_path_rows_sample =
+            IsA(outer_path, IndexPath)
+                ? ((IndexPath *) outer_path)->path.rows_sample
+                : outer_path->rows_sample;
+    const Sample *inner_path_rows_sample =
+            IsA(inner_path, IndexPath)
+                ? ((IndexPath *) inner_path)->path.rows_sample
+                : inner_path->rows_sample;
 
     const int outer_sample_count = outer_path_rows_sample->sample_count;
     const int inner_sample_count = inner_path_rows_sample->sample_count;
@@ -4047,8 +4108,15 @@ void final_cost_hashjoin(
     const Path *inner_path = path->jpath.innerjoinpath;
     const int workspace_sample_count = workspace->sample_count;
 
-    const Sample *outer_path_rows_sample = outer_path->rows_sample;
-    const Sample *inner_path_rows_sample = inner_path->rows_sample;
+    // FIXME: Check the pathtype
+    const Sample *outer_path_rows_sample =
+            IsA(outer_path, IndexPath)
+                ? ((IndexPath *) outer_path)->path.rows_sample
+                : outer_path->rows_sample;
+    const Sample *inner_path_rows_sample =
+            IsA(inner_path, IndexPath)
+                ? ((IndexPath *) inner_path)->path.rows_sample
+                : inner_path->rows_sample;
 
     const int outer_sample_count = outer_path_rows_sample->sample_count;
     const int inner_sample_count = inner_path_rows_sample->sample_count;
@@ -4079,7 +4147,7 @@ void final_cost_hashjoin(
 
         path->jpath.path.rows = clamp_row_est(path->jpath.path.rows / parallel_divisor);
         Sample *new_sample = make_sample_by_scale_factor(
-            path->jpath.path.param_info->ppi_rows_sample, 1.0 / parallel_divisor
+            path->jpath.path.rows_sample, 1.0 / parallel_divisor
         );
         pfree(path->jpath.path.rows_sample);
         path->jpath.path.rows_sample = new_sample;
@@ -4317,6 +4385,8 @@ void final_cost_hashjoin(
     /* ------------------------------- Finalization ------------------------------- */
     path->jpath.path.startup_cost /= (double) workspace_sample_count;
     path->jpath.path.total_cost /= (double) workspace_sample_count;
+
+    log_join_rows_and_cost_sample(&path->jpath);
 }
 
 
