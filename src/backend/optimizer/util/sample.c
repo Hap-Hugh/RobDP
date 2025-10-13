@@ -59,27 +59,43 @@ void calc_mean_std(
 }
 
 /* ------------------------------- Samples ------------------------------- */
+Sample *initialize_sample(
+    const int sample_count
+) {
+    Sample *dst_sample = palloc0(sizeof(Sample));
+    dst_sample->sample_count = sample_count;
+    return dst_sample;
+}
+
+Sample *duplicate_sample(
+    const Sample *src_sample
+) {
+    Sample *dst_sample = palloc0(sizeof(Sample));
+    memcpy(dst_sample, src_sample, sizeof(Sample));
+    return dst_sample;
+}
+
 Sample *make_sample_by_single_value(
     const double val
 ) {
-    Sample *res = palloc0(sizeof(Sample));
-    res->sample_count = 1;
-    res->sample[0] = val;
-    return res;
+    Sample *dst_sample = palloc0(sizeof(Sample));
+    dst_sample->sample_count = 1;
+    dst_sample->sample[0] = val;
+    return dst_sample;
 }
 
 Sample *make_sample_by_scale_factor(
-    const Sample *src,
+    const Sample *src_sample,
     const double factor
 ) {
-    Assert(src != NULL);
-    Sample *dst = palloc0(sizeof(Sample));
-    Assert(dst != NULL);
-    dst->sample_count = src->sample_count;
-    for (int i = 0; i < dst->sample_count; ++i) {
-        dst->sample[i] = src->sample[i] * factor;
+    Assert(src_sample != NULL);
+    Sample *dst_sample = palloc0(sizeof(Sample));
+    Assert(dst_sample != NULL);
+    dst_sample->sample_count = src_sample->sample_count;
+    for (int i = 0; i < dst_sample->sample_count; ++i) {
+        dst_sample->sample[i] = src_sample->sample[i] * factor;
     }
-    return dst;
+    return dst_sample;
 }
 
 /*
@@ -101,11 +117,11 @@ Sample *make_sample_by_scale_factor(
  *   - Static buffer 'out' is overwritten on each call; use palloc0 if needed.
  */
 Sample *make_sample_by_bin(const ErrorProfile *ep, const double sel_est) {
-    Sample *out = palloc0(sizeof(Sample));
+    Sample *dst_sample = palloc0(sizeof(Sample));
 
     /* reset */
-    out->sample_count = 0;
-    memset(out->sample, 0, sizeof(out->sample));
+    dst_sample->sample_count = 0;
+    memset(dst_sample->sample, 0, sizeof(dst_sample->sample));
 
     if (!ep) {
         return NULL;
@@ -130,11 +146,11 @@ Sample *make_sample_by_bin(const ErrorProfile *ep, const double sel_est) {
     for (int i = 0; i < m; ++i) {
         /* src->sample[i] stores log(sel_true / sel_est) */
         const double log_err = src->sample[i];
-        out->sample[i] = sel_est * exp(log_err);
+        dst_sample->sample[i] = sel_est * exp(log_err);
     }
-    out->sample_count = m;
+    dst_sample->sample_count = m;
 
-    return out;
+    return dst_sample;
 }
 
 Sample *make_sample_by_join_sample(

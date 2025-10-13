@@ -44,12 +44,20 @@ void calc_mean_std(
 );
 
 /* ------------------------------- Samples ------------------------------- */
+Sample *initialize_sample(
+    int sample_count
+);
+
+Sample *duplicate_sample(
+    const Sample *src_sample
+);
+
 Sample *make_sample_by_single_value(
     double val
 );
 
 Sample *make_sample_by_scale_factor(
-    const Sample *src,
+    const Sample *src_sample,
     double factor
 );
 

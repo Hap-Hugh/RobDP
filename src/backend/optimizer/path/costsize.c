@@ -2886,62 +2886,112 @@ void initial_cost_nestloop(
     Path *outer_path, Path *inner_path,
     JoinPathExtraData *extra
 ) {
-    Cost startup_cost = 0;
-    Cost run_cost = 0;
-    double outer_path_rows = outer_path->rows;
+    /* ------------------------------- Initialization ------------------------------- */
+    const Sample *outer_path_rows_sample = outer_path->rows_sample;
+    const Sample *inner_path_rows_sample = inner_path->rows_sample;
+
+    const int outer_sample_count = outer_path_rows_sample->sample_count;
+    const int inner_sample_count = inner_path_rows_sample->sample_count;
+
+    const bool outer_is_const = outer_sample_count == 1;
+    const bool inner_is_const = inner_sample_count == 1;
+
+    const double outer_first_rows = outer_path_rows_sample->sample[0];
+
+    if (!outer_is_const || !inner_is_const) {
+        Assert(outer_sample_count == inner_sample_count);
+    }
+
+    workspace->sample_count = outer_sample_count;
+    /* Public result fields */
+    workspace->startup_cost = 0.0;
+    workspace->total_cost = 0.0;
+    /* Save private data for final_cost_nestloop */
+    workspace->run_cost = 0.0;
+    workspace->inner_run_cost = 0.0;
+    workspace->inner_rescan_run_cost = 0.0;
+
+    /* ------------------------------- Common Process ------------------------------- */
     Cost inner_rescan_start_cost;
     Cost inner_rescan_total_cost;
-    Cost inner_run_cost;
-    Cost inner_rescan_run_cost;
 
+    /* cost of source data */
     /* estimate costs to rescan the inner relation */
     cost_rescan(root, inner_path,
                 &inner_rescan_start_cost,
                 &inner_rescan_total_cost);
 
-    /* cost of source data */
+    /* ------------------------------- Point-to-Point ------------------------------- */
+    for (int sample_idx = 0; sample_idx < outer_sample_count; ++sample_idx) {
+        const double outer_path_rows
+                = outer_is_const
+                      ? outer_first_rows
+                      : outer_path_rows_sample->sample[sample_idx];
 
-    /*
-     * NOTE: clearly, we must pay both outer and inner paths' startup_cost
-     * before we can start returning tuples, so the join's startup cost is
-     * their sum.  We'll also pay the inner path's rescan startup cost
-     * multiple times.
-     */
-    startup_cost += outer_path->startup_cost + inner_path->startup_cost;
-    run_cost += outer_path->total_cost - outer_path->startup_cost;
-    if (outer_path_rows > 1)
-        run_cost += (outer_path_rows - 1) * inner_rescan_start_cost;
+        Cost startup_cost = 0;
+        Cost run_cost = 0;
 
-    inner_run_cost = inner_path->total_cost - inner_path->startup_cost;
-    inner_rescan_run_cost = inner_rescan_total_cost - inner_rescan_start_cost;
-
-    if (jointype == JOIN_SEMI || jointype == JOIN_ANTI ||
-        extra->inner_unique) {
         /*
-         * With a SEMI or ANTI join, or if the innerrel is known unique, the
-         * executor will stop after the first match.
-         *
-         * Getting decent estimates requires inspection of the join quals,
-         * which we choose to postpone to final_cost_nestloop.
+         * NOTE: clearly, we must pay both outer and inner paths' startup_cost
+         * before we can start returning tuples, so the join's startup cost is
+         * their sum.  We'll also pay the inner path's rescan startup cost
+         * multiple times.
          */
-
-        /* Save private data for final_cost_nestloop */
-        workspace->inner_run_cost = inner_run_cost;
-        workspace->inner_rescan_run_cost = inner_rescan_run_cost;
-    } else {
-        /* Normal case; we'll scan whole input rel for each outer row */
-        run_cost += inner_run_cost;
+        startup_cost += outer_path->startup_cost + inner_path->startup_cost;
+        run_cost += outer_path->total_cost - outer_path->startup_cost;
         if (outer_path_rows > 1)
-            run_cost += (outer_path_rows - 1) * inner_rescan_run_cost;
+            run_cost += (outer_path_rows - 1) * inner_rescan_start_cost;
+
+        const Cost inner_run_cost = inner_path->total_cost - inner_path->startup_cost;
+        const Cost inner_rescan_run_cost = inner_rescan_total_cost - inner_rescan_start_cost;
+
+        if (jointype == JOIN_SEMI || jointype == JOIN_ANTI
+            || extra->inner_unique) {
+            /*
+             * With a SEMI or ANTI join, or if the innerrel is known unique, the
+             * executor will stop after the first match.
+             *
+             * Getting decent estimates requires inspection of the join quals,
+             * which we choose to postpone to final_cost_nestloop.
+             */
+
+            /* Save private data for final_cost_nestloop */
+            workspace->inner_run_cost_sample[sample_idx] = inner_run_cost;
+            workspace->inner_rescan_run_cost_sample[sample_idx] = inner_rescan_run_cost;
+
+            /* Save private data for final_cost_nestloop */
+            workspace->inner_run_cost += inner_run_cost;
+            workspace->inner_rescan_run_cost += inner_rescan_run_cost;
+        } else {
+            /* Normal case; we'll scan whole input rel for each outer row */
+            run_cost += inner_run_cost;
+            if (outer_path_rows > 1)
+                run_cost += (outer_path_rows - 1) * inner_rescan_run_cost;
+        }
+
+        /* CPU costs left for later */
+
+        /* Public result fields */
+        workspace->startup_cost_sample[sample_idx] = startup_cost;
+        workspace->total_cost_sample[sample_idx] = startup_cost + run_cost;
+        /* Save private data for final_cost_nestloop */
+        workspace->run_cost_sample[sample_idx] = run_cost;
+
+        /* Public result fields */
+        workspace->startup_cost += startup_cost;
+        workspace->total_cost += startup_cost + run_cost;
+        /* Save private data for final_cost_nestloop */
+        workspace->run_cost += run_cost;
     }
 
-    /* CPU costs left for later */
-
+    /* ------------------------------- Finalization ------------------------------- */
     /* Public result fields */
-    workspace->startup_cost = startup_cost;
-    workspace->total_cost = startup_cost + run_cost;
+    workspace->startup_cost /= (double) outer_sample_count;
+    workspace->total_cost /= (double) outer_sample_count;
     /* Save private data for final_cost_nestloop */
-    workspace->run_cost = run_cost;
+    workspace->run_cost /= (double) outer_sample_count;
+    workspace->inner_run_cost /= (double) outer_sample_count;
+    workspace->inner_rescan_run_cost /= (double) outer_sample_count;
 }
 
 /*
@@ -2957,168 +3007,207 @@ void final_cost_nestloop(
     JoinCostWorkspace *workspace,
     JoinPathExtraData *extra
 ) {
-    Path *outer_path = path->jpath.outerjoinpath;
-    Path *inner_path = path->jpath.innerjoinpath;
-    double outer_path_rows = outer_path->rows;
-    double inner_path_rows = inner_path->rows;
-    Cost startup_cost = workspace->startup_cost;
-    Cost run_cost = workspace->run_cost;
-    Cost cpu_per_tuple;
-    QualCost restrict_qual_cost;
-    double ntuples;
+    /* ------------------------------- Initialization ------------------------------- */
+    const Path *outer_path = path->jpath.outerjoinpath;
+    const Path *inner_path = path->jpath.innerjoinpath;
+    const int workspace_sample_count = workspace->sample_count;
 
-    /* Protect some assumptions below that rowcounts aren't zero */
-    if (outer_path_rows <= 0)
-        outer_path_rows = 1;
-    if (inner_path_rows <= 0)
-        inner_path_rows = 1;
+    const Sample *outer_path_rows_sample = outer_path->rows_sample;
+    const Sample *inner_path_rows_sample = inner_path->rows_sample;
+
+    const int outer_sample_count = outer_path_rows_sample->sample_count;
+    const int inner_sample_count = inner_path_rows_sample->sample_count;
+
+    const bool outer_is_const = outer_sample_count == 1;
+    const bool inner_is_const = inner_sample_count == 1;
+    const double outer_first_rows = outer_path_rows_sample->sample[0];
+    const double inner_first_rows = inner_path_rows_sample->sample[0];
+
+    if (!outer_is_const || !inner_is_const) {
+        Assert(outer_sample_count == inner_sample_count);
+    }
+
     /* Mark the path with the correct row estimate */
-    if (path->jpath.path.param_info)
+    if (path->jpath.path.param_info) {
         path->jpath.path.rows = path->jpath.path.param_info->ppi_rows;
-    else
+        path->jpath.path.rows_sample = duplicate_sample(path->jpath.path.param_info->ppi_rows_sample);
+    } else {
         path->jpath.path.rows = path->jpath.path.parent->rows;
+        path->jpath.path.rows_sample = duplicate_sample(path->jpath.path.parent->rows_sample);
+    }
 
     /* For partial paths, scale row estimate. */
     if (path->jpath.path.parallel_workers > 0) {
-        double parallel_divisor = get_parallel_divisor(&path->jpath.path);
+        const double parallel_divisor = get_parallel_divisor(&path->jpath.path);
 
-        path->jpath.path.rows =
-                clamp_row_est(path->jpath.path.rows / parallel_divisor);
+        path->jpath.path.rows = clamp_row_est(path->jpath.path.rows / parallel_divisor);
+        Sample *new_sample = make_sample_by_scale_factor(
+            path->jpath.path.param_info->ppi_rows_sample, 1.0 / parallel_divisor
+        );
+        pfree(path->jpath.path.rows_sample);
+        path->jpath.path.rows_sample = new_sample;
     }
 
-    /*
-     * We could include disable_cost in the preliminary estimate, but that
-     * would amount to optimizing for the case where the join method is
-     * disabled, which doesn't seem like the way to bet.
-     */
-    if (!enable_nestloop)
-        startup_cost += disable_cost;
+    /* ------------------------------- Point-to-Point ------------------------------- */
+    for (int sample_idx = 0; sample_idx < workspace_sample_count; ++sample_idx) {
+        double outer_path_rows
+                = outer_is_const
+                      ? outer_first_rows
+                      : outer_path_rows_sample->sample[sample_idx];
+        double inner_path_rows
+                = inner_is_const
+                      ? inner_first_rows
+                      : inner_path_rows_sample->sample[sample_idx];
 
-    /* cost of inner-relation source data (we already dealt with outer rel) */
+        Cost startup_cost = workspace->startup_cost_sample[sample_idx];
+        Cost run_cost = workspace->run_cost_sample[sample_idx];
+        QualCost restrict_qual_cost;
+        double ntuples;
 
-    if (path->jpath.jointype == JOIN_SEMI || path->jpath.jointype == JOIN_ANTI ||
-        extra->inner_unique) {
-        /*
-         * With a SEMI or ANTI join, or if the innerrel is known unique, the
-         * executor will stop after the first match.
-         */
-        Cost inner_run_cost = workspace->inner_run_cost;
-        Cost inner_rescan_run_cost = workspace->inner_rescan_run_cost;
-        double outer_matched_rows;
-        double outer_unmatched_rows;
-        Selectivity inner_scan_frac;
-
-        /*
-         * For an outer-rel row that has at least one match, we can expect the
-         * inner scan to stop after a fraction 1/(match_count+1) of the inner
-         * rows, if the matches are evenly distributed.  Since they probably
-         * aren't quite evenly distributed, we apply a fuzz factor of 2.0 to
-         * that fraction.  (If we used a larger fuzz factor, we'd have to
-         * clamp inner_scan_frac to at most 1.0; but since match_count is at
-         * least 1, no such clamp is needed now.)
-         */
-        outer_matched_rows = rint(outer_path_rows * extra->semifactors.outer_match_frac);
-        outer_unmatched_rows = outer_path_rows - outer_matched_rows;
-        inner_scan_frac = 2.0 / (extra->semifactors.match_count + 1.0);
+        /* Protect some assumptions below that rowcounts aren't zero */
+        if (outer_path_rows <= 0)
+            outer_path_rows = 1;
+        if (inner_path_rows <= 0)
+            inner_path_rows = 1;
 
         /*
-         * Compute number of tuples processed (not number emitted!).  First,
-         * account for successfully-matched outer rows.
+         * We could include disable_cost in the preliminary estimate, but that
+         * would amount to optimizing for the case where the join method is
+         * disabled, which doesn't seem like the way to bet.
          */
-        ntuples = outer_matched_rows * inner_path_rows * inner_scan_frac;
+        if (!enable_nestloop)
+            startup_cost += disable_cost;
 
-        /*
-         * Now we need to estimate the actual costs of scanning the inner
-         * relation, which may be quite a bit less than N times inner_run_cost
-         * due to early scan stops.  We consider two cases.  If the inner path
-         * is an indexscan using all the joinquals as indexquals, then an
-         * unmatched outer row results in an indexscan returning no rows,
-         * which is probably quite cheap.  Otherwise, the executor will have
-         * to scan the whole inner rel for an unmatched row; not so cheap.
-         */
-        if (has_indexed_join_quals(path)) {
+        /* cost of inner-relation source data (we already dealt with outer rel) */
+
+        if (path->jpath.jointype == JOIN_SEMI || path->jpath.jointype == JOIN_ANTI ||
+            extra->inner_unique) {
             /*
-             * Successfully-matched outer rows will only require scanning
-             * inner_scan_frac of the inner relation.  In this case, we don't
-             * need to charge the full inner_run_cost even when that's more
-             * than inner_rescan_run_cost, because we can assume that none of
-             * the inner scans ever scan the whole inner relation.  So it's
-             * okay to assume that all the inner scan executions can be
-             * fractions of the full cost, even if materialization is reducing
-             * the rescan cost.  At this writing, it's impossible to get here
-             * for a materialized inner scan, so inner_run_cost and
-             * inner_rescan_run_cost will be the same anyway; but just in
-             * case, use inner_run_cost for the first matched tuple and
-             * inner_rescan_run_cost for additional ones.
+             * With a SEMI or ANTI join, or if the innerrel is known unique, the
+             * executor will stop after the first match.
              */
-            run_cost += inner_run_cost * inner_scan_frac;
-            if (outer_matched_rows > 1)
-                run_cost += (outer_matched_rows - 1) * inner_rescan_run_cost * inner_scan_frac;
+            const Cost inner_run_cost = workspace->inner_run_cost;
+            const Cost inner_rescan_run_cost = workspace->inner_rescan_run_cost;
 
             /*
-             * Add the cost of inner-scan executions for unmatched outer rows.
-             * We estimate this as the same cost as returning the first tuple
-             * of a nonempty scan.  We consider that these are all rescans,
-             * since we used inner_run_cost once already.
+             * For an outer-rel row that has at least one match, we can expect the
+             * inner scan to stop after a fraction 1/(match_count+1) of the inner
+             * rows, if the matches are evenly distributed.  Since they probably
+             * aren't quite evenly distributed, we apply a fuzz factor of 2.0 to
+             * that fraction.  (If we used a larger fuzz factor, we'd have to
+             * clamp inner_scan_frac to at most 1.0; but since match_count is at
+             * least 1, no such clamp is needed now.)
              */
-            run_cost += outer_unmatched_rows *
-                    inner_rescan_run_cost / inner_path_rows;
+            double outer_matched_rows = rint(outer_path_rows * extra->semifactors.outer_match_frac);
+            double outer_unmatched_rows = outer_path_rows - outer_matched_rows;
+            const Selectivity inner_scan_frac = 2.0 / (extra->semifactors.match_count + 1.0);
 
             /*
-             * We won't be evaluating any quals at all for unmatched rows, so
-             * don't add them to ntuples.
+             * Compute number of tuples processed (not number emitted!).  First,
+             * account for successfully-matched outer rows.
              */
+            ntuples = outer_matched_rows * inner_path_rows * inner_scan_frac;
+
+            /*
+             * Now we need to estimate the actual costs of scanning the inner
+             * relation, which may be quite a bit less than N times inner_run_cost
+             * due to early scan stops.  We consider two cases.  If the inner path
+             * is an indexscan using all the joinquals as indexquals, then an
+             * unmatched outer row results in an indexscan returning no rows,
+             * which is probably quite cheap.  Otherwise, the executor will have
+             * to scan the whole inner rel for an unmatched row; not so cheap.
+             */
+            if (has_indexed_join_quals(path)) {
+                /*
+                 * Successfully-matched outer rows will only require scanning
+                 * inner_scan_frac of the inner relation.  In this case, we don't
+                 * need to charge the full inner_run_cost even when that's more
+                 * than inner_rescan_run_cost, because we can assume that none of
+                 * the inner scans ever scan the whole inner relation.  So it's
+                 * okay to assume that all the inner scan executions can be
+                 * fractions of the full cost, even if materialization is reducing
+                 * the rescan cost.  At this writing, it's impossible to get here
+                 * for a materialized inner scan, so inner_run_cost and
+                 * inner_rescan_run_cost will be the same anyway; but just in
+                 * case, use inner_run_cost for the first matched tuple and
+                 * inner_rescan_run_cost for additional ones.
+                 */
+                run_cost += inner_run_cost * inner_scan_frac;
+                if (outer_matched_rows > 1)
+                    run_cost += (outer_matched_rows - 1) * inner_rescan_run_cost * inner_scan_frac;
+
+                /*
+                 * Add the cost of inner-scan executions for unmatched outer rows.
+                 * We estimate this as the same cost as returning the first tuple
+                 * of a nonempty scan.  We consider that these are all rescans,
+                 * since we used inner_run_cost once already.
+                 */
+                run_cost += outer_unmatched_rows *
+                        inner_rescan_run_cost / inner_path_rows;
+
+                /*
+                 * We won't be evaluating any quals at all for unmatched rows, so
+                 * don't add them to ntuples.
+                 */
+            } else {
+                /*
+                 * Here, a complicating factor is that rescans may be cheaper than
+                 * first scans.  If we never scan all the way to the end of the
+                 * inner rel, it might be (depending on the plan type) that we'd
+                 * never pay the whole inner first-scan run cost.  However it is
+                 * difficult to estimate whether that will happen (and it could
+                 * not happen if there are any unmatched outer rows!), so be
+                 * conservative and always charge the whole first-scan cost once.
+                 * We consider this charge to correspond to the first unmatched
+                 * outer row, unless there isn't one in our estimate, in which
+                 * case blame it on the first matched row.
+                 */
+
+                /* First, count all unmatched join tuples as being processed */
+                ntuples += outer_unmatched_rows * inner_path_rows;
+
+                /* Now add the forced full scan, and decrement appropriate count */
+                run_cost += inner_run_cost;
+                if (outer_unmatched_rows >= 1)
+                    outer_unmatched_rows -= 1;
+                else
+                    outer_matched_rows -= 1;
+
+                /* Add inner run cost for additional outer tuples having matches */
+                if (outer_matched_rows > 0)
+                    run_cost += outer_matched_rows * inner_rescan_run_cost * inner_scan_frac;
+
+                /* Add inner run cost for additional unmatched outer tuples */
+                if (outer_unmatched_rows > 0)
+                    run_cost += outer_unmatched_rows * inner_rescan_run_cost;
+            }
         } else {
-            /*
-             * Here, a complicating factor is that rescans may be cheaper than
-             * first scans.  If we never scan all the way to the end of the
-             * inner rel, it might be (depending on the plan type) that we'd
-             * never pay the whole inner first-scan run cost.  However it is
-             * difficult to estimate whether that will happen (and it could
-             * not happen if there are any unmatched outer rows!), so be
-             * conservative and always charge the whole first-scan cost once.
-             * We consider this charge to correspond to the first unmatched
-             * outer row, unless there isn't one in our estimate, in which
-             * case blame it on the first matched row.
-             */
+            /* Normal-case source costs were included in preliminary estimate */
 
-            /* First, count all unmatched join tuples as being processed */
-            ntuples += outer_unmatched_rows * inner_path_rows;
-
-            /* Now add the forced full scan, and decrement appropriate count */
-            run_cost += inner_run_cost;
-            if (outer_unmatched_rows >= 1)
-                outer_unmatched_rows -= 1;
-            else
-                outer_matched_rows -= 1;
-
-            /* Add inner run cost for additional outer tuples having matches */
-            if (outer_matched_rows > 0)
-                run_cost += outer_matched_rows * inner_rescan_run_cost * inner_scan_frac;
-
-            /* Add inner run cost for additional unmatched outer tuples */
-            if (outer_unmatched_rows > 0)
-                run_cost += outer_unmatched_rows * inner_rescan_run_cost;
+            /* Compute number of tuples processed (not number emitted!) */
+            ntuples = outer_path_rows * inner_path_rows;
         }
-    } else {
-        /* Normal-case source costs were included in preliminary estimate */
 
-        /* Compute number of tuples processed (not number emitted!) */
-        ntuples = outer_path_rows * inner_path_rows;
+        /* CPU costs */
+        cost_qual_eval(&restrict_qual_cost, path->jpath.joinrestrictinfo, root);
+        startup_cost += restrict_qual_cost.startup;
+        const Cost cpu_per_tuple = cpu_tuple_cost + restrict_qual_cost.per_tuple;
+        run_cost += cpu_per_tuple * ntuples;
+
+        /* tlist eval costs are paid per output row, not per tuple scanned */
+        startup_cost += path->jpath.path.pathtarget->cost.startup;
+        run_cost += path->jpath.path.pathtarget->cost.per_tuple * path->jpath.path.rows;
+
+        path->jpath.path.startup_cost_sample->sample[sample_idx] = startup_cost;
+        path->jpath.path.total_cost_sample->sample[sample_idx] = startup_cost + run_cost;
+
+        path->jpath.path.startup_cost += startup_cost;
+        path->jpath.path.total_cost += startup_cost + run_cost;
     }
 
-    /* CPU costs */
-    cost_qual_eval(&restrict_qual_cost, path->jpath.joinrestrictinfo, root);
-    startup_cost += restrict_qual_cost.startup;
-    cpu_per_tuple = cpu_tuple_cost + restrict_qual_cost.per_tuple;
-    run_cost += cpu_per_tuple * ntuples;
-
-    /* tlist eval costs are paid per output row, not per tuple scanned */
-    startup_cost += path->jpath.path.pathtarget->cost.startup;
-    run_cost += path->jpath.path.pathtarget->cost.per_tuple * path->jpath.path.rows;
-
-    path->jpath.path.startup_cost = startup_cost;
-    path->jpath.path.total_cost = startup_cost + run_cost;
+    /* ------------------------------- Finalization ------------------------------- */
+    path->jpath.path.startup_cost /= (double) workspace_sample_count;
+    path->jpath.path.total_cost /= (double) workspace_sample_count;
 }
 
 /*
@@ -3160,22 +3249,24 @@ void initial_cost_mergejoin(
     List *outersortkeys, List *innersortkeys,
     JoinPathExtraData *extra
 ) {
-    Sample *outer_path_rows_sample = outer_path->rows_sample;
-    Sample *inner_path_rows_sample = inner_path->rows_sample;
+    /* ------------------------------- Initialization ------------------------------- */
+    const Sample *outer_path_rows_sample = outer_path->rows_sample;
+    const Sample *inner_path_rows_sample = inner_path->rows_sample;
 
-    int outer_sample_count = outer_path_rows_sample->sample_count;
-    int inner_sample_count = inner_path_rows_sample->sample_count;
+    const int outer_sample_count = outer_path_rows_sample->sample_count;
+    const int inner_sample_count = inner_path_rows_sample->sample_count;
 
-    bool outer_is_const = outer_sample_count == 1;
-    bool inner_is_const = inner_sample_count == 1;
-    double outer_first_rows = outer_path_rows_sample->sample[0];
-    double inner_first_rows = inner_path_rows_sample->sample[0];
+    const bool outer_is_const = outer_sample_count == 1;
+    const bool inner_is_const = inner_sample_count == 1;
+
+    const double outer_first_rows = outer_path_rows_sample->sample[0];
+    const double inner_first_rows = inner_path_rows_sample->sample[0];
 
     if (!outer_is_const || !inner_is_const) {
         Assert(outer_sample_count == inner_sample_count);
     }
 
-    /* ------------------------------- Initialization ------------------------------- */
+    workspace->sample_count = outer_sample_count;
     /* Public result fields */
     workspace->startup_cost = 0.0;
     workspace->total_cost = 0.0;
@@ -3390,6 +3481,7 @@ void initial_cost_mergejoin(
         workspace->inner_skip_rows += inner_skip_rows;
     }
 
+    /* ------------------------------- Finalization ------------------------------- */
     /* Public result fields */
     workspace->startup_cost /= (double) outer_sample_count;
     workspace->total_cost /= (double) outer_sample_count;
@@ -3434,61 +3526,52 @@ void final_cost_mergejoin(
     JoinCostWorkspace *workspace,
     JoinPathExtraData *extra
 ) {
-    Path *outer_path = path->jpath.outerjoinpath;
-    Path *inner_path = path->jpath.innerjoinpath;
-    double inner_path_rows = inner_path->rows;
-    List *mergeclauses = path->path_mergeclauses;
-    List *innersortkeys = path->innersortkeys;
-    Cost startup_cost = workspace->startup_cost;
-    Cost run_cost = workspace->run_cost;
-    Cost inner_run_cost = workspace->inner_run_cost;
-    double outer_rows = workspace->outer_rows;
-    double inner_rows = workspace->inner_rows;
-    double outer_skip_rows = workspace->outer_skip_rows;
-    double inner_skip_rows = workspace->inner_skip_rows;
-    Cost cpu_per_tuple,
-            bare_inner_cost,
-            mat_inner_cost;
+    /* ------------------------------- Initialization ------------------------------- */
+    const Path *outer_path = path->jpath.outerjoinpath;
+    const Path *inner_path = path->jpath.innerjoinpath;
+    const int workspace_sample_count = workspace->sample_count;
+
+    /* Mark the path with the correct row estimate */
+    if (path->jpath.path.param_info) {
+        path->jpath.path.rows = path->jpath.path.param_info->ppi_rows;
+        path->jpath.path.rows_sample = duplicate_sample(path->jpath.path.param_info->ppi_rows_sample);
+    } else {
+        path->jpath.path.rows = path->jpath.path.parent->rows;
+        path->jpath.path.rows_sample = duplicate_sample(path->jpath.path.parent->rows_sample);
+    }
+
+    /* For partial paths, scale row estimate. */
+    if (path->jpath.path.parallel_workers > 0) {
+        const double parallel_divisor = get_parallel_divisor(&path->jpath.path);
+
+        path->jpath.path.rows = clamp_row_est(path->jpath.path.rows / parallel_divisor);
+        Sample *new_sample = make_sample_by_scale_factor(
+            path->jpath.path.param_info->ppi_rows_sample, 1.0 / parallel_divisor
+        );
+        pfree(path->jpath.path.rows_sample);
+        path->jpath.path.rows_sample = new_sample;
+    }
+
+    /* Initialize the startup and total cost samples */
+    path->jpath.path.startup_cost = 0.0;
+    path->jpath.path.startup_cost_sample = initialize_sample(workspace_sample_count);
+    path->jpath.path.total_cost = 0.0;
+    path->jpath.path.total_cost_sample = initialize_sample(workspace_sample_count);
+
     QualCost merge_qual_cost;
     QualCost qp_qual_cost;
-    double mergejointuples,
-            rescannedtuples;
-    double rescanratio;
+    List *mergeclauses = path->path_mergeclauses;
+    const List *innersortkeys = path->innersortkeys;
+    double rescannedtuples;
+
+    /* ------------------------------- Common Process ------------------------------- */
+    double inner_path_rows = inner_path->rows;
+    const Cost inner_run_cost = workspace->inner_run_cost;
+    const double inner_rows = workspace->inner_rows;
 
     /* Protect some assumptions below that rowcounts aren't zero */
     if (inner_path_rows <= 0)
         inner_path_rows = 1;
-
-    /* Mark the path with the correct row estimate */
-    if (path->jpath.path.param_info)
-        path->jpath.path.rows = path->jpath.path.param_info->ppi_rows;
-    else
-        path->jpath.path.rows = path->jpath.path.parent->rows;
-
-    /* For partial paths, scale row estimate. */
-    if (path->jpath.path.parallel_workers > 0) {
-        double parallel_divisor = get_parallel_divisor(&path->jpath.path);
-
-        path->jpath.path.rows =
-                clamp_row_est(path->jpath.path.rows / parallel_divisor);
-    }
-
-    /*
-     * We could include disable_cost in the preliminary estimate, but that
-     * would amount to optimizing for the case where the join method is
-     * disabled, which doesn't seem like the way to bet.
-     */
-    if (!enable_mergejoin)
-        startup_cost += disable_cost;
-
-    /*
-     * Compute cost of the mergequals and qpquals (other restriction clauses)
-     * separately.
-     */
-    cost_qual_eval(&merge_qual_cost, mergeclauses, root);
-    cost_qual_eval(&qp_qual_cost, path->jpath.joinrestrictinfo, root);
-    qp_qual_cost.startup -= merge_qual_cost.startup;
-    qp_qual_cost.per_tuple -= merge_qual_cost.per_tuple;
 
     /*
      * With a SEMI or ANTI join, or if the innerrel is known unique, the
@@ -3500,16 +3583,26 @@ void final_cost_mergejoin(
          path->jpath.jointype == JOIN_ANTI ||
          extra->inner_unique) &&
         (list_length(path->jpath.joinrestrictinfo) ==
-         list_length(path->path_mergeclauses)))
+         list_length(path->path_mergeclauses))) {
         path->skip_mark_restore = true;
-    else
+    } else {
         path->skip_mark_restore = false;
+    }
+
+    /*
+     * Compute cost of the mergequals and qpquals (other restriction clauses)
+     * separately.
+     */
+    cost_qual_eval(&merge_qual_cost, mergeclauses, root);
+    cost_qual_eval(&qp_qual_cost, path->jpath.joinrestrictinfo, root);
+    qp_qual_cost.startup -= merge_qual_cost.startup;
+    qp_qual_cost.per_tuple -= merge_qual_cost.per_tuple;
 
     /*
      * Get approx # tuples passing the mergequals.  We use approx_tuple_count
      * here because we need an estimate done with JOIN_INNER semantics.
      */
-    mergejointuples = approx_tuple_count(root, &path->jpath, mergeclauses);
+    const double mergejointuples = approx_tuple_count(root, &path->jpath, mergeclauses);
 
     /*
      * When there are equal merge keys in the outer relation, the mergejoin
@@ -3551,7 +3644,7 @@ void final_cost_mergejoin(
      * that this is to be multiplied by something involving inner_rows, or
      * another number related to the portion of the inner rel we'll scan.
      */
-    rescanratio = 1.0 + (rescannedtuples / inner_rows);
+    const double rescanratio = 1.0 + (rescannedtuples / inner_rows);
 
     /*
      * Decide whether we want to materialize the inner input to shield it from
@@ -3562,7 +3655,7 @@ void final_cost_mergejoin(
      * a more refined model.  So we just need to inflate the inner run cost by
      * rescanratio.
      */
-    bare_inner_cost = inner_run_cost * rescanratio;
+    const Cost bare_inner_cost = inner_run_cost * rescanratio;
 
     /*
      * When we interpose a Material node the re-fetch cost is assumed to be
@@ -3577,8 +3670,8 @@ void final_cost_mergejoin(
      * Note: keep this estimate in sync with create_mergejoin_plan's labeling
      * of the generated Material node.
      */
-    mat_inner_cost = inner_run_cost +
-                     cpu_operator_cost * inner_rows * rescanratio;
+    const Cost mat_inner_cost = inner_run_cost +
+                                cpu_operator_cost * inner_rows * rescanratio;
 
     /*
      * If we don't need mark/restore at all, we don't need materialization.
@@ -3632,45 +3725,71 @@ void final_cost_mergejoin(
     else
         path->materialize_inner = false;
 
-    /* Charge the right incremental cost for the chosen case */
-    if (path->materialize_inner)
-        run_cost += mat_inner_cost;
-    else
-        run_cost += bare_inner_cost;
+    /* ------------------------------- Point-to-Point ------------------------------- */
+    for (int sample_idx = 0; sample_idx < workspace_sample_count; ++sample_idx) {
+        Cost startup_cost = workspace->startup_cost_sample[sample_idx];
+        Cost run_cost = workspace->run_cost_sample[sample_idx];
+        // const Cost inner_run_cost = workspace->inner_run_cost_sample[sample_idx];
+        const double outer_rows = workspace->outer_rows_sample[sample_idx];
+        // const double inner_rows = workspace->inner_rows_sample[sample_idx];
+        const double outer_skip_rows = workspace->outer_skip_rows_sample[sample_idx];
+        const double inner_skip_rows = workspace->inner_skip_rows_sample[sample_idx];
 
-    /* CPU costs */
+        /*
+         * We could include disable_cost in the preliminary estimate, but that
+         * would amount to optimizing for the case where the join method is
+         * disabled, which doesn't seem like the way to bet.
+         */
+        if (!enable_mergejoin)
+            startup_cost += disable_cost;
 
-    /*
-     * The number of tuple comparisons needed is approximately number of outer
-     * rows plus number of inner rows plus number of rescanned tuples (can we
-     * refine this?).  At each one, we need to evaluate the mergejoin quals.
-     */
-    startup_cost += merge_qual_cost.startup;
-    startup_cost += merge_qual_cost.per_tuple *
-            (outer_skip_rows + inner_skip_rows * rescanratio);
-    run_cost += merge_qual_cost.per_tuple *
-    ((outer_rows - outer_skip_rows) +
-     (inner_rows - inner_skip_rows) * rescanratio);
+        /* Charge the right incremental cost for the chosen case */
+        if (path->materialize_inner)
+            run_cost += mat_inner_cost;
+        else
+            run_cost += bare_inner_cost;
 
-    /*
-     * For each tuple that gets through the mergejoin proper, we charge
-     * cpu_tuple_cost plus the cost of evaluating additional restriction
-     * clauses that are to be applied at the join.  (This is pessimistic since
-     * not all of the quals may get evaluated at each tuple.)
-     *
-     * Note: we could adjust for SEMI/ANTI joins skipping some qual
-     * evaluations here, but it's probably not worth the trouble.
-     */
-    startup_cost += qp_qual_cost.startup;
-    cpu_per_tuple = cpu_tuple_cost + qp_qual_cost.per_tuple;
-    run_cost += cpu_per_tuple * mergejointuples;
+        /* CPU costs */
 
-    /* tlist eval costs are paid per output row, not per tuple scanned */
-    startup_cost += path->jpath.path.pathtarget->cost.startup;
-    run_cost += path->jpath.path.pathtarget->cost.per_tuple * path->jpath.path.rows;
+        /*
+         * The number of tuple comparisons needed is approximately number of outer
+         * rows plus number of inner rows plus number of rescanned tuples (can we
+         * refine this?).  At each one, we need to evaluate the mergejoin quals.
+         */
+        startup_cost += merge_qual_cost.startup;
+        startup_cost += merge_qual_cost.per_tuple *
+                (outer_skip_rows + inner_skip_rows * rescanratio);
+        run_cost += merge_qual_cost.per_tuple *
+        ((outer_rows - outer_skip_rows) +
+         (inner_rows - inner_skip_rows) * rescanratio);
 
-    path->jpath.path.startup_cost = startup_cost;
-    path->jpath.path.total_cost = startup_cost + run_cost;
+        /*
+         * For each tuple that gets through the mergejoin proper, we charge
+         * cpu_tuple_cost plus the cost of evaluating additional restriction
+         * clauses that are to be applied at the join.  (This is pessimistic since
+         * not all of the quals may get evaluated at each tuple.)
+         *
+         * Note: we could adjust for SEMI/ANTI joins skipping some qual
+         * evaluations here, but it's probably not worth the trouble.
+         */
+        startup_cost += qp_qual_cost.startup;
+        const Cost cpu_per_tuple = cpu_tuple_cost + qp_qual_cost.per_tuple;
+        run_cost += cpu_per_tuple * mergejointuples;
+
+        /* tlist eval costs are paid per output row, not per tuple scanned */
+        startup_cost += path->jpath.path.pathtarget->cost.startup;
+        run_cost += path->jpath.path.pathtarget->cost.per_tuple * path->jpath.path.rows_sample->sample[sample_idx];
+
+        path->jpath.path.startup_cost_sample->sample[sample_idx] = startup_cost;
+        path->jpath.path.total_cost_sample->sample[sample_idx] = startup_cost + run_cost;
+
+        path->jpath.path.startup_cost += startup_cost;
+        path->jpath.path.total_cost += startup_cost + run_cost;
+    }
+
+    /* ------------------------------- Finalization ------------------------------- */
+    path->jpath.path.startup_cost /= (double) workspace_sample_count;
+    path->jpath.path.total_cost /= (double) workspace_sample_count;
 }
 
 /*
@@ -3762,94 +3881,149 @@ void initial_cost_hashjoin(
     JoinPathExtraData *extra,
     bool parallel_hash
 ) {
-    Cost startup_cost = 0;
-    Cost run_cost = 0;
-    double outer_path_rows = outer_path->rows;
-    double inner_path_rows = inner_path->rows;
-    double inner_path_rows_total = inner_path_rows;
-    int num_hashclauses = list_length(hashclauses);
-    int numbuckets;
-    int numbatches;
-    int num_skew_mcvs;
-    size_t space_allowed; /* unused */
+    /* ------------------------------- Initialization ------------------------------- */
+    const Sample *outer_path_rows_sample = outer_path->rows_sample;
+    const Sample *inner_path_rows_sample = inner_path->rows_sample;
 
-    /* cost of source data */
-    startup_cost += outer_path->startup_cost;
-    run_cost += outer_path->total_cost - outer_path->startup_cost;
-    startup_cost += inner_path->total_cost;
+    const int outer_sample_count = outer_path_rows_sample->sample_count;
+    const int inner_sample_count = inner_path_rows_sample->sample_count;
 
-    /*
-     * Cost of computing hash function: must do it once per input tuple. We
-     * charge one cpu_operator_cost for each column's hash function.  Also,
-     * tack on one cpu_tuple_cost per inner row, to model the costs of
-     * inserting the row into the hashtable.
-     *
-     * XXX when a hashclause is more complex than a single operator, we really
-     * should charge the extra eval costs of the left or right side, as
-     * appropriate, here.  This seems more work than it's worth at the moment.
-     */
-    startup_cost += (cpu_operator_cost * num_hashclauses + cpu_tuple_cost)
-            * inner_path_rows;
-    run_cost += cpu_operator_cost * num_hashclauses * outer_path_rows;
+    const bool outer_is_const = outer_sample_count == 1;
+    const bool inner_is_const = inner_sample_count == 1;
+    const double outer_first_rows = outer_path_rows_sample->sample[0];
+    const double inner_first_rows = inner_path_rows_sample->sample[0];
 
-    /*
-     * If this is a parallel hash build, then the value we have for
-     * inner_rows_total currently refers only to the rows returned by each
-     * participant.  For shared hash table size estimation, we need the total
-     * number, so we need to undo the division.
-     */
-    if (parallel_hash)
-        inner_path_rows_total *= get_parallel_divisor(inner_path);
-
-    /*
-     * Get hash table size that executor would use for inner relation.
-     *
-     * XXX for the moment, always assume that skew optimization will be
-     * performed.  As long as SKEW_HASH_MEM_PERCENT is small, it's not worth
-     * trying to determine that for sure.
-     *
-     * XXX at some point it might be interesting to try to account for skew
-     * optimization in the cost estimate, but for now, we don't.
-     */
-    ExecChooseHashTableSize(
-        inner_path_rows_total,
-        inner_path->pathtarget->width,
-        true, /* useskew */
-        parallel_hash, /* try_combined_hash_mem */
-        outer_path->parallel_workers,
-        &space_allowed,
-        &numbuckets,
-        &numbatches,
-        &num_skew_mcvs
-    );
-
-    /*
-     * If inner relation is too big then we will need to "batch" the join,
-     * which implies writing and reading most of the tuples to disk an extra
-     * time.  Charge seq_page_cost per page, since the I/O should be nice and
-     * sequential.  Writing the inner rel counts as startup cost, all the rest
-     * as run cost.
-     */
-    if (numbatches > 1) {
-        double outerpages = page_size(outer_path_rows,
-                                      outer_path->pathtarget->width);
-        double innerpages = page_size(inner_path_rows,
-                                      inner_path->pathtarget->width);
-
-        startup_cost += seq_page_cost * innerpages;
-        run_cost += seq_page_cost * (innerpages + 2 * outerpages);
+    if (!outer_is_const || !inner_is_const) {
+        Assert(outer_sample_count == inner_sample_count);
     }
 
-    /* CPU costs left for later */
-
+    workspace->sample_count = outer_sample_count;
     /* Public result fields */
-    workspace->startup_cost = startup_cost;
-    workspace->total_cost = startup_cost + run_cost;
+    workspace->startup_cost = 0.0;
+    workspace->total_cost = 0.0;
     /* Save private data for final_cost_hashjoin */
-    workspace->run_cost = run_cost;
-    workspace->numbuckets = numbuckets;
-    workspace->numbatches = numbatches;
-    workspace->inner_rows_total = inner_path_rows_total;
+    workspace->run_cost = 0.0;
+    workspace->numbuckets = 0;
+    workspace->numbatches = 0;
+    workspace->inner_rows_total = 0.0;
+
+    /* ------------------------------- Point-to-Point ------------------------------- */
+    for (int sample_idx = 0; sample_idx < outer_sample_count; ++sample_idx) {
+        const double outer_path_rows
+                = outer_is_const
+                      ? outer_first_rows
+                      : outer_path_rows_sample->sample[sample_idx];
+        const double inner_path_rows
+                = inner_is_const
+                      ? inner_first_rows
+                      : inner_path_rows_sample->sample[sample_idx];
+
+        Cost startup_cost = 0;
+        Cost run_cost = 0;
+        double inner_path_rows_total = inner_path_rows;
+        const int num_hashclauses = list_length(hashclauses);
+        int numbuckets;
+        int numbatches;
+        int num_skew_mcvs;
+        size_t space_allowed; /* unused */
+
+        /* cost of source data */
+        startup_cost += outer_path->startup_cost;
+        run_cost += outer_path->total_cost - outer_path->startup_cost;
+        startup_cost += inner_path->total_cost;
+
+        /*
+         * Cost of computing hash function: must do it once per input tuple. We
+         * charge one cpu_operator_cost for each column's hash function.  Also,
+         * tack on one cpu_tuple_cost per inner row, to model the costs of
+         * inserting the row into the hashtable.
+         *
+         * XXX when a hashclause is more complex than a single operator, we really
+         * should charge the extra eval costs of the left or right side, as
+         * appropriate, here.  This seems more work than it's worth at the moment.
+         */
+        startup_cost += (cpu_operator_cost * num_hashclauses + cpu_tuple_cost)
+                * inner_path_rows;
+        run_cost += cpu_operator_cost * num_hashclauses * outer_path_rows;
+
+        /*
+         * If this is a parallel hash build, then the value we have for
+         * inner_rows_total currently refers only to the rows returned by each
+         * participant.  For shared hash table size estimation, we need the total
+         * number, so we need to undo the division.
+         */
+        if (parallel_hash)
+            inner_path_rows_total *= get_parallel_divisor(inner_path);
+
+        /*
+         * Get hash table size that executor would use for inner relation.
+         *
+         * XXX for the moment, always assume that skew optimization will be
+         * performed.  As long as SKEW_HASH_MEM_PERCENT is small, it's not worth
+         * trying to determine that for sure.
+         *
+         * XXX at some point it might be interesting to try to account for skew
+         * optimization in the cost estimate, but for now, we don't.
+         */
+        ExecChooseHashTableSize(
+            inner_path_rows_total,
+            inner_path->pathtarget->width,
+            true, /* useskew */
+            parallel_hash, /* try_combined_hash_mem */
+            outer_path->parallel_workers,
+            &space_allowed,
+            &numbuckets,
+            &numbatches,
+            &num_skew_mcvs
+        );
+
+        /*
+         * If inner relation is too big then we will need to "batch" the join,
+         * which implies writing and reading most of the tuples to disk an extra
+         * time.  Charge seq_page_cost per page, since the I/O should be nice and
+         * sequential.  Writing the inner rel counts as startup cost, all the rest
+         * as run cost.
+         */
+        if (numbatches > 1) {
+            double outerpages = page_size(outer_path_rows,
+                                          outer_path->pathtarget->width);
+            double innerpages = page_size(inner_path_rows,
+                                          inner_path->pathtarget->width);
+
+            startup_cost += seq_page_cost * innerpages;
+            run_cost += seq_page_cost * (innerpages + 2 * outerpages);
+        }
+
+        /* CPU costs left for later */
+
+        /* Public result fields */
+        workspace->startup_cost_sample[sample_idx] = startup_cost;
+        workspace->total_cost_sample[sample_idx] = startup_cost + run_cost;
+        /* Save private data for final_cost_hashjoin */
+        workspace->run_cost_sample[sample_idx] = run_cost;
+        workspace->numbuckets_sample[sample_idx] = numbuckets;
+        workspace->numbatches_sample[sample_idx] = numbatches;
+        workspace->inner_rows_total_sample[sample_idx] = inner_path_rows_total;
+
+        /* Public result fields */
+        workspace->startup_cost += startup_cost;
+        workspace->total_cost += startup_cost + run_cost;
+        /* Save private data for final_cost_hashjoin */
+        workspace->run_cost += run_cost;
+        workspace->numbuckets += numbuckets;
+        workspace->numbatches += numbatches;
+        workspace->inner_rows_total += inner_path_rows_total;
+    }
+
+    /* ------------------------------- Finalization ------------------------------- */
+    /* Public result fields */
+    workspace->startup_cost /= (double) outer_sample_count;
+    workspace->total_cost /= (double) outer_sample_count;
+    /* Save private data for final_cost_hashjoin */
+    workspace->run_cost /= (double) outer_sample_count;
+    workspace->numbuckets = ceil(workspace->numbuckets / (double) outer_sample_count);
+    workspace->numbatches = pg_nextpower2_32(Max(2, workspace->numbatches / (double) outer_sample_count));
+    workspace->inner_rows_total /= (double) outer_sample_count;
 }
 
 /*
@@ -3868,232 +4042,281 @@ void final_cost_hashjoin(
     JoinCostWorkspace *workspace,
     JoinPathExtraData *extra
 ) {
-    Path *outer_path = path->jpath.outerjoinpath;
-    Path *inner_path = path->jpath.innerjoinpath;
-    double outer_path_rows = outer_path->rows;
-    double inner_path_rows = inner_path->rows;
-    double inner_path_rows_total = workspace->inner_rows_total;
+    /* ------------------------------- Initialization ------------------------------- */
+    const Path *outer_path = path->jpath.outerjoinpath;
+    const Path *inner_path = path->jpath.innerjoinpath;
+    const int workspace_sample_count = workspace->sample_count;
+
+    const Sample *outer_path_rows_sample = outer_path->rows_sample;
+    const Sample *inner_path_rows_sample = inner_path->rows_sample;
+
+    const int outer_sample_count = outer_path_rows_sample->sample_count;
+    const int inner_sample_count = inner_path_rows_sample->sample_count;
+
+    const bool outer_is_const = outer_sample_count == 1;
+    const bool inner_is_const = inner_sample_count == 1;
+    const double outer_first_rows = outer_path_rows_sample->sample[0];
+    const double inner_first_rows = inner_path_rows_sample->sample[0];
+
+    if (!outer_is_const || !inner_is_const) {
+        Assert(outer_sample_count == inner_sample_count);
+    }
+
     List *hashclauses = path->path_hashclauses;
-    Cost startup_cost = workspace->startup_cost;
-    Cost run_cost = workspace->run_cost;
-    int numbuckets = workspace->numbuckets;
-    int numbatches = workspace->numbatches;
-    Cost cpu_per_tuple;
-    QualCost hash_qual_cost;
-    QualCost qp_qual_cost;
-    double hashjointuples;
-    double virtualbuckets;
-    Selectivity innerbucketsize;
-    Selectivity innermcvfreq;
-    ListCell *hcl;
 
     /* Mark the path with the correct row estimate */
-    if (path->jpath.path.param_info)
+    if (path->jpath.path.param_info) {
         path->jpath.path.rows = path->jpath.path.param_info->ppi_rows;
-    else
+        path->jpath.path.rows_sample = duplicate_sample(path->jpath.path.param_info->ppi_rows_sample);
+    } else {
         path->jpath.path.rows = path->jpath.path.parent->rows;
+        path->jpath.path.rows_sample = duplicate_sample(path->jpath.path.parent->rows_sample);
+    }
 
     /* For partial paths, scale row estimate. */
     if (path->jpath.path.parallel_workers > 0) {
-        double parallel_divisor = get_parallel_divisor(&path->jpath.path);
+        const double parallel_divisor = get_parallel_divisor(&path->jpath.path);
 
-        path->jpath.path.rows =
-                clamp_row_est(path->jpath.path.rows / parallel_divisor);
+        path->jpath.path.rows = clamp_row_est(path->jpath.path.rows / parallel_divisor);
+        Sample *new_sample = make_sample_by_scale_factor(
+            path->jpath.path.param_info->ppi_rows_sample, 1.0 / parallel_divisor
+        );
+        pfree(path->jpath.path.rows_sample);
+        path->jpath.path.rows_sample = new_sample;
     }
 
-    /*
-     * We could include disable_cost in the preliminary estimate, but that
-     * would amount to optimizing for the case where the join method is
-     * disabled, which doesn't seem like the way to bet.
-     */
-    if (!enable_hashjoin)
-        startup_cost += disable_cost;
+    /* Initialize the startup and total cost samples */
+    path->jpath.path.startup_cost = 0.0;
+    path->jpath.path.startup_cost_sample = initialize_sample(workspace_sample_count);
+    path->jpath.path.total_cost = 0.0;
+    path->jpath.path.total_cost_sample = initialize_sample(workspace_sample_count);
 
-    /* mark the path with estimated # of batches */
-    path->num_batches = numbatches;
+    /* ------------------------------- Point-to-Point ------------------------------- */
+    for (int sample_idx = 0; sample_idx < workspace_sample_count; ++sample_idx) {
+        const double outer_path_rows
+                = outer_is_const
+                      ? outer_first_rows
+                      : outer_path_rows_sample->sample[sample_idx];
+        const double inner_path_rows
+                = inner_is_const
+                      ? inner_first_rows
+                      : inner_path_rows_sample->sample[sample_idx];
 
-    /* store the total number of tuples (sum of partial row estimates) */
-    path->inner_rows_total = inner_path_rows_total;
+        const double inner_path_rows_total = workspace->inner_rows_total_sample[sample_idx];
+        Cost startup_cost = workspace->startup_cost_sample[sample_idx];
+        Cost run_cost = workspace->run_cost_sample[sample_idx];
+        const int numbuckets = workspace->numbuckets_sample[sample_idx];
+        const int numbatches = workspace->numbatches_sample[sample_idx];
 
-    /* and compute the number of "virtual" buckets in the whole join */
-    virtualbuckets = (double) numbuckets * (double) numbatches;
+        QualCost hash_qual_cost;
+        QualCost qp_qual_cost;
+        double hashjointuples;
+        Selectivity innerbucketsize;
+        Selectivity innermcvfreq;
 
-    /*
-     * Determine bucketsize fraction and MCV frequency for the inner relation.
-     * We use the smallest bucketsize or MCV frequency estimated for any
-     * individual hashclause; this is undoubtedly conservative.
-     *
-     * BUT: if inner relation has been unique-ified, we can assume it's good
-     * for hashing.  This is important both because it's the right answer, and
-     * because we avoid contaminating the cache with a value that's wrong for
-     * non-unique-ified paths.
-     */
-    if (IsA(inner_path, UniquePath)) {
-        innerbucketsize = 1.0 / virtualbuckets;
-        innermcvfreq = 0.0;
-    } else {
-        innerbucketsize = 1.0;
-        innermcvfreq = 1.0;
-        foreach(hcl, hashclauses) {
-            RestrictInfo *restrictinfo = lfirst_node(RestrictInfo, hcl);
-            Selectivity thisbucketsize;
-            Selectivity thismcvfreq;
+        /*
+         * We could include disable_cost in the preliminary estimate, but that
+         * would amount to optimizing for the case where the join method is
+         * disabled, which doesn't seem like the way to bet.
+         */
+        if (!enable_hashjoin)
+            startup_cost += disable_cost;
+
+        /* mark the path with estimated # of batches */
+        path->num_batches = numbatches;
+
+        /* store the total number of tuples (sum of partial row estimates) */
+        path->inner_rows_total = inner_path_rows_total;
+
+        /* and compute the number of "virtual" buckets in the whole join */
+        double virtualbuckets = (double) numbuckets * (double) numbatches;
+
+        /*
+         * Determine bucketsize fraction and MCV frequency for the inner relation.
+         * We use the smallest bucketsize or MCV frequency estimated for any
+         * individual hashclause; this is undoubtedly conservative.
+         *
+         * BUT: if inner relation has been unique-ified, we can assume it's good
+         * for hashing.  This is important both because it's the right answer, and
+         * because we avoid contaminating the cache with a value that's wrong for
+         * non-unique-ified paths.
+         */
+        if (IsA(inner_path, UniquePath)) {
+            innerbucketsize = 1.0 / virtualbuckets;
+            innermcvfreq = 0.0;
+        } else {
+            ListCell *hcl;
+            innerbucketsize = 1.0;
+            innermcvfreq = 1.0;
+            foreach(hcl, hashclauses) {
+                RestrictInfo *restrictinfo = lfirst_node(RestrictInfo, hcl);
+                Selectivity thisbucketsize;
+                Selectivity thismcvfreq;
+
+                /*
+                 * First we have to figure out which side of the hashjoin clause
+                 * is the inner side.
+                 *
+                 * Since we tend to visit the same clauses over and over when
+                 * planning a large query, we cache the bucket stats estimates in
+                 * the RestrictInfo node to avoid repeated lookups of statistics.
+                 */
+                if (bms_is_subset(restrictinfo->right_relids,
+                                  inner_path->parent->relids)) {
+                    /* righthand side is inner */
+                    thisbucketsize = restrictinfo->right_bucketsize;
+                    if (thisbucketsize < 0) {
+                        /* not cached yet */
+                        estimate_hash_bucket_stats(
+                            root,
+                            get_rightop(restrictinfo->clause),
+                            virtualbuckets,
+                            &restrictinfo->right_mcvfreq,
+                            &restrictinfo->right_bucketsize
+                        );
+                        thisbucketsize = restrictinfo->right_bucketsize;
+                    }
+                    thismcvfreq = restrictinfo->right_mcvfreq;
+                } else {
+                    Assert(bms_is_subset(restrictinfo->left_relids,
+                        inner_path->parent->relids));
+                    /* lefthand side is inner */
+                    thisbucketsize = restrictinfo->left_bucketsize;
+                    if (thisbucketsize < 0) {
+                        /* not cached yet */
+                        estimate_hash_bucket_stats(
+                            root,
+                            get_leftop(restrictinfo->clause),
+                            virtualbuckets,
+                            &restrictinfo->left_mcvfreq,
+                            &restrictinfo->left_bucketsize
+                        );
+                        thisbucketsize = restrictinfo->left_bucketsize;
+                    }
+                    thismcvfreq = restrictinfo->left_mcvfreq;
+                }
+
+                if (innerbucketsize > thisbucketsize)
+                    innerbucketsize = thisbucketsize;
+                if (innermcvfreq > thismcvfreq)
+                    innermcvfreq = thismcvfreq;
+            }
+        }
+
+        /*
+         * If the bucket holding the inner MCV would exceed hash_mem, we don't
+         * want to hash unless there is really no other alternative, so apply
+         * disable_cost.  (The executor normally copes with excessive memory usage
+         * by splitting batches, but obviously it cannot separate equal values
+         * that way, so it will be unable to drive the batch size below hash_mem
+         * when this is true.)
+         */
+        if (relation_byte_size(clamp_row_est(inner_path_rows * innermcvfreq),
+                               inner_path->pathtarget->width) > get_hash_memory_limit())
+            startup_cost += disable_cost;
+
+        /*
+         * Compute cost of the hashquals and qpquals (other restriction clauses)
+         * separately.
+         */
+        cost_qual_eval(&hash_qual_cost, hashclauses, root);
+        cost_qual_eval(&qp_qual_cost, path->jpath.joinrestrictinfo, root);
+        qp_qual_cost.startup -= hash_qual_cost.startup;
+        qp_qual_cost.per_tuple -= hash_qual_cost.per_tuple;
+
+        /* CPU costs */
+
+        if (path->jpath.jointype == JOIN_SEMI ||
+            path->jpath.jointype == JOIN_ANTI ||
+            extra->inner_unique) {
+            /*
+             * With a SEMI or ANTI join, or if the innerrel is known unique, the
+             * executor will stop after the first match.
+             *
+             * For an outer-rel row that has at least one match, we can expect the
+             * bucket scan to stop after a fraction 1/(match_count+1) of the
+             * bucket's rows, if the matches are evenly distributed.  Since they
+             * probably aren't quite evenly distributed, we apply a fuzz factor of
+             * 2.0 to that fraction.  (If we used a larger fuzz factor, we'd have
+             * to clamp inner_scan_frac to at most 1.0; but since match_count is
+             * at least 1, no such clamp is needed now.)
+             */
+            const double outer_matched_rows = rint(outer_path_rows * extra->semifactors.outer_match_frac);
+            const Selectivity inner_scan_frac = 2.0 / (extra->semifactors.match_count + 1.0);
+
+            startup_cost += hash_qual_cost.startup;
+            run_cost += hash_qual_cost.per_tuple * outer_matched_rows *
+                    clamp_row_est(inner_path_rows * innerbucketsize * inner_scan_frac) * 0.5;
 
             /*
-             * First we have to figure out which side of the hashjoin clause
-             * is the inner side.
-             *
-             * Since we tend to visit the same clauses over and over when
-             * planning a large query, we cache the bucket stats estimates in
-             * the RestrictInfo node to avoid repeated lookups of statistics.
+             * For unmatched outer-rel rows, the picture is quite a lot different.
+             * In the first place, there is no reason to assume that these rows
+             * preferentially hit heavily-populated buckets; instead assume they
+             * are uncorrelated with the inner distribution and so they see an
+             * average bucket size of inner_path_rows / virtualbuckets.  In the
+             * second place, it seems likely that they will have few if any exact
+             * hash-code matches and so very few of the tuples in the bucket will
+             * actually require eval of the hash quals.  We don't have any good
+             * way to estimate how many will, but for the moment assume that the
+             * effective cost per bucket entry is one-tenth what it is for
+             * matchable tuples.
              */
-            if (bms_is_subset(restrictinfo->right_relids,
-                              inner_path->parent->relids)) {
-                /* righthand side is inner */
-                thisbucketsize = restrictinfo->right_bucketsize;
-                if (thisbucketsize < 0) {
-                    /* not cached yet */
-                    estimate_hash_bucket_stats(root,
-                                               get_rightop(restrictinfo->clause),
-                                               virtualbuckets,
-                                               &restrictinfo->right_mcvfreq,
-                                               &restrictinfo->right_bucketsize);
-                    thisbucketsize = restrictinfo->right_bucketsize;
-                }
-                thismcvfreq = restrictinfo->right_mcvfreq;
-            } else {
-                Assert(bms_is_subset(restrictinfo->left_relids,
-                    inner_path->parent->relids));
-                /* lefthand side is inner */
-                thisbucketsize = restrictinfo->left_bucketsize;
-                if (thisbucketsize < 0) {
-                    /* not cached yet */
-                    estimate_hash_bucket_stats(root,
-                                               get_leftop(restrictinfo->clause),
-                                               virtualbuckets,
-                                               &restrictinfo->left_mcvfreq,
-                                               &restrictinfo->left_bucketsize);
-                    thisbucketsize = restrictinfo->left_bucketsize;
-                }
-                thismcvfreq = restrictinfo->left_mcvfreq;
-            }
+            run_cost += hash_qual_cost.per_tuple *
+                    (outer_path_rows - outer_matched_rows) *
+                    clamp_row_est(inner_path_rows / virtualbuckets) * 0.05;
 
-            if (innerbucketsize > thisbucketsize)
-                innerbucketsize = thisbucketsize;
-            if (innermcvfreq > thismcvfreq)
-                innermcvfreq = thismcvfreq;
+            /* Get # of tuples that will pass the basic join */
+            if (path->jpath.jointype == JOIN_ANTI)
+                hashjointuples = outer_path_rows - outer_matched_rows;
+            else
+                hashjointuples = outer_matched_rows;
+        } else {
+            /*
+             * The number of tuple comparisons needed is the number of outer
+             * tuples times the typical number of tuples in a hash bucket, which
+             * is the inner relation size times its bucketsize fraction.  At each
+             * one, we need to evaluate the hashjoin quals.  But actually,
+             * charging the full qual eval cost at each tuple is pessimistic,
+             * since we don't evaluate the quals unless the hash values match
+             * exactly.  For lack of a better idea, halve the cost estimate to
+             * allow for that.
+             */
+            startup_cost += hash_qual_cost.startup;
+            run_cost += hash_qual_cost.per_tuple * outer_path_rows *
+                    clamp_row_est(inner_path_rows * innerbucketsize) * 0.5;
+
+            /*
+             * Get approx # tuples passing the hashquals.  We use
+             * approx_tuple_count here because we need an estimate done with
+             * JOIN_INNER semantics.
+             */
+            hashjointuples = approx_tuple_count(root, &path->jpath, hashclauses);
         }
+
+        /*
+         * For each tuple that gets through the hashjoin proper, we charge
+         * cpu_tuple_cost plus the cost of evaluating additional restriction
+         * clauses that are to be applied at the join.  (This is pessimistic since
+         * not all of the quals may get evaluated at each tuple.)
+         */
+        startup_cost += qp_qual_cost.startup;
+        const Cost cpu_per_tuple = cpu_tuple_cost + qp_qual_cost.per_tuple;
+        run_cost += cpu_per_tuple * hashjointuples;
+
+        /* tlist eval costs are paid per output row, not per tuple scanned */
+        startup_cost += path->jpath.path.pathtarget->cost.startup;
+        run_cost += path->jpath.path.pathtarget->cost.per_tuple * path->jpath.path.rows;
+
+        path->jpath.path.startup_cost_sample->sample[sample_idx] = startup_cost;
+        path->jpath.path.total_cost_sample->sample[sample_idx] = startup_cost + run_cost;
+
+        path->jpath.path.startup_cost += startup_cost;
+        path->jpath.path.total_cost += startup_cost + run_cost;
     }
 
-    /*
-     * If the bucket holding the inner MCV would exceed hash_mem, we don't
-     * want to hash unless there is really no other alternative, so apply
-     * disable_cost.  (The executor normally copes with excessive memory usage
-     * by splitting batches, but obviously it cannot separate equal values
-     * that way, so it will be unable to drive the batch size below hash_mem
-     * when this is true.)
-     */
-    if (relation_byte_size(clamp_row_est(inner_path_rows * innermcvfreq),
-                           inner_path->pathtarget->width) > get_hash_memory_limit())
-        startup_cost += disable_cost;
-
-    /*
-     * Compute cost of the hashquals and qpquals (other restriction clauses)
-     * separately.
-     */
-    cost_qual_eval(&hash_qual_cost, hashclauses, root);
-    cost_qual_eval(&qp_qual_cost, path->jpath.joinrestrictinfo, root);
-    qp_qual_cost.startup -= hash_qual_cost.startup;
-    qp_qual_cost.per_tuple -= hash_qual_cost.per_tuple;
-
-    /* CPU costs */
-
-    if (path->jpath.jointype == JOIN_SEMI ||
-        path->jpath.jointype == JOIN_ANTI ||
-        extra->inner_unique) {
-        double outer_matched_rows;
-        Selectivity inner_scan_frac;
-
-        /*
-         * With a SEMI or ANTI join, or if the innerrel is known unique, the
-         * executor will stop after the first match.
-         *
-         * For an outer-rel row that has at least one match, we can expect the
-         * bucket scan to stop after a fraction 1/(match_count+1) of the
-         * bucket's rows, if the matches are evenly distributed.  Since they
-         * probably aren't quite evenly distributed, we apply a fuzz factor of
-         * 2.0 to that fraction.  (If we used a larger fuzz factor, we'd have
-         * to clamp inner_scan_frac to at most 1.0; but since match_count is
-         * at least 1, no such clamp is needed now.)
-         */
-        outer_matched_rows = rint(outer_path_rows * extra->semifactors.outer_match_frac);
-        inner_scan_frac = 2.0 / (extra->semifactors.match_count + 1.0);
-
-        startup_cost += hash_qual_cost.startup;
-        run_cost += hash_qual_cost.per_tuple * outer_matched_rows *
-                clamp_row_est(inner_path_rows * innerbucketsize * inner_scan_frac) * 0.5;
-
-        /*
-         * For unmatched outer-rel rows, the picture is quite a lot different.
-         * In the first place, there is no reason to assume that these rows
-         * preferentially hit heavily-populated buckets; instead assume they
-         * are uncorrelated with the inner distribution and so they see an
-         * average bucket size of inner_path_rows / virtualbuckets.  In the
-         * second place, it seems likely that they will have few if any exact
-         * hash-code matches and so very few of the tuples in the bucket will
-         * actually require eval of the hash quals.  We don't have any good
-         * way to estimate how many will, but for the moment assume that the
-         * effective cost per bucket entry is one-tenth what it is for
-         * matchable tuples.
-         */
-        run_cost += hash_qual_cost.per_tuple *
-                (outer_path_rows - outer_matched_rows) *
-                clamp_row_est(inner_path_rows / virtualbuckets) * 0.05;
-
-        /* Get # of tuples that will pass the basic join */
-        if (path->jpath.jointype == JOIN_ANTI)
-            hashjointuples = outer_path_rows - outer_matched_rows;
-        else
-            hashjointuples = outer_matched_rows;
-    } else {
-        /*
-         * The number of tuple comparisons needed is the number of outer
-         * tuples times the typical number of tuples in a hash bucket, which
-         * is the inner relation size times its bucketsize fraction.  At each
-         * one, we need to evaluate the hashjoin quals.  But actually,
-         * charging the full qual eval cost at each tuple is pessimistic,
-         * since we don't evaluate the quals unless the hash values match
-         * exactly.  For lack of a better idea, halve the cost estimate to
-         * allow for that.
-         */
-        startup_cost += hash_qual_cost.startup;
-        run_cost += hash_qual_cost.per_tuple * outer_path_rows *
-                clamp_row_est(inner_path_rows * innerbucketsize) * 0.5;
-
-        /*
-         * Get approx # tuples passing the hashquals.  We use
-         * approx_tuple_count here because we need an estimate done with
-         * JOIN_INNER semantics.
-         */
-        hashjointuples = approx_tuple_count(root, &path->jpath, hashclauses);
-    }
-
-    /*
-     * For each tuple that gets through the hashjoin proper, we charge
-     * cpu_tuple_cost plus the cost of evaluating additional restriction
-     * clauses that are to be applied at the join.  (This is pessimistic since
-     * not all of the quals may get evaluated at each tuple.)
-     */
-    startup_cost += qp_qual_cost.startup;
-    cpu_per_tuple = cpu_tuple_cost + qp_qual_cost.per_tuple;
-    run_cost += cpu_per_tuple * hashjointuples;
-
-    /* tlist eval costs are paid per output row, not per tuple scanned */
-    startup_cost += path->jpath.path.pathtarget->cost.startup;
-    run_cost += path->jpath.path.pathtarget->cost.per_tuple * path->jpath.path.rows;
-
-    path->jpath.path.startup_cost = startup_cost;
-    path->jpath.path.total_cost = startup_cost + run_cost;
+    /* ------------------------------- Finalization ------------------------------- */
+    path->jpath.path.startup_cost /= (double) workspace_sample_count;
+    path->jpath.path.total_cost /= (double) workspace_sample_count;
 }
 
 

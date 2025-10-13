@@ -1639,7 +1639,11 @@ typedef struct Path
 
 	/* sort ordering of path's output; a List of PathKey nodes; see above */
 	List	   *pathkeys;
+
+	/* rows, startup cost and total cost samples of the path */
 	Sample     *rows_sample pg_node_attr(read_write_ignore);
+	Sample     *startup_cost_sample pg_node_attr(read_write_ignore);
+	Sample     *total_cost_sample pg_node_attr(read_write_ignore);
 } Path;
 
 /* Macro for extracting a path's parameterization relids; beware double eval */
@@ -3314,6 +3318,7 @@ typedef struct JoinCostWorkspace
 	Cardinality inner_rows_total;
 
 	/* ------------------------------- Samples ------------------------------- */
+	int			sample_count;
 	/* Preliminary cost estimates --- must not be larger than final ones! */
 	Cost		startup_cost_sample[JCW_MAX_SAMPLE];	/* cost expended before fetching any tuples */
 	Cost		total_cost_sample[JCW_MAX_SAMPLE];		/* total cost (assuming all tuples fetched) */
