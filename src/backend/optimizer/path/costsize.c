@@ -433,11 +433,20 @@ void cost_samplescan(Path *path, PlannerInfo *root,
  * both 'rel' and 'param_info'.  This is useful when the path doesn't exactly
  * correspond to any particular RelOptInfo.
  */
-void cost_gather(GatherPath *path, PlannerInfo *root,
-                 RelOptInfo *rel, ParamPathInfo *param_info,
-                 double *rows) {
-    Cost startup_cost = 0;
-    Cost run_cost = 0;
+void cost_gather(
+    GatherPath *path, PlannerInfo *root,
+    const RelOptInfo *rel, const ParamPathInfo *param_info,
+    const double *rows
+) {
+    /* ------------------------------- Initialization ------------------------------- */
+    // FIXME: Check the pathtype
+    const Sample *path_rows_sample =
+            IsA(&path->path, IndexPath)
+                ? ((IndexPath *) &path->path)->path.rows_sample
+                : path->path.rows_sample;
+    const int path_rows_sample_count = path_rows_sample->sample_count;
+    const bool path_rows_is_const = path_rows_sample_count == 1;
+    const double path_rows_first_rows = path_rows_sample->sample[0];
 
     /* Mark the path with the correct row estimate */
     if (rows) {
@@ -451,16 +460,41 @@ void cost_gather(GatherPath *path, PlannerInfo *root,
         path->path.rows_sample = rel->rows_sample;
     }
 
-    startup_cost = path->subpath->startup_cost;
+    path->path.startup_cost = 0.0;
+    path->path.total_cost = 0.0;
 
-    run_cost = path->subpath->total_cost - path->subpath->startup_cost;
+    const Sample *startup_cost_sample = path->subpath->startup_cost_sample;
+    const Sample *total_cost_sample = path->subpath->total_cost_sample;
 
-    /* Parallel setup and communication cost. */
-    startup_cost += parallel_setup_cost;
-    run_cost += parallel_tuple_cost * path->path.rows;
+    const int startup_cost_sample_count = startup_cost_sample->sample_count;
+    const int total_cost_sample_count = total_cost_sample->sample_count;
+    Assert(startup_cost_sample_count == total_cost_sample_count);
 
-    path->path.startup_cost = startup_cost;
-    path->path.total_cost = (startup_cost + run_cost);
+    /* ------------------------------- Point-to-Point ------------------------------- */
+    for (int sample_idx = 0; sample_idx < startup_cost_sample_count; ++sample_idx) {
+        const double path_rows
+                = path_rows_is_const
+                      ? path_rows_first_rows
+                      : path_rows_sample->sample[sample_idx];
+
+        Cost startup_cost = path->subpath->startup_cost_sample->sample[sample_idx];
+        const Cost total_cost = path->subpath->total_cost_sample->sample[sample_idx];
+        Cost run_cost = total_cost - startup_cost;
+
+        /* Parallel setup and communication cost. */
+        startup_cost += parallel_setup_cost;
+        run_cost += parallel_tuple_cost * path_rows;
+
+        path->path.startup_cost_sample->sample[sample_idx] = startup_cost;
+        path->path.total_cost_sample->sample[sample_idx] = startup_cost + run_cost;
+
+        path->path.startup_cost += startup_cost;
+        path->path.total_cost += startup_cost + run_cost;
+    }
+
+    /* ------------------------------- Finalization ------------------------------- */
+    path->path.startup_cost /= (double) startup_cost_sample_count;
+    path->path.total_cost /= (double) startup_cost_sample_count;
 }
 
 /*
@@ -473,15 +507,21 @@ void cost_gather(GatherPath *path, PlannerInfo *root,
  * startup, and then for each output tuple, about log2(N) comparisons to
  * replace the top heap entry with the next tuple from the same stream.
  */
-void cost_gather_merge(GatherMergePath *path, PlannerInfo *root,
-                       RelOptInfo *rel, ParamPathInfo *param_info,
-                       Cost input_startup_cost, Cost input_total_cost,
-                       double *rows) {
-    Cost startup_cost = 0;
-    Cost run_cost = 0;
-    Cost comparison_cost;
-    double N;
-    double logN;
+void cost_gather_merge(
+    GatherMergePath *path, PlannerInfo *root,
+    const RelOptInfo *rel, const ParamPathInfo *param_info,
+    const Cost input_startup_cost, const Cost input_total_cost,
+    const double *rows
+) {
+    /* ------------------------------- Initialization ------------------------------- */
+    // FIXME: Check the pathtype
+    const Sample *path_rows_sample =
+            IsA(&path->path, IndexPath)
+                ? ((IndexPath *) &path->path)->path.rows_sample
+                : path->path.rows_sample;
+    const int path_rows_sample_count = path_rows_sample->sample_count;
+    const bool path_rows_is_const = path_rows_sample_count == 1;
+    const double path_rows_first_rows = path_rows_sample->sample[0];
 
     /* Mark the path with the correct row estimate */
     if (rows) {
@@ -495,41 +535,69 @@ void cost_gather_merge(GatherMergePath *path, PlannerInfo *root,
         path->path.rows_sample = rel->rows_sample;
     }
 
-    if (!enable_gathermerge)
-        startup_cost += disable_cost;
+    path->path.startup_cost = 0.0;
+    path->path.total_cost = 0.0;
 
-    /*
-     * Add one to the number of workers to account for the leader.  This might
-     * be overgenerous since the leader will do less work than other workers
-     * in typical cases, but we'll go with it for now.
-     */
-    Assert(path->num_workers > 0);
-    N = (double) path->num_workers + 1;
-    logN = LOG2(N);
+    const Sample *startup_cost_sample = path->subpath->startup_cost_sample;
+    const Sample *total_cost_sample = path->subpath->total_cost_sample;
 
-    /* Assumed cost per tuple comparison */
-    comparison_cost = 2.0 * cpu_operator_cost;
+    const int startup_cost_sample_count = startup_cost_sample->sample_count;
+    const int total_cost_sample_count = total_cost_sample->sample_count;
+    Assert(startup_cost_sample_count == total_cost_sample_count);
 
-    /* Heap creation cost */
-    startup_cost += comparison_cost * N * logN;
+    /* ------------------------------- Point-to-Point ------------------------------- */
+    for (int sample_idx = 0; sample_idx < startup_cost_sample_count; ++sample_idx) {
+        const double path_rows
+                = path_rows_is_const
+                      ? path_rows_first_rows
+                      : path_rows_sample->sample[sample_idx];
 
-    /* Per-tuple heap maintenance cost */
-    run_cost += path->path.rows * comparison_cost * logN;
+        Cost startup_cost = 0;
+        Cost run_cost = 0;
 
-    /* small cost for heap management, like cost_merge_append */
-    run_cost += cpu_operator_cost * path->path.rows;
+        if (!enable_gathermerge)
+            startup_cost += disable_cost;
 
-    /*
-     * Parallel setup and communication cost.  Since Gather Merge, unlike
-     * Gather, requires us to block until a tuple is available from every
-     * worker, we bump the IPC cost up a little bit as compared with Gather.
-     * For lack of a better idea, charge an extra 5%.
-     */
-    startup_cost += parallel_setup_cost;
-    run_cost += parallel_tuple_cost * path->path.rows * 1.05;
+        /*
+         * Add one to the number of workers to account for the leader.  This might
+         * be overgenerous since the leader will do less work than other workers
+         * in typical cases, but we'll go with it for now.
+         */
+        Assert(path->num_workers > 0);
+        const double N = (double) path->num_workers + 1;
+        const double logN = LOG2(N);
 
-    path->path.startup_cost = startup_cost + input_startup_cost;
-    path->path.total_cost = (startup_cost + run_cost + input_total_cost);
+        /* Assumed cost per tuple comparison */
+        const Cost comparison_cost = 2.0 * cpu_operator_cost;
+
+        /* Heap creation cost */
+        startup_cost += comparison_cost * N * logN;
+
+        /* Per-tuple heap maintenance cost */
+        run_cost += path_rows * comparison_cost * logN;
+
+        /* small cost for heap management, like cost_merge_append */
+        run_cost += cpu_operator_cost * path_rows;
+
+        /*
+         * Parallel setup and communication cost.  Since Gather Merge, unlike
+         * Gather, requires us to block until a tuple is available from every
+         * worker, we bump the IPC cost up a little bit as compared with Gather.
+         * For lack of a better idea, charge an extra 5%.
+         */
+        startup_cost += parallel_setup_cost;
+        run_cost += parallel_tuple_cost * path->path.rows * 1.05;
+
+        path->path.startup_cost_sample->sample[sample_idx] = startup_cost + input_startup_cost;
+        path->path.total_cost_sample->sample[sample_idx] = startup_cost + run_cost + input_total_cost;
+
+        path->path.startup_cost += startup_cost + input_startup_cost;
+        path->path.total_cost += startup_cost + run_cost + input_total_cost;
+    }
+
+    /* ------------------------------- Finalization ------------------------------- */
+    path->path.startup_cost /= (double) startup_cost_sample_count;
+    path->path.total_cost /= (double) startup_cost_sample_count;
 }
 
 /*

@@ -168,11 +168,11 @@ extern void final_cost_hashjoin(PlannerInfo *root, HashPath *path,
 								JoinCostWorkspace *workspace,
 								JoinPathExtraData *extra);
 extern void cost_gather(GatherPath *path, PlannerInfo *root,
-						RelOptInfo *rel, ParamPathInfo *param_info, double *rows);
+						const RelOptInfo *rel, const ParamPathInfo *param_info, const double *rows);
 extern void cost_gather_merge(GatherMergePath *path, PlannerInfo *root,
-							  RelOptInfo *rel, ParamPathInfo *param_info,
+							  const RelOptInfo *rel, const ParamPathInfo *param_info,
 							  Cost input_startup_cost, Cost input_total_cost,
-							  double *rows);
+							  const double *rows);
 extern void cost_subplan(PlannerInfo *root, SubPlan *subplan, Plan *plan);
 extern void cost_qual_eval(QualCost *cost, List *quals, PlannerInfo *root);
 extern void cost_qual_eval_node(QualCost *cost, Node *qual, PlannerInfo *root);
