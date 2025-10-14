@@ -3232,111 +3232,149 @@ void cost_group(
 void initial_cost_nestloop(
     PlannerInfo *root,
     JoinCostWorkspace *workspace,
-    JoinType jointype,
+    const JoinType jointype,
     Path *outer_path,
     Path *inner_path,
-    JoinPathExtraData *extra
+    const JoinPathExtraData *extra
 ) {
-    /* ------------------------------- Initialization ------------------------------- */
-    // FIXME: Check the pathtype
-    const Sample *outer_path_rows_sample =
-            IsA(outer_path, IndexPath)
-                ? ((IndexPath *) outer_path)->path.rows_sample
-                : outer_path->rows_sample;
-    const int outer_sample_count = outer_path_rows_sample->sample_count;
-    const bool outer_is_const = outer_sample_count == 1;
-    const double outer_first_rows = outer_path_rows_sample->sample[0];
+    /* ------------------------------- 1) Resolve samples & loop count ------------------------------- */
+    const Sample *outer_rows_samp =
+    (IsA(outer_path, IndexPath)
+         ? ((IndexPath *) outer_path)->path.rows_sample
+         : outer_path->rows_sample);
+    const Sample *inner_rows_samp =
+    (IsA(inner_path, IndexPath)
+         ? ((IndexPath *) inner_path)->path.rows_sample
+         : inner_path->rows_sample);
 
-    workspace->sample_count = outer_sample_count;
-    /* Public result fields */
+    const Sample *outer_startup_samp =
+    (IsA(outer_path, IndexPath)
+         ? ((IndexPath *) outer_path)->path.startup_cost_sample
+         : outer_path->startup_cost_sample);
+    const Sample *outer_total_samp =
+    (IsA(outer_path, IndexPath)
+         ? ((IndexPath *) outer_path)->path.total_cost_sample
+         : outer_path->total_cost_sample);
+
+    const Sample *inner_startup_samp =
+    (IsA(inner_path, IndexPath)
+         ? ((IndexPath *) inner_path)->path.startup_cost_sample
+         : inner_path->startup_cost_sample);
+    const Sample *inner_total_samp =
+    (IsA(inner_path, IndexPath)
+         ? ((IndexPath *) inner_path)->path.total_cost_sample
+         : inner_path->total_cost_sample);
+
+    const int outer_sc = (outer_rows_samp ? outer_rows_samp->sample_count : 0);
+    const int inner_sc = (inner_rows_samp ? inner_rows_samp->sample_count : 0);
+    const bool outer_is_const = (outer_sc <= 1);
+    const bool inner_is_const = (inner_sc <= 1);
+
+    /* Decide loop sample_count: if both have N>1, require same N; otherwise use the non-1 side. */
+    int sample_count = 1;
+    if (!outer_is_const && !inner_is_const) {
+        Assert(outer_sc == inner_sc);
+        sample_count = outer_sc;
+    } else if (!outer_is_const) {
+        sample_count = outer_sc;
+    } else if (!inner_is_const) {
+        sample_count = inner_sc;
+    } else {
+        sample_count = 1;
+    }
+
+    workspace->sample_count = sample_count;
+
+    /* ------------------------------- 2) Init accumulators & private fields ------------------------------- */
     workspace->startup_cost = 0.0;
     workspace->total_cost = 0.0;
-    /* Save private data for final_cost_nestloop */
+
     workspace->run_cost = 0.0;
     workspace->inner_run_cost = 0.0;
     workspace->inner_rescan_run_cost = 0.0;
 
-    /* ------------------------------- Common Process ------------------------------- */
-    Cost inner_rescan_start_cost;
-    Cost inner_rescan_total_cost;
+    /* ------------------------------- 3) Inner rescan costs (scalar, phase-1 LB) ------------------------------- */
+    /*
+     * cost_rescan currently returns scalar start/total costs.  We use them for
+     * all samples as a conservative lower bound (do not overestimate in phase-1).
+     */
+    Cost inner_rescan_start_cost = 0.0;
+    Cost inner_rescan_total_cost = 0.0;
 
-    /* cost of source data */
-    /* estimate costs to rescan the inner relation */
     cost_rescan(root, inner_path,
                 &inner_rescan_start_cost,
                 &inner_rescan_total_cost);
 
-    /* ------------------------------- Point-to-Point ------------------------------- */
-    for (int sample_idx = 0; sample_idx < outer_sample_count; ++sample_idx) {
-        const double outer_path_rows
-                = outer_is_const
-                      ? outer_first_rows
-                      : outer_path_rows_sample->sample[sample_idx];
+    const Cost inner_rescan_run_cost_scalar =
+            (inner_rescan_total_cost - inner_rescan_start_cost);
 
-        Cost startup_cost = 0;
-        Cost run_cost = 0;
+    /* ------------------------------- 4) Per-sample evaluation ------------------------------- */
+    for (int i = 0; i < sample_count; ++i) {
+        /* 4.1) Rows per sample (guard against <= 0) */
+        double outer_rows_i = GET_ROW(outer_rows_samp, i, outer_path->rows, outer_is_const);
+        if (outer_rows_i <= 0) outer_rows_i = 1;
 
-        /*
-         * NOTE: clearly, we must pay both outer and inner paths' startup_cost
-         * before we can start returning tuples, so the join's startup cost is
-         * their sum.  We'll also pay the inner path's rescan startup cost
-         * multiple times.
-         */
-        startup_cost += outer_path->startup_cost + inner_path->startup_cost;
-        run_cost += outer_path->total_cost - outer_path->startup_cost;
-        if (outer_path_rows > 1)
-            run_cost += (outer_path_rows - 1) * inner_rescan_start_cost;
+        /* 4.2) Per-sample input costs */
+        const Cost outer_startup_i = GET_COST(outer_startup_samp, i, outer_path->startup_cost, outer_is_const);
+        const Cost outer_total_i = GET_COST(outer_total_samp, i, outer_path->total_cost, outer_is_const);
 
-        const Cost inner_run_cost = inner_path->total_cost - inner_path->startup_cost;
-        const Cost inner_rescan_run_cost = inner_rescan_total_cost - inner_rescan_start_cost;
+        const Cost inner_startup_i = GET_COST(inner_startup_samp, i, inner_path->startup_cost, inner_is_const);
+        const Cost inner_total_i = GET_COST(inner_total_samp, i, inner_path->total_cost, inner_is_const);
 
-        if (jointype == JOIN_SEMI || jointype == JOIN_ANTI
-            || extra->inner_unique) {
+        /* 4.3) Phase-1 startup/run base (as in upstream semantics) */
+        Cost startup_cost = 0.0;
+        Cost run_cost = 0.0;
+
+        /* Must pay both sides' startup before producing tuples. */
+        startup_cost += outer_startup_i + inner_startup_i;
+
+        /* Outer scan run part (always paid). */
+        run_cost += (outer_total_i - outer_startup_i);
+
+        /* Inner rescan startup part for (outer_rows_i - 1) rescans (if any). */
+        if (outer_rows_i > 1)
+            run_cost += (outer_rows_i - 1) * inner_rescan_start_cost;
+
+        /* Inner side run parts (handled differently per join type/uniqueness). */
+        const Cost inner_run_cost_i = (inner_total_i - inner_startup_i);
+        const Cost inner_rescan_run_cost_i = inner_rescan_run_cost_scalar;
+
+        if (jointype == JOIN_SEMI || jointype == JOIN_ANTI || extra->inner_unique) {
             /*
-             * With a SEMI or ANTI join, or if the innerrel is known unique, the
-             * executor will stop after the first match.
-             *
-             * Getting decent estimates requires inspection of the join quals,
-             * which we choose to postpone to final_cost_nestloop.
+             * For SEMI/ANTI or known-unique inner, executor stops at first match.
+             * We defer detailed CPU/qual-based estimation to final_cost_nestloop.
+             * Phase-1 stores inner costs for phase-2 but does not add them to run_cost.
              */
+            workspace->inner_run_cost_sample[i] = inner_run_cost_i;
+            workspace->inner_rescan_run_cost_sample[i] = inner_rescan_run_cost_i;
 
-            /* Save private data for final_cost_nestloop */
-            workspace->inner_run_cost_sample[sample_idx] = inner_run_cost;
-            workspace->inner_rescan_run_cost_sample[sample_idx] = inner_rescan_run_cost;
-
-            /* Save private data for final_cost_nestloop */
-            workspace->inner_run_cost += inner_run_cost;
-            workspace->inner_rescan_run_cost += inner_rescan_run_cost;
+            workspace->inner_run_cost += inner_run_cost_i;
+            workspace->inner_rescan_run_cost += inner_rescan_run_cost_i;
         } else {
-            /* Normal case; we'll scan whole input rel for each outer row */
-            run_cost += inner_run_cost;
-            if (outer_path_rows > 1)
-                run_cost += (outer_path_rows - 1) * inner_rescan_run_cost;
+            /* Normal case: scan full inner for each outer row (with rescans). */
+            run_cost += inner_run_cost_i;
+            if (outer_rows_i > 1)
+                run_cost += (outer_rows_i - 1) * inner_rescan_run_cost_i;
         }
 
-        /* CPU costs left for later */
+        /* 4.4) Record per-sample lower bounds, accumulate scalars */
+        workspace->startup_cost_sample[i] = startup_cost;
+        workspace->total_cost_sample[i] = startup_cost + run_cost;
+        workspace->run_cost_sample[i] = run_cost;
 
-        /* Public result fields */
-        workspace->startup_cost_sample[sample_idx] = startup_cost;
-        workspace->total_cost_sample[sample_idx] = startup_cost + run_cost;
-        /* Save private data for final_cost_nestloop */
-        workspace->run_cost_sample[sample_idx] = run_cost;
-
-        /* Public result fields */
         workspace->startup_cost += startup_cost;
         workspace->total_cost += startup_cost + run_cost;
-        /* Save private data for final_cost_nestloop */
         workspace->run_cost += run_cost;
     }
 
-    /* ------------------------------- Finalization ------------------------------- */
-    /* Public result fields */
-    workspace->startup_cost /= (double) outer_sample_count;
-    workspace->total_cost /= (double) outer_sample_count;
-    /* Save private data for final_cost_nestloop */
-    workspace->run_cost /= (double) outer_sample_count;
-    workspace->inner_run_cost /= (double) outer_sample_count;
-    workspace->inner_rescan_run_cost /= (double) outer_sample_count;
+    /* ------------------------------- 5) Finalize scalar lower bounds (means) ------------------------------- */
+    const double invN = 1.0 / (double) sample_count;
+
+    workspace->startup_cost *= invN;
+    workspace->total_cost *= invN;
+    workspace->run_cost *= invN;
+    workspace->inner_run_cost *= invN;
+    workspace->inner_rescan_run_cost *= invN;
 }
 
 /*
@@ -3625,8 +3663,10 @@ void initial_cost_mergejoin(
     JoinCostWorkspace *workspace,
     JoinType jointype,
     List *mergeclauses,
-    Path *outer_path, Path *inner_path,
-    List *outersortkeys, List *innersortkeys,
+    Path *outer_path,
+    Path *inner_path,
+    List *outersortkeys,
+    List *innersortkeys,
     JoinPathExtraData *extra
 ) {
     /* ----------------------------------------------------------------------
@@ -3649,11 +3689,16 @@ void initial_cost_mergejoin(
 
     /* Decide loop sample_count: if both have N>1, require same N; otherwise use the non-1 side. */
     int sample_count = 1;
-    if (!outer_is_const && !inner_is_const)
-        Assert(outer_sc == inner_sc), sample_count = outer_sc;
-    else if (!outer_is_const) sample_count = outer_sc;
-    else if (!inner_is_const) sample_count = inner_sc;
-    else sample_count = 1; /* both const/scalar */
+    if (!outer_is_const && !inner_is_const) {
+        Assert(outer_sc == inner_sc);
+        sample_count = outer_sc;
+    } else if (!outer_is_const) {
+        sample_count = outer_sc;
+    } else if (!inner_is_const) {
+        sample_count = inner_sc;
+    } else {
+        sample_count = 1; /* both const/scalar */
+    }
 
     workspace->sample_count = sample_count;
 
@@ -4325,16 +4370,18 @@ void initial_cost_hashjoin(
     const bool outer_is_const = (outer_sc <= 1);
     const bool inner_is_const = (inner_sc <= 1);
 
+    /* Decide loop sample_count: if both have N>1, require same N; otherwise use the non-1 side. */
     int sample_count = 1;
     if (!outer_is_const && !inner_is_const) {
         Assert(outer_sc == inner_sc);
         sample_count = outer_sc;
-    } else if (!outer_is_const)
+    } else if (!outer_is_const) {
         sample_count = outer_sc;
-    else if (!inner_is_const)
+    } else if (!inner_is_const) {
         sample_count = inner_sc;
-    else
+    } else {
         sample_count = 1;
+    }
 
     workspace->sample_count = sample_count;
 
