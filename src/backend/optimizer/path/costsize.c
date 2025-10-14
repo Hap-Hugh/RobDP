@@ -3387,7 +3387,7 @@ void initial_cost_nestloop(
  */
 void final_cost_nestloop(
     PlannerInfo *root, NestPath *path,
-    const JoinCostWorkspace *workspace,
+    JoinCostWorkspace *workspace,
     const JoinPathExtraData *extra
 ) {
     /* ------------------------------- 1) Resolve paths & samples ------------------------------- */
@@ -3438,6 +3438,14 @@ void final_cost_nestloop(
     path->jpath.path.startup_cost_sample = initialize_sample(sample_count);
     path->jpath.path.total_cost = 0.0;
     path->jpath.path.total_cost_sample = initialize_sample(sample_count);
+
+    /* Optional: match original behavior of penalizing when nestloop is disabled. */
+    if (!enable_nestloop) {
+        workspace->startup_cost += disable_cost;
+        for (int i = 0; i < sample_count; ++i) {
+            workspace->startup_cost_sample[i] += disable_cost;
+        }
+    }
 
     /* ------------------------------- 3) Qual/tlist costs (sample-invariant) ------------------------------- */
     QualCost rq_cost;
