@@ -276,104 +276,197 @@ long clamp_cardinality_to_long(Cardinality x) {
     return (x < (double) LONG_MAX) ? (long) x : LONG_MAX;
 }
 
-
 /*
  * cost_seqscan
- *	  Determines and returns the cost of scanning a relation sequentially.
+ *   Determine and return the cost of scanning a relation sequentially.
  *
- * 'baserel' is the relation to be scanned
- * 'param_info' is the ParamPathInfo if this is a parameterized path, else NULL
+ * This version extends the classic PostgreSQL logic by supporting
+ * per-sample distributions for rows and costs while keeping semantics
+ * consistent, especially under parallelism (rows represent per-worker rows).
  */
-void cost_seqscan(Path *path, PlannerInfo *root,
-                  RelOptInfo *baserel, ParamPathInfo *param_info) {
-    /* ------------------------------- Initialization ------------------------------- */
-    /* Should only be applied to base relations */
+void cost_seqscan(
+    Path *path, PlannerInfo *root,
+    RelOptInfo *baserel, ParamPathInfo *param_info
+) {
+    /* ----------------------------------------------------------------------
+     * 0) Preconditions & invariants
+     * ----------------------------------------------------------------------
+     * This costing function applies only to base relations.
+     */
     Assert(baserel->relid > 0);
     Assert(baserel->rtekind == RTE_RELATION);
 
-    /* Mark the path with the correct row estimate */
+    /* ----------------------------------------------------------------------
+     * 1) Resolve base estimates and (optionally) sample distributions
+     * ----------------------------------------------------------------------
+     * Set the point estimate for rows (original behavior), and attempt
+     * to obtain a per-sample distribution if available. We never mutate
+     * the input distribution in-place.
+     */
     if (param_info) {
         path->rows = param_info->ppi_rows;
-        path->rows_sample = duplicate_sample(path->param_info->ppi_rows_sample);
+        path->rows_sample = duplicate_sample(param_info->ppi_rows_sample); /* may return NULL */
     } else {
         path->rows = baserel->rows;
-        path->rows_sample = duplicate_sample(baserel->rows_sample);
+        path->rows_sample = duplicate_sample(baserel->rows_sample); /* may return NULL */
     }
 
-    /* Initialize the startup and total cost samples */
-    const int sample_count = path->rows_sample->sample_count;
-    // FIXME: Is this correct?
-    path->rows = 0.0;
-    path->startup_cost = 0.0;
-    path->startup_cost_sample = initialize_sample(sample_count);
-    path->total_cost = 0.0;
-    path->total_cost_sample = initialize_sample(sample_count);
-
-    /* ------------------------------- Point-to-Point ------------------------------- */
-    for (int sample_idx = 0; sample_idx < sample_count; ++sample_idx) {
-        const double path_rows = path->rows_sample->sample[sample_idx];
-
+    /* ----------------------------------------------------------------------
+     * 2) Degenerate path: no samples -> fall back to classic single-point
+     * ----------------------------------------------------------------------
+     * If there is no sample distribution, compute costs exactly as the
+     * upstream PostgreSQL version does (keeping semantics identical).
+     */
+    if (path->rows_sample == NULL || path->rows_sample->sample_count <= 0) {
         Cost startup_cost = 0;
+        Cost cpu_run_cost;
+        Cost disk_run_cost;
         double spc_seq_page_cost;
         QualCost qpqual_cost;
+        Cost cpu_per_tuple;
 
         if (!enable_seqscan)
             startup_cost += disable_cost;
 
-        /* fetch estimated page cost for tablespace containing table */
-        get_tablespace_page_costs(baserel->reltablespace,
-                                  NULL,
-                                  &spc_seq_page_cost);
+        /* Fetch estimated page cost for the tablespace containing the table. */
+        get_tablespace_page_costs(
+            baserel->reltablespace,
+            NULL,
+            &spc_seq_page_cost
+        );
 
-        /*
-         * disk costs
-         */
-        const Cost disk_run_cost = spc_seq_page_cost * baserel->pages;
+        /* Disk costs. */
+        disk_run_cost = spc_seq_page_cost * baserel->pages;
 
-        /* CPU costs */
+        /* CPU costs (restriction quals). */
         get_restriction_qual_cost(root, baserel, param_info, &qpqual_cost);
-
         startup_cost += qpqual_cost.startup;
-        const Cost cpu_per_tuple = cpu_tuple_cost + qpqual_cost.per_tuple;
-        Cost cpu_run_cost = cpu_per_tuple * baserel->tuples;
-        /* tlist eval costs are paid per output row, not per tuple scanned */
+        cpu_per_tuple = cpu_tuple_cost + qpqual_cost.per_tuple;
+
+        /* CPU run cost for scanning all tuples. */
+        cpu_run_cost = cpu_per_tuple * baserel->tuples;
+
+        /* Target list eval costs are per output row. */
         startup_cost += path->pathtarget->cost.startup;
-        cpu_run_cost += path->pathtarget->cost.per_tuple * path_rows;
+        cpu_run_cost += path->pathtarget->cost.per_tuple * path->rows;
 
-        /* Adjust costing for parallelism, if used. */
+        /* Parallel adjustment (keep original semantics: rows become per-worker). */
         if (path->parallel_workers > 0) {
-            const double parallel_divisor = get_parallel_divisor(path);
+            double parallel_divisor = get_parallel_divisor(path);
 
-            /* The CPU cost is divided among all the workers. */
             cpu_run_cost /= parallel_divisor;
-
-            /*
-             * It may be possible to amortize some of the I/O cost, but probably
-             * not very much, because most operating systems already do aggressive
-             * prefetching.  For now, we assume that the disk run cost can't be
-             * amortized at all.
-             */
-
-            /*
-             * In the case of a parallel plan, the row count needs to represent
-             * the number of tuples processed per worker.
-             */
-            path->rows_sample->sample[sample_idx] = clamp_row_est(path_rows / parallel_divisor);
+            path->rows = clamp_row_est(path->rows / parallel_divisor);
         }
 
-        path->rows += path->rows_sample->sample[sample_idx];
-
-        path->startup_cost_sample->sample[sample_idx] = startup_cost;
-        path->total_cost_sample->sample[sample_idx] = startup_cost + cpu_run_cost + disk_run_cost;
-
-        path->startup_cost += startup_cost;
-        path->total_cost += startup_cost + cpu_run_cost + disk_run_cost;
+        path->startup_cost = startup_cost;
+        path->total_cost = startup_cost + cpu_run_cost + disk_run_cost;
+        return;
     }
 
-    /* ------------------------------- Finalization ------------------------------- */
-    path->rows /= (double) sample_count;
-    path->startup_cost /= (double) sample_count;
-    path->total_cost /= (double) sample_count;
+    /* ----------------------------------------------------------------------
+     * 3) Allocate per-sample outputs and initialize accumulators
+     * ----------------------------------------------------------------------
+     * We compute startup/total costs per sample, then average for the
+     * scalar fields to remain backward-compatible with callers that
+     * only read the scalar costs. We also average per-worker rows.
+     */
+    const int sample_count = path->rows_sample->sample_count;
+    Assert(sample_count > 0);
+
+    path->startup_cost_sample = initialize_sample(sample_count);
+    path->total_cost_sample = initialize_sample(sample_count);
+
+    double rows_accum = 0.0; /* per-worker rows average accumulator */
+    Cost startup_accum = 0.0; /* startup cost average accumulator     */
+    Cost total_accum = 0.0; /* total cost average accumulator       */
+
+    /* ----------------------------------------------------------------------
+     * 4) Precompute terms that do not vary across samples
+     * ----------------------------------------------------------------------
+     * This reduces overhead and avoids subtle inconsistencies.
+     */
+    Cost startup_cost_bias = 0;
+    if (!enable_seqscan)
+        startup_cost_bias += disable_cost;
+
+    double spc_seq_page_cost;
+    get_tablespace_page_costs(baserel->reltablespace, NULL, &spc_seq_page_cost);
+    const Cost disk_run_cost = spc_seq_page_cost * baserel->pages;
+
+    QualCost qpqual_cost;
+    get_restriction_qual_cost(root, baserel, param_info, &qpqual_cost);
+    const Cost cpu_per_tuple = cpu_tuple_cost + qpqual_cost.per_tuple;
+
+    const Cost tlist_startup = path->pathtarget->cost.startup;
+    const Cost tlist_per_tuple = path->pathtarget->cost.per_tuple;
+
+    const bool use_parallel = (path->parallel_workers > 0);
+    const double parallel_divisor = use_parallel ? get_parallel_divisor(path) : 1.0;
+
+    /* ----------------------------------------------------------------------
+     * 5) Per-sample evaluation
+     * ----------------------------------------------------------------------
+     * For each sample row estimate:
+     *  - compute startup cost (constant across samples except for the tlist)
+     *  - compute CPU cost split into scan (per tuple scanned) and
+     *    tlist (per output row)
+     *  - adjust CPU cost and effective per-worker rows under parallelism
+     *  - record per-sample totals and accumulate means for scalar outputs
+     */
+    for (int i = 0; i < sample_count; ++i) {
+        const double sample_rows_global = path->rows_sample->sample[i];
+
+        /* 5.1) Startup cost for this sample (no sample-specific addends here). */
+        Cost startup_cost = 0;
+        startup_cost += startup_cost_bias;
+        startup_cost += qpqual_cost.startup;
+        startup_cost += tlist_startup;
+
+        /* 5.2) CPU run cost: scan all tuples + tlist per *output* row. */
+        Cost cpu_run_cost = cpu_per_tuple * baserel->tuples;
+
+        /* 5.3) Parallel adjustment: divide CPU by workers; rows become per-worker. */
+        double worker_rows = sample_rows_global;
+        if (use_parallel) {
+            cpu_run_cost /= parallel_divisor;
+            worker_rows = clamp_row_est(sample_rows_global / parallel_divisor);
+        }
+
+        /* 5.4) Add tlist per-output-row cost based on worker_rows. */
+        cpu_run_cost += tlist_per_tuple * worker_rows;
+
+        /* 5.5) Total cost for this sample. Disk cost is not amortized. */
+        const Cost total_cost = startup_cost + cpu_run_cost + disk_run_cost;
+
+        /* 5.6) Record per-sample results and update accumulators. */
+        path->startup_cost_sample->sample[i] = startup_cost;
+        path->total_cost_sample->sample[i] = total_cost;
+
+        rows_accum += worker_rows; /* average per-worker rows across samples */
+        startup_accum += startup_cost;
+        total_accum += total_cost;
+    }
+
+    /* ----------------------------------------------------------------------
+     * 6) Finalize scalar outputs by averaging across samples
+     * ----------------------------------------------------------------------
+     * Keep the classic semantics:
+     *  - path->rows is per-worker row estimate under parallelism
+     *  - startup_cost/total_cost are the mean of the sample costs
+     */
+    const double invN = 1.0 / (double) sample_count;
+    path->rows = rows_accum * invN;
+    path->startup_cost = startup_accum * invN;
+    path->total_cost = total_accum * invN;
+
+    /* ----------------------------------------------------------------------
+     * 7) Notes on memory ownership
+     * ----------------------------------------------------------------------
+     * The helper routines duplicate_sample()/initialize_sample() are assumed
+     * to allocate in the Planner context so that the samples live as long as
+     * the Path. Callers owning shorter-lived contexts must refcount/move if
+     * needed.
+     */
 }
 
 /*
