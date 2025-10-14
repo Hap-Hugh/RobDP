@@ -160,7 +160,7 @@ extern void final_cost_mergejoin(PlannerInfo *root, MergePath *path,
 extern void initial_cost_hashjoin(PlannerInfo *root,
 								  JoinCostWorkspace *workspace,
 								  JoinType jointype,
-								  List *hashclauses,
+								  const List *hashclauses,
 								  Path *outer_path, Path *inner_path,
 								  JoinPathExtraData *extra,
 								  bool parallel_hash);

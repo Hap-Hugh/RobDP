@@ -3230,9 +3230,11 @@ void cost_group(
  * 'extra' contains miscellaneous information about the join
  */
 void initial_cost_nestloop(
-    PlannerInfo *root, JoinCostWorkspace *workspace,
+    PlannerInfo *root,
+    JoinCostWorkspace *workspace,
     JoinType jointype,
-    Path *outer_path, Path *inner_path,
+    Path *outer_path,
+    Path *inner_path,
     JoinPathExtraData *extra
 ) {
     /* ------------------------------- Initialization ------------------------------- */
@@ -4279,163 +4281,183 @@ static MergeScanSelCache *cached_scansel(
  *		hash table will be built in parallel
  */
 void initial_cost_hashjoin(
-    PlannerInfo *root, JoinCostWorkspace *workspace,
+    PlannerInfo *root,
+    JoinCostWorkspace *workspace,
     JoinType jointype,
-    List *hashclauses,
-    Path *outer_path, Path *inner_path,
+    const List *hashclauses,
+    Path *outer_path,
+    Path *inner_path,
     JoinPathExtraData *extra,
     bool parallel_hash
 ) {
-    /* ------------------------------- Initialization ------------------------------- */
-    // FIXME: Check the pathtype
-    const Sample *outer_path_rows_sample =
-            IsA(outer_path, IndexPath)
-                ? ((IndexPath *) outer_path)->path.rows_sample
-                : outer_path->rows_sample;
-    const Sample *inner_path_rows_sample =
-            IsA(inner_path, IndexPath)
-                ? ((IndexPath *) inner_path)->path.rows_sample
-                : inner_path->rows_sample;
+    /* ------------------------------------------------------------------
+     * 1) Resolve samples and pick loop count
+     * ------------------------------------------------------------------ */
+    const Sample *outer_rows_samp =
+    (IsA(outer_path, IndexPath)
+         ? ((IndexPath *) outer_path)->path.rows_sample
+         : outer_path->rows_sample);
+    const Sample *inner_rows_samp =
+    (IsA(inner_path, IndexPath)
+         ? ((IndexPath *) inner_path)->path.rows_sample
+         : inner_path->rows_sample);
 
-    const int outer_sample_count = outer_path_rows_sample->sample_count;
-    const int inner_sample_count = inner_path_rows_sample->sample_count;
+    const Sample *outer_startup_samp =
+    (IsA(outer_path, IndexPath)
+         ? ((IndexPath *) outer_path)->path.startup_cost_sample
+         : outer_path->startup_cost_sample);
+    const Sample *outer_total_samp =
+    (IsA(outer_path, IndexPath)
+         ? ((IndexPath *) outer_path)->path.total_cost_sample
+         : outer_path->total_cost_sample);
 
-    const bool outer_is_const = outer_sample_count == 1;
-    const bool inner_is_const = inner_sample_count == 1;
-    const double outer_first_rows = outer_path_rows_sample->sample[0];
-    const double inner_first_rows = inner_path_rows_sample->sample[0];
+    const Sample *inner_startup_samp =
+    (IsA(inner_path, IndexPath)
+         ? ((IndexPath *) inner_path)->path.startup_cost_sample
+         : inner_path->startup_cost_sample);
+    const Sample *inner_total_samp =
+    (IsA(inner_path, IndexPath)
+         ? ((IndexPath *) inner_path)->path.total_cost_sample
+         : inner_path->total_cost_sample);
 
-    if (!outer_is_const || !inner_is_const) {
-        Assert(outer_sample_count == inner_sample_count);
-    }
+    const int outer_sc = (outer_rows_samp ? outer_rows_samp->sample_count : 0);
+    const int inner_sc = (inner_rows_samp ? inner_rows_samp->sample_count : 0);
+    const bool outer_is_const = (outer_sc <= 1);
+    const bool inner_is_const = (inner_sc <= 1);
 
-    workspace->sample_count = outer_sample_count;
-    /* Public result fields */
-    workspace->startup_cost = 0.0;
-    workspace->total_cost = 0.0;
-    /* Save private data for final_cost_hashjoin */
-    workspace->run_cost = 0.0;
-    workspace->numbuckets = 0;
-    workspace->numbatches = 0;
-    workspace->inner_rows_total = 0.0;
+    int sample_count = 1;
+    if (!outer_is_const && !inner_is_const) {
+        Assert(outer_sc == inner_sc);
+        sample_count = outer_sc;
+    } else if (!outer_is_const)
+        sample_count = outer_sc;
+    else if (!inner_is_const)
+        sample_count = inner_sc;
+    else
+        sample_count = 1;
 
-    /* ------------------------------- Point-to-Point ------------------------------- */
-    for (int sample_idx = 0; sample_idx < outer_sample_count; ++sample_idx) {
-        const double outer_path_rows
-                = outer_is_const
-                      ? outer_first_rows
-                      : outer_path_rows_sample->sample[sample_idx];
-        const double inner_path_rows
-                = inner_is_const
-                      ? inner_first_rows
-                      : inner_path_rows_sample->sample[sample_idx];
+    workspace->sample_count = sample_count;
 
+    /* ------------------------------------------------------------------
+     * 2) Precompute constants used across samples
+     * ------------------------------------------------------------------ */
+    const int num_hashclauses = list_length(hashclauses);
+    /* Note: CPU costs per row are applied per-sample using sampled row counts. */
+
+    /* ------------------------------------------------------------------
+     * 3) Accumulators for scalar (mean) lower bounds
+     * ------------------------------------------------------------------ */
+    Cost startup_accum = 0;
+    Cost total_accum = 0;
+    Cost run_accum = 0;
+
+    /* Optional: keep representative scalars for hash params */
+    double numbuckets_acc = 0.0;
+    double numbatches_acc = 0.0;
+    double inner_rows_total_acc = 0.0;
+
+    /* Ensure sample arrays in workspace are considered initialized elsewhere. */
+
+    /* ------------------------------------------------------------------
+     * 4) Per-sample evaluation (point-to-point)
+     * ------------------------------------------------------------------ */
+    for (int i = 0; i < sample_count; ++i) {
+        /* 4.1) Fetch per-sample rows (guard against <= 0) */
+        double outer_rows_i = GET_ROW(outer_rows_samp, i, outer_path->rows, outer_is_const);
+        double inner_rows_i = GET_ROW(inner_rows_samp, i, inner_path->rows, inner_is_const);
+        if (outer_rows_i <= 0) outer_rows_i = 1;
+        if (inner_rows_i <= 0) inner_rows_i = 1;
+
+        /* 4.2) Fetch per-sample input costs for both sides */
+        Cost outer_startup_i = GET_COST(outer_startup_samp, i, outer_path->startup_cost, outer_is_const);
+        Cost outer_total_i = GET_COST(outer_total_samp, i, outer_path->total_cost, outer_is_const);
+        Cost inner_startup_i = GET_COST(inner_startup_samp, i, inner_path->startup_cost, inner_is_const);
+        Cost inner_total_i = GET_COST(inner_total_samp, i, inner_path->total_cost, inner_is_const);
+
+        /* 4.3) Source data costs (lower bound): outer contributes startup+run; inner contributes total as startup */
         Cost startup_cost = 0;
         Cost run_cost = 0;
-        double inner_path_rows_total = inner_path_rows;
-        const int num_hashclauses = list_length(hashclauses);
-        int numbuckets;
-        int numbatches;
-        int num_skew_mcvs;
-        size_t space_allowed; /* unused */
 
-        /* cost of source data */
-        startup_cost += outer_path->startup_cost;
-        run_cost += outer_path->total_cost - outer_path->startup_cost;
-        startup_cost += inner_path->total_cost;
+        startup_cost += outer_startup_i;
+        run_cost += (outer_total_i - outer_startup_i);
+        startup_cost += inner_total_i;
 
-        /*
-         * Cost of computing hash function: must do it once per input tuple. We
-         * charge one cpu_operator_cost for each column's hash function.  Also,
-         * tack on one cpu_tuple_cost per inner row, to model the costs of
-         * inserting the row into the hashtable.
-         *
-         * XXX when a hashclause is more complex than a single operator, we really
-         * should charge the extra eval costs of the left or right side, as
-         * appropriate, here.  This seems more work than it's worth at the moment.
+        /* 4.4) Hash function + build costs (phase-1 CPU lower bound)
+         *   - inner: (hash per clause + tuple insert) * inner_rows
+         *   - outer: (hash per clause) * outer_rows
          */
-        startup_cost += (cpu_operator_cost * num_hashclauses + cpu_tuple_cost)
-                * inner_path_rows;
-        run_cost += cpu_operator_cost * num_hashclauses * outer_path_rows;
+        startup_cost += (cpu_operator_cost * num_hashclauses + cpu_tuple_cost) * inner_rows_i;
+        run_cost += cpu_operator_cost * num_hashclauses * outer_rows_i;
 
-        /*
-         * If this is a parallel hash build, then the value we have for
-         * inner_rows_total currently refers only to the rows returned by each
-         * participant.  For shared hash table size estimation, we need the total
-         * number, so we need to undo the division.
-         */
+        /* 4.5) Parallel hash: adjust inner_rows_total for table sizing */
+        double inner_rows_total_i = inner_rows_i;
         if (parallel_hash)
-            inner_path_rows_total *= get_parallel_divisor(inner_path);
+            inner_rows_total_i *= get_parallel_divisor(inner_path);
 
-        /*
-         * Get hash table size that executor would use for inner relation.
-         *
-         * XXX for the moment, always assume that skew optimization will be
-         * performed.  As long as SKEW_HASH_MEM_PERCENT is small, it's not worth
-         * trying to determine that for sure.
-         *
-         * XXX at some point it might be interesting to try to account for skew
-         * optimization in the cost estimate, but for now, we don't.
-         */
+        /* 4.6) Choose hash table size for this sample */
+        int numbuckets_i, numbatches_i, num_skew_mcvs_i;
+        size_t space_allowed_dummy;
+
         ExecChooseHashTableSize(
-            inner_path_rows_total,
+            inner_rows_total_i,
             inner_path->pathtarget->width,
             true, /* useskew */
             parallel_hash, /* try_combined_hash_mem */
             outer_path->parallel_workers,
-            &space_allowed,
-            &numbuckets,
-            &numbatches,
-            &num_skew_mcvs
+            &space_allowed_dummy,
+            &numbuckets_i,
+            &numbatches_i,
+            &num_skew_mcvs_i
         );
 
-        /*
-         * If inner relation is too big then we will need to "batch" the join,
-         * which implies writing and reading most of the tuples to disk an extra
-         * time.  Charge seq_page_cost per page, since the I/O should be nice and
-         * sequential.  Writing the inner rel counts as startup cost, all the rest
-         * as run cost.
-         */
-        if (numbatches > 1) {
-            double outerpages = page_size(outer_path_rows,
-                                          outer_path->pathtarget->width);
-            double innerpages = page_size(inner_path_rows,
-                                          inner_path->pathtarget->width);
+        /* 4.7) If batching, account for I/O costs per sample (sequential) */
+        if (numbatches_i > 1) {
+            const double outerpages = page_size(outer_rows_i, outer_path->pathtarget->width);
+            const double innerpages = page_size(inner_rows_i, inner_path->pathtarget->width);
 
+            /* Write inner once (startup), then read inner + write+read outer (run) */
             startup_cost += seq_page_cost * innerpages;
             run_cost += seq_page_cost * (innerpages + 2 * outerpages);
         }
 
-        /* CPU costs left for later */
+        /* 4.8) Record per-sample lower bounds into workspace */
+        workspace->startup_cost_sample[i] = startup_cost;
+        workspace->total_cost_sample[i] = startup_cost + run_cost;
+        workspace->run_cost_sample[i] = run_cost;
 
-        /* Public result fields */
-        workspace->startup_cost_sample[sample_idx] = startup_cost;
-        workspace->total_cost_sample[sample_idx] = startup_cost + run_cost;
-        /* Save private data for final_cost_hashjoin */
-        workspace->run_cost_sample[sample_idx] = run_cost;
-        workspace->numbuckets_sample[sample_idx] = numbuckets;
-        workspace->numbatches_sample[sample_idx] = numbatches;
-        workspace->inner_rows_total_sample[sample_idx] = inner_path_rows_total;
+        workspace->numbuckets_sample[i] = numbuckets_i;
+        workspace->numbatches_sample[i] = numbatches_i;
+        workspace->inner_rows_total_sample[i] = inner_rows_total_i;
 
-        /* Public result fields */
-        workspace->startup_cost += startup_cost;
-        workspace->total_cost += startup_cost + run_cost;
-        /* Save private data for final_cost_hashjoin */
-        workspace->run_cost += run_cost;
-        workspace->numbuckets += numbuckets;
-        workspace->numbatches += numbatches;
-        workspace->inner_rows_total += inner_path_rows_total;
+        /* 4.9) Accumulate for scalar outputs */
+        startup_accum += startup_cost;
+        total_accum += startup_cost + run_cost;
+        run_accum += run_cost;
+
+        numbuckets_acc += (double) numbuckets_i;
+        numbatches_acc += (double) numbatches_i;
+        inner_rows_total_acc += inner_rows_total_i;
     }
 
-    /* ------------------------------- Finalization ------------------------------- */
-    /* Public result fields */
-    workspace->startup_cost /= (double) outer_sample_count;
-    workspace->total_cost /= (double) outer_sample_count;
-    /* Save private data for final_cost_hashjoin */
-    workspace->run_cost /= (double) outer_sample_count;
-    workspace->numbuckets = ceil(workspace->numbuckets / (double) outer_sample_count);
-    workspace->numbatches = pg_nextpower2_32(Max(2, workspace->numbatches / (double) outer_sample_count));
-    workspace->inner_rows_total /= (double) outer_sample_count;
+    /* ------------------------------------------------------------------
+     * 5) Finalize scalar lower bounds as per-sample means
+     * ------------------------------------------------------------------ */
+    const double invN = 1.0 / (double) sample_count;
+
+    workspace->startup_cost = startup_accum * invN;
+    workspace->total_cost = total_accum * invN;
+    workspace->run_cost = run_accum * invN;
+
+    /* Representative scalar params for phase-2 (rounded means; alternative: use max) */
+    workspace->numbuckets = (int) rint(numbuckets_acc * invN);
+    if (workspace->numbuckets < 1) workspace->numbuckets = 1;
+
+    workspace->numbatches = (int) rint(numbatches_acc * invN);
+    if (workspace->numbatches < 1) workspace->numbatches = 1;
+
+    workspace->inner_rows_total = inner_rows_total_acc * invN;
+
+    /* CPU costs for join quals etc. are left to final_cost_hashjoin (phase-2). */
 }
 
 /*
