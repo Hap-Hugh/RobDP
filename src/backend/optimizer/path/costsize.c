@@ -589,6 +589,11 @@ void cost_gather(
 
     const Sample *rows_samp = path->path.rows_sample; /* may be NULL */
 
+    path->path.startup_cost = 0.0;
+    path->path.startup_cost_sample = initialize_sample(sample_count);
+    path->path.total_cost = 0.0;
+    path->path.total_cost_sample = initialize_sample(sample_count);
+
     /* ------------------------------- 4) Per-sample aggregation ------------------------------- */
     for (int i = 0; i < sample_count; ++i) {
         /* 4.1) Read subpath costs for this sample (fallback to scalar if no samples) */
@@ -680,6 +685,11 @@ void cost_gather_merge(
     const int rows_sc = rows_samp ? rows_samp->sample_count : 0;
     const bool rows_is_const = (rows_sc <= 1);
     const int sample_count = (rows_sc > 1) ? rows_sc : 1;
+
+    path->path.startup_cost = 0.0;
+    path->path.startup_cost_sample = initialize_sample(sample_count);
+    path->path.total_cost = 0.0;
+    path->path.total_cost_sample = initialize_sample(sample_count);
 
     /* ------------------------------- 2) Precompute GM constants ------------------------------- */
     /* Apply disable penalty once (we'll fold it into each sample's startup). */
@@ -4400,7 +4410,7 @@ void initial_cost_hashjoin(
 void final_cost_hashjoin(
     PlannerInfo *root, HashPath *path,
     JoinCostWorkspace *workspace,
-    JoinPathExtraData *extra
+    const JoinPathExtraData *extra
 ) {
     /* ------------------------------- 1) Resolve paths & input samples ------------------------------- */
     Path *outer_path = path->jpath.outerjoinpath;

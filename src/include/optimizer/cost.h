@@ -330,7 +330,7 @@ extern void final_cost_hashjoin(
     PlannerInfo *root,
     HashPath *path,
     JoinCostWorkspace *workspace,
-    JoinPathExtraData *extra
+    const JoinPathExtraData *extra
 );
 
 extern void cost_gather(
