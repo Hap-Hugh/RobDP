@@ -560,63 +560,67 @@ void cost_gather(
     const RelOptInfo *rel, const ParamPathInfo *param_info,
     const double *rows
 ) {
-    /* ------------------------------- Initialization ------------------------------- */
-    // FIXME: Check the pathtype
-    const Sample *path_rows_sample = path->subpath->rows_sample;
-    const int path_rows_sample_count = path_rows_sample->sample_count;
-    const bool path_rows_is_const = path_rows_sample_count == 1;
-    const double path_rows_first_rows = path_rows_sample->sample[0];
-
-    /* Mark the path with the correct row estimate */
+    /* ------------------------------- 1) Resolve rows & sample ------------------------------- */
+    /* Path rows (scalar) per PG semantics; also prepare a rows_sample for per-sample loop */
     if (rows) {
         path->path.rows = *rows;
         path->path.rows_sample = make_sample_by_single_value(*rows);
     } else if (param_info) {
         path->path.rows = param_info->ppi_rows;
-        path->path.rows_sample = param_info->ppi_rows_sample;
+        path->path.rows_sample = duplicate_sample(param_info->ppi_rows_sample);
     } else {
         path->path.rows = rel->rows;
-        path->path.rows_sample = rel->rows_sample;
+        path->path.rows_sample = duplicate_sample(rel->rows_sample);
     }
 
-    const Sample *startup_cost_sample = path->subpath->startup_cost_sample;
-    const Sample *total_cost_sample = path->subpath->total_cost_sample;
+    /* ------------------------------- 2) Subpath costs (scalar + sample) ------------------------------- */
+    const Sample *sp_startup = path->subpath->startup_cost_sample;
+    const Sample *sp_total = path->subpath->total_cost_sample;
 
-    const int startup_cost_sample_count = startup_cost_sample->sample_count;
-    const int total_cost_sample_count = total_cost_sample->sample_count;
-    Assert(startup_cost_sample_count == total_cost_sample_count);
+    const int has_cost_samples
+            = sp_startup && sp_total
+              && sp_startup->sample_count > 0 && sp_total->sample_count > 0;
 
-    /* Initialize the startup and total cost samples */
-    path->path.startup_cost = 0.0;
-    path->path.startup_cost_sample = initialize_sample(startup_cost_sample_count);
-    path->path.total_cost = 0.0;
-    path->path.total_cost_sample = initialize_sample(startup_cost_sample_count);
+    const int sample_count = has_cost_samples ? sp_startup->sample_count : 1;
 
-    /* ------------------------------- Point-to-Point ------------------------------- */
-    for (int sample_idx = 0; sample_idx < startup_cost_sample_count; ++sample_idx) {
-        const double path_rows
-                = path_rows_is_const
-                      ? path_rows_first_rows
-                      : path_rows_sample->sample[sample_idx];
+    const bool rows_is_const
+            = path->path.rows_sample == NULL
+              || path->path.rows_sample->sample_count <= 1;
 
-        Cost startup_cost = path->subpath->startup_cost_sample->sample[sample_idx];
-        const Cost total_cost = path->subpath->total_cost_sample->sample[sample_idx];
-        Cost run_cost = total_cost - startup_cost;
+    const Sample *rows_samp = path->path.rows_sample; /* may be NULL */
 
-        /* Parallel setup and communication cost. */
+    /* ------------------------------- 4) Per-sample aggregation ------------------------------- */
+    for (int i = 0; i < sample_count; ++i) {
+        /* 4.1) Read subpath costs for this sample (fallback to scalar if no samples) */
+        const Cost sub_startup_i =
+                GET_COST(sp_startup, i, path->subpath->startup_cost, /*is_const=*/false);
+        const Cost sub_total_i =
+                GET_COST(sp_total, i, path->subpath->total_cost, /*is_const=*/false);
+        Cost startup_cost = sub_startup_i;
+        Cost run_cost = sub_total_i - sub_startup_i;
+
+        /* 4.2) Rows for parallel tuple cost (use sample-or-scalar rows) */
+        double rows_i = GET_ROW(rows_samp, i, path->path.rows, rows_is_const);
+        if (rows_i < 0) rows_i = 0;
+
+        /* 4.3) Gather-specific overhead: setup once, per-tuple comm on output */
         startup_cost += parallel_setup_cost;
-        run_cost += parallel_tuple_cost * path_rows;
+        run_cost += parallel_tuple_cost * rows_i;
 
-        path->path.startup_cost_sample->sample[sample_idx] = startup_cost;
-        path->path.total_cost_sample->sample[sample_idx] = startup_cost + run_cost;
+        /* 4.4) Write per-sample outputs and accumulate means */
+        const Cost total_cost = startup_cost + run_cost;
+
+        path->path.startup_cost_sample->sample[i] = startup_cost;
+        path->path.total_cost_sample->sample[i] = total_cost;
 
         path->path.startup_cost += startup_cost;
-        path->path.total_cost += startup_cost + run_cost;
+        path->path.total_cost += total_cost;
     }
 
-    /* ------------------------------- Finalization ------------------------------- */
-    path->path.startup_cost /= (double) startup_cost_sample_count;
-    path->path.total_cost /= (double) startup_cost_sample_count;
+    /* ------------------------------- 5) Finalize scalar outputs (means) ------------------------------- */
+    const double invN = 1.0 / (double) sample_count;
+    path->path.startup_cost *= invN;
+    path->path.total_cost *= invN;
 }
 
 /*
@@ -2085,6 +2089,8 @@ void cost_resultscan(
 
     path->startup_cost = startup_cost;
     path->total_cost = startup_cost + run_cost;
+
+    // TODO: Do we need cost sampling for result scan?
 }
 
 /*
