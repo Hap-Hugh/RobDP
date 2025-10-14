@@ -3387,37 +3387,33 @@ void initial_cost_nestloop(
  */
 void final_cost_nestloop(
     PlannerInfo *root, NestPath *path,
-    JoinCostWorkspace *workspace,
-    JoinPathExtraData *extra
+    const JoinCostWorkspace *workspace,
+    const JoinPathExtraData *extra
 ) {
-    /* ------------------------------- Initialization ------------------------------- */
-    const Path *outer_path = path->jpath.outerjoinpath;
-    const Path *inner_path = path->jpath.innerjoinpath;
-    const int workspace_sample_count = workspace->sample_count;
+    /* ------------------------------- 1) Resolve paths & samples ------------------------------- */
+    Path *outer_path = path->jpath.outerjoinpath;
+    Path *inner_path = path->jpath.innerjoinpath;
 
-    // FIXME: Check the pathtype
-    const Sample *outer_path_rows_sample =
-            IsA(outer_path, IndexPath)
-                ? ((IndexPath *) outer_path)->path.rows_sample
-                : outer_path->rows_sample;
-    const Sample *inner_path_rows_sample =
-            IsA(inner_path, IndexPath)
-                ? ((IndexPath *) inner_path)->path.rows_sample
-                : inner_path->rows_sample;
+    /* Row samples (support IndexPath->path) */
+    const Sample *outer_rows_samp =
+    (IsA(outer_path, IndexPath)
+         ? ((IndexPath *) outer_path)->path.rows_sample
+         : outer_path->rows_sample);
+    const Sample *inner_rows_samp =
+    (IsA(inner_path, IndexPath)
+         ? ((IndexPath *) inner_path)->path.rows_sample
+         : inner_path->rows_sample);
 
-    const int outer_sample_count = outer_path_rows_sample->sample_count;
-    const int inner_sample_count = inner_path_rows_sample->sample_count;
+    const int outer_sc = outer_rows_samp ? outer_rows_samp->sample_count : 0;
+    const int inner_sc = inner_rows_samp ? inner_rows_samp->sample_count : 0;
+    const bool outer_is_const = (outer_sc <= 1);
+    const bool inner_is_const = (inner_sc <= 1);
 
-    const bool outer_is_const = outer_sample_count == 1;
-    const bool inner_is_const = inner_sample_count == 1;
-    const double outer_first_rows = outer_path_rows_sample->sample[0];
-    const double inner_first_rows = inner_path_rows_sample->sample[0];
+    /* Authoritative loop size comes from the workspace */
+    const int sample_count = (workspace->sample_count > 0) ? workspace->sample_count : 1;
 
-    if (!outer_is_const || !inner_is_const) {
-        Assert(outer_sample_count == inner_sample_count);
-    }
-
-    /* Mark the path with the correct row estimate */
+    /* ------------------------------- 2) Determine scalar output rows ------------------------------- */
+    /* Mark rows (scalar) per PG semantics: param_info or parent->rows */
     if (path->jpath.path.param_info) {
         path->jpath.path.rows = path->jpath.path.param_info->ppi_rows;
         path->jpath.path.rows_sample = duplicate_sample(path->jpath.path.param_info->ppi_rows_sample);
@@ -3426,10 +3422,9 @@ void final_cost_nestloop(
         path->jpath.path.rows_sample = duplicate_sample(path->jpath.path.parent->rows_sample);
     }
 
-    /* For partial paths, scale row estimate. */
+    /* Parallel: rows represent per-worker output rows */
     if (path->jpath.path.parallel_workers > 0) {
         const double parallel_divisor = get_parallel_divisor(&path->jpath.path);
-
         path->jpath.path.rows = clamp_row_est(path->jpath.path.rows / parallel_divisor);
         Sample *new_sample = make_sample_by_scale_factor(
             path->jpath.path.rows_sample, 1.0 / parallel_divisor
@@ -3440,172 +3435,113 @@ void final_cost_nestloop(
 
     /* Initialize the startup and total cost samples */
     path->jpath.path.startup_cost = 0.0;
-    path->jpath.path.startup_cost_sample = initialize_sample(workspace_sample_count);
+    path->jpath.path.startup_cost_sample = initialize_sample(sample_count);
     path->jpath.path.total_cost = 0.0;
-    path->jpath.path.total_cost_sample = initialize_sample(workspace_sample_count);
+    path->jpath.path.total_cost_sample = initialize_sample(sample_count);
 
-    /* ------------------------------- Point-to-Point ------------------------------- */
-    for (int sample_idx = 0; sample_idx < workspace_sample_count; ++sample_idx) {
-        double outer_path_rows
-                = outer_is_const
-                      ? outer_first_rows
-                      : outer_path_rows_sample->sample[sample_idx];
-        double inner_path_rows
-                = inner_is_const
-                      ? inner_first_rows
-                      : inner_path_rows_sample->sample[sample_idx];
+    /* ------------------------------- 3) Qual/tlist costs (sample-invariant) ------------------------------- */
+    QualCost rq_cost;
+    cost_qual_eval(&rq_cost, path->jpath.joinrestrictinfo, root);
 
-        Cost startup_cost = workspace->startup_cost_sample[sample_idx];
-        Cost run_cost = workspace->run_cost_sample[sample_idx];
-        QualCost restrict_qual_cost;
-        double ntuples;
+    const Cost cpu_per_tuple = cpu_tuple_cost + rq_cost.per_tuple;
+    const Cost tlist_startup = path->jpath.path.pathtarget->cost.startup;
+    const Cost tlist_per_tuple = path->jpath.path.pathtarget->cost.per_tuple;
 
-        /* Protect some assumptions below that rowcounts aren't zero */
-        if (outer_path_rows <= 0)
-            outer_path_rows = 1;
-        if (inner_path_rows <= 0)
-            inner_path_rows = 1;
+    /* ------------------------------- 4) Accumulators for scalar (means) ------------------------------- */
+    Cost startup_accum = 0.0;
+    Cost total_accum = 0.0;
 
-        /*
-         * We could include disable_cost in the preliminary estimate, but that
-         * would amount to optimizing for the case where the join method is
-         * disabled, which doesn't seem like the way to bet.
-         */
-        if (!enable_nestloop)
-            startup_cost += disable_cost;
+    /* If you maintain per-sample outputs on Path, ensure storage is allocated by caller. */
 
-        /* cost of inner-relation source data (we already dealt with outer rel) */
+    /* ------------------------------- 5) Per-sample evaluation ------------------------------- */
+    for (int i = 0; i < sample_count; ++i) {
+        /* 5.1) Start from phase-1 lower bounds */
+        Cost startup_cost_i = workspace->startup_cost_sample[i];
+        Cost run_cost_i = workspace->run_cost_sample[i];
 
-        if (path->jpath.jointype == JOIN_SEMI || path->jpath.jointype == JOIN_ANTI ||
+        /* 5.2) Per-sample input rows (guard against <= 0) */
+        double outer_rows_i = GET_ROW(outer_rows_samp, i, outer_path->rows, outer_is_const);
+        double inner_rows_i = GET_ROW(inner_rows_samp, i, inner_path->rows, inner_is_const);
+        if (outer_rows_i <= 0) outer_rows_i = 1;
+        if (inner_rows_i <= 0) inner_rows_i = 1;
+
+        /* 5.3) Refine inner-source costs for SEMI/ANTI/inner_unique (per sample) */
+        double ntuples_i; /* processed tuples (not emitted count) */
+
+        if (path->jpath.jointype == JOIN_SEMI ||
+            path->jpath.jointype == JOIN_ANTI ||
             extra->inner_unique) {
-            /*
-             * With a SEMI or ANTI join, or if the innerrel is known unique, the
-             * executor will stop after the first match.
-             */
-            const Cost inner_run_cost = workspace->inner_run_cost;
-            const Cost inner_rescan_run_cost = workspace->inner_rescan_run_cost;
+            /* Assumed to exist per your request */
+            const Cost inner_run_cost_i = workspace->inner_run_cost_sample[i];
+            const Cost inner_rescan_run_cost_i = workspace->inner_rescan_run_cost_sample[i];
 
-            /*
-             * For an outer-rel row that has at least one match, we can expect the
-             * inner scan to stop after a fraction 1/(match_count+1) of the inner
-             * rows, if the matches are evenly distributed.  Since they probably
-             * aren't quite evenly distributed, we apply a fuzz factor of 2.0 to
-             * that fraction.  (If we used a larger fuzz factor, we'd have to
-             * clamp inner_scan_frac to at most 1.0; but since match_count is at
-             * least 1, no such clamp is needed now.)
-             */
-            double outer_matched_rows = rint(outer_path_rows * extra->semifactors.outer_match_frac);
-            double outer_unmatched_rows = outer_path_rows - outer_matched_rows;
+            double outer_matched_rows = rint(outer_rows_i * extra->semifactors.outer_match_frac);
+            double outer_unmatched_rows = outer_rows_i - outer_matched_rows;
+
+            /* Early-stop fraction with fuzz */
             const Selectivity inner_scan_frac = 2.0 / (extra->semifactors.match_count + 1.0);
 
-            /*
-             * Compute number of tuples processed (not number emitted!).  First,
-             * account for successfully-matched outer rows.
-             */
-            ntuples = outer_matched_rows * inner_path_rows * inner_scan_frac;
+            /* Matched processed tuples */
+            ntuples_i = outer_matched_rows * inner_rows_i * inner_scan_frac;
 
-            /*
-             * Now we need to estimate the actual costs of scanning the inner
-             * relation, which may be quite a bit less than N times inner_run_cost
-             * due to early scan stops.  We consider two cases.  If the inner path
-             * is an indexscan using all the joinquals as indexquals, then an
-             * unmatched outer row results in an indexscan returning no rows,
-             * which is probably quite cheap.  Otherwise, the executor will have
-             * to scan the whole inner rel for an unmatched row; not so cheap.
-             */
             if (has_indexed_join_quals(path)) {
-                /*
-                 * Successfully-matched outer rows will only require scanning
-                 * inner_scan_frac of the inner relation.  In this case, we don't
-                 * need to charge the full inner_run_cost even when that's more
-                 * than inner_rescan_run_cost, because we can assume that none of
-                 * the inner scans ever scan the whole inner relation.  So it's
-                 * okay to assume that all the inner scan executions can be
-                 * fractions of the full cost, even if materialization is reducing
-                 * the rescan cost.  At this writing, it's impossible to get here
-                 * for a materialized inner scan, so inner_run_cost and
-                 * inner_rescan_run_cost will be the same anyway; but just in
-                 * case, use inner_run_cost for the first matched tuple and
-                 * inner_rescan_run_cost for additional ones.
-                 */
-                run_cost += inner_run_cost * inner_scan_frac;
+                /* Matched rows scan a fraction of inner */
+                run_cost_i += inner_run_cost_i * inner_scan_frac;
                 if (outer_matched_rows > 1)
-                    run_cost += (outer_matched_rows - 1) * inner_rescan_run_cost * inner_scan_frac;
+                    run_cost_i += (outer_matched_rows - 1) * inner_rescan_run_cost_i * inner_scan_frac;
 
-                /*
-                 * Add the cost of inner-scan executions for unmatched outer rows.
-                 * We estimate this as the same cost as returning the first tuple
-                 * of a nonempty scan.  We consider that these are all rescans,
-                 * since we used inner_run_cost once already.
-                 */
-                run_cost += outer_unmatched_rows *
-                        inner_rescan_run_cost / inner_path_rows;
-
-                /*
-                 * We won't be evaluating any quals at all for unmatched rows, so
-                 * don't add them to ntuples.
-                 */
+                /* Unmatched: cost approximates returning first tuple of a nonempty scan (rescans) */
+                run_cost_i += outer_unmatched_rows * (inner_rescan_run_cost_i / inner_rows_i);
+                /* No quals for unmatched => ntuples_i unchanged */
             } else {
-                /*
-                 * Here, a complicating factor is that rescans may be cheaper than
-                 * first scans.  If we never scan all the way to the end of the
-                 * inner rel, it might be (depending on the plan type) that we'd
-                 * never pay the whole inner first-scan run cost.  However it is
-                 * difficult to estimate whether that will happen (and it could
-                 * not happen if there are any unmatched outer rows!), so be
-                 * conservative and always charge the whole first-scan cost once.
-                 * We consider this charge to correspond to the first unmatched
-                 * outer row, unless there isn't one in our estimate, in which
-                 * case blame it on the first matched row.
-                 */
+                /* Count all unmatched processed tuples */
+                ntuples_i += outer_unmatched_rows * inner_rows_i;
 
-                /* First, count all unmatched join tuples as being processed */
-                ntuples += outer_unmatched_rows * inner_path_rows;
-
-                /* Now add the forced full scan, and decrement appropriate count */
-                run_cost += inner_run_cost;
+                /* Force one full inner first-scan run cost */
+                run_cost_i += inner_run_cost_i;
                 if (outer_unmatched_rows >= 1)
                     outer_unmatched_rows -= 1;
                 else
                     outer_matched_rows -= 1;
 
-                /* Add inner run cost for additional outer tuples having matches */
+                /* Additional matched: rescans with early stop */
                 if (outer_matched_rows > 0)
-                    run_cost += outer_matched_rows * inner_rescan_run_cost * inner_scan_frac;
+                    run_cost_i += outer_matched_rows * inner_rescan_run_cost_i * inner_scan_frac;
 
-                /* Add inner run cost for additional unmatched outer tuples */
+                /* Additional unmatched: full rescans */
                 if (outer_unmatched_rows > 0)
-                    run_cost += outer_unmatched_rows * inner_rescan_run_cost;
+                    run_cost_i += outer_unmatched_rows * inner_rescan_run_cost_i;
             }
         } else {
-            /* Normal-case source costs were included in preliminary estimate */
-
-            /* Compute number of tuples processed (not number emitted!) */
-            ntuples = outer_path_rows * inner_path_rows;
+            /* Normal case: processed tuples = outer * inner */
+            ntuples_i = outer_rows_i * inner_rows_i;
         }
 
-        /* CPU costs */
-        cost_qual_eval(&restrict_qual_cost, path->jpath.joinrestrictinfo, root);
-        startup_cost += restrict_qual_cost.startup;
-        const Cost cpu_per_tuple = cpu_tuple_cost + restrict_qual_cost.per_tuple;
-        run_cost += cpu_per_tuple * ntuples;
+        /* 5.4) CPU (restrict quals) */
+        startup_cost_i += rq_cost.startup;
+        run_cost_i += cpu_per_tuple * ntuples_i;
 
-        /* tlist eval costs are paid per output row, not per tuple scanned */
-        startup_cost += path->jpath.path.pathtarget->cost.startup;
-        run_cost += path->jpath.path.pathtarget->cost.per_tuple * path->jpath.path.rows;
+        /* 5.5) Tlist costs: startup once; per-tuple on output rows (scalar) */
+        startup_cost_i += tlist_startup;
+        run_cost_i += tlist_per_tuple * path->jpath.path.rows;
 
-        path->jpath.path.startup_cost_sample->sample[sample_idx] = startup_cost;
-        path->jpath.path.total_cost_sample->sample[sample_idx] = startup_cost + run_cost;
+        /* 5.6) Aggregate results */
+        const Cost total_cost_i = startup_cost_i + run_cost_i;
 
-        path->jpath.path.startup_cost += startup_cost;
-        path->jpath.path.total_cost += startup_cost + run_cost;
+        startup_accum += startup_cost_i;
+        total_accum += total_cost_i;
+
+        /* If Path has per-sample outputs allocated, fill them here. */
+        if (path->jpath.path.startup_cost_sample && path->jpath.path.total_cost_sample) {
+            path->jpath.path.startup_cost_sample->sample[i] = startup_cost_i;
+            path->jpath.path.total_cost_sample->sample[i] = total_cost_i;
+        }
     }
 
-    /* ------------------------------- Finalization ------------------------------- */
-    path->jpath.path.startup_cost /= (double) workspace_sample_count;
-    path->jpath.path.total_cost /= (double) workspace_sample_count;
-
-    log_join_rows_and_cost_sample(&path->jpath);
+    /* ------------------------------- 6) Finalize scalar outputs (means) ------------------------------- */
+    const double invN = 1.0 / (double) (sample_count > 0 ? sample_count : 1);
+    path->jpath.path.startup_cost = startup_accum * invN;
+    path->jpath.path.total_cost = total_accum * invN;
 }
 
 /*
