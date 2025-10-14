@@ -3265,6 +3265,8 @@ typedef struct
 /*
  * Struct for extra information passed to subroutines of grouping_planner
  *
+ * Two-phase join cost workspace with optional per-sample bookkeeping.
+ *
  * limit_needed is true if we actually need a Limit plan node.
  * limit_tuples is an estimated bound on the number of output tuples,
  *		or -1 if no LIMIT or couldn't estimate.
@@ -3294,52 +3296,56 @@ typedef struct
  */
 typedef struct JoinCostWorkspace
 {
-	/* ------------------------------- Expectation ------------------------------- */
-	/* Preliminary cost estimates --- must not be larger than final ones! */
-	Cost		startup_cost;	/* cost expended before fetching any tuples */
-	Cost		total_cost;		/* total cost (assuming all tuples fetched) */
+   /* ------------------------------- 1) Scalars (lower bounds in phase-1) ------------------------------- */
+    /* These must not exceed the final values produced in phase-2. */
+    Cost        startup_cost;              /* before fetching any tuples */
+    Cost        total_cost;                /* assuming all tuples fetched */
+    Cost        run_cost;                  /* non-startup components */
 
-	/* Fields below here should be treated as private to costsize.c */
-	Cost		run_cost;		/* non-startup cost components */
+    /* private for cost_nestloop (also read by cost_mergejoin) */
+    Cost        inner_run_cost;
+    Cost        inner_rescan_run_cost;
 
-	/* private for cost_nestloop code */
-	Cost		inner_run_cost; /* also used by cost_mergejoin code */
-	Cost		inner_rescan_run_cost;
+    /* private for cost_mergejoin */
+    Cardinality outer_rows;
+    Cardinality inner_rows;
+    Cardinality outer_skip_rows;
+    Cardinality inner_skip_rows;
 
-	/* private for cost_mergejoin code */
-	Cardinality outer_rows;
-	Cardinality inner_rows;
-	Cardinality outer_skip_rows;
-	Cardinality inner_skip_rows;
+    /* private for cost_hashjoin */
+    int         numbuckets;
+    int         numbatches;
+    Cardinality inner_rows_total;
 
-	/* private for cost_hashjoin code */
-	int			numbuckets;
-	int			numbatches;
-	Cardinality inner_rows_total;
+    /* ------------------------------- 2) Sample metadata ------------------------------- */
+    /*
+     * sample_count == 0 -> scalar-only path (legacy fast path).
+     * 0 < sample_count <= JCW_MAX_SAMPLE -> per-sample arrays valid for [0, sample_count).
+     */
+    int         sample_count;
 
-	/* ------------------------------- Samples ------------------------------- */
-	int			sample_count;
-	/* Preliminary cost estimates --- must not be larger than final ones! */
-	Cost		startup_cost_sample[JCW_MAX_SAMPLE];	/* cost expended before fetching any tuples */
-	Cost		total_cost_sample[JCW_MAX_SAMPLE];		/* total cost (assuming all tuples fetched) */
+    /* Optional: debug marker to assert phase-1/phase-2 consistency of inputs */
+    unsigned    samples_epoch_id;  /* producer-defined; 0 if unused */
 
-	/* Fields below here should be treated as private to costsize.c */
-	Cost		run_cost_sample[JCW_MAX_SAMPLE];		/* non-startup cost components */
+    /* ------------------------------- 3) Per-sample lower bounds (phase-1) ------------------------------- */
+    Cost        startup_cost_sample[JCW_MAX_SAMPLE];
+    Cost        total_cost_sample[JCW_MAX_SAMPLE];
+    Cost        run_cost_sample[JCW_MAX_SAMPLE];
 
-	/* private for cost_nestloop code */
-	Cost		inner_run_cost_sample[JCW_MAX_SAMPLE]; /* also used by cost_mergejoin code */
-	Cost		inner_rescan_run_cost_sample[JCW_MAX_SAMPLE];
+    /* private for cost_nestloop (also read by cost_mergejoin) */
+    Cost        inner_run_cost_sample[JCW_MAX_SAMPLE];
+    Cost        inner_rescan_run_cost_sample[JCW_MAX_SAMPLE];
 
-	/* private for cost_mergejoin code */
-	Cardinality outer_rows_sample[JCW_MAX_SAMPLE];
-	Cardinality inner_rows_sample[JCW_MAX_SAMPLE];
-	Cardinality outer_skip_rows_sample[JCW_MAX_SAMPLE];
-	Cardinality inner_skip_rows_sample[JCW_MAX_SAMPLE];
+    /* private for cost_mergejoin */
+    Cardinality outer_rows_sample[JCW_MAX_SAMPLE];
+    Cardinality inner_rows_sample[JCW_MAX_SAMPLE];
+    Cardinality outer_skip_rows_sample[JCW_MAX_SAMPLE];
+    Cardinality inner_skip_rows_sample[JCW_MAX_SAMPLE];
 
-	/* private for cost_hashjoin code */
-	int			numbuckets_sample[JCW_MAX_SAMPLE];
-	int			numbatches_sample[JCW_MAX_SAMPLE];
-	Cardinality inner_rows_total_sample[JCW_MAX_SAMPLE];
+    /* private for cost_hashjoin */
+    int         numbuckets_sample[JCW_MAX_SAMPLE];
+    int         numbatches_sample[JCW_MAX_SAMPLE];
+    Cardinality inner_rows_total_sample[JCW_MAX_SAMPLE];
 } JoinCostWorkspace;
 
 /*

@@ -155,6 +155,13 @@ bool enable_partition_pruning = true;
 bool enable_presorted_aggregate = true;
 bool enable_async_append = true;
 
+#define GET_ROW(s, i, scalar, is_const) \
+( ((s) == NULL || (s)->sample_count <= 0) ? (scalar) : ((is_const) ? (s)->sample[0] : (s)->sample[(i)]) )
+
+#define GET_COST(s, i, scalar, is_const) \
+( ((s) == NULL || (s)->sample_count <= 0) ? (scalar) : ((is_const) ? (s)->sample[0] : (s)->sample[(i)]) )
+
+
 typedef struct {
     PlannerInfo *root;
     QualCost total;
@@ -3591,6 +3598,26 @@ void final_cost_nestloop(
  * Note: outersortkeys and innersortkeys should be NIL if no explicit
  * sort is needed because the respective source path is already ordered.
  */
+/*
+ * initial_cost_mergejoin
+ *   Preliminary (lower-bound) cost estimate for a merge join, extended with
+ *   per-sample "point-to-point" evaluation.
+ *
+ * Phase-1 must be fast and produce lower bounds on startup_cost/total_cost.
+ * If the path is not rejected by these bounds, phase-2 (final_cost_mergejoin)
+ * will refine them. We purposely examine only the first mergeclause to compute
+ * scan selectivities and assume cost_sort is cheap enough here.
+ *
+ * This version evaluates outer/inner costs per sample: each sample index i
+ * uses the i-th rows and costs (startup/total) from the corresponding paths,
+ * falling back to scalar values (or sample[0]) when needed.
+ *
+ * Contract:
+ *   - For every sample i, startup_cost_sample[i] and total_cost_sample[i]
+ *     must be <= their final counterparts computed in phase-2.
+ *   - Scalar fields (startup_cost/total_cost/...) store the averages of the
+ *     per-sample lower bounds to preserve compatibility with legacy callers.
+ */
 void initial_cost_mergejoin(
     PlannerInfo *root,
     JoinCostWorkspace *workspace,
@@ -3600,256 +3627,274 @@ void initial_cost_mergejoin(
     List *outersortkeys, List *innersortkeys,
     JoinPathExtraData *extra
 ) {
-    /* ------------------------------- Initialization ------------------------------- */
-    // FIXME: Check the pathtype
-    const Sample *outer_path_rows_sample =
-            IsA(outer_path, IndexPath)
-                ? ((IndexPath *) outer_path)->path.rows_sample
-                : outer_path->rows_sample;
-    const Sample *inner_path_rows_sample =
-            IsA(inner_path, IndexPath)
-                ? ((IndexPath *) inner_path)->path.rows_sample
-                : inner_path->rows_sample;
+    /* ----------------------------------------------------------------------
+     * 0) Resolve per-path row samples (support IndexPath->path as well)
+     * ---------------------------------------------------------------------- */
+    const Sample *outer_rows_samp =
+    (IsA(outer_path, IndexPath)
+         ? ((IndexPath *) outer_path)->path.rows_sample
+         : outer_path->rows_sample);
+    const Sample *inner_rows_samp =
+    (IsA(inner_path, IndexPath)
+         ? ((IndexPath *) inner_path)->path.rows_sample
+         : inner_path->rows_sample);
 
-    const int outer_sample_count = outer_path_rows_sample->sample_count;
-    const int inner_sample_count = inner_path_rows_sample->sample_count;
+    const int outer_sc = (outer_rows_samp ? outer_rows_samp->sample_count : 0);
+    const int inner_sc = (inner_rows_samp ? inner_rows_samp->sample_count : 0);
 
-    const bool outer_is_const = outer_sample_count == 1;
-    const bool inner_is_const = inner_sample_count == 1;
+    const bool outer_is_const = (outer_sc <= 1); /* 0 -> fallback to scalar, 1 -> const */
+    const bool inner_is_const = (inner_sc <= 1);
 
-    const double outer_first_rows = outer_path_rows_sample->sample[0];
-    const double inner_first_rows = inner_path_rows_sample->sample[0];
+    /* Decide loop sample_count: if both have N>1, require same N; otherwise use the non-1 side. */
+    int sample_count = 1;
+    if (!outer_is_const && !inner_is_const)
+        Assert(outer_sc == inner_sc), sample_count = outer_sc;
+    else if (!outer_is_const) sample_count = outer_sc;
+    else if (!inner_is_const) sample_count = inner_sc;
+    else sample_count = 1; /* both const/scalar */
 
-    if (!outer_is_const || !inner_is_const) {
-        Assert(outer_sample_count == inner_sample_count);
-    }
+    workspace->sample_count = sample_count;
 
-    workspace->sample_count = outer_sample_count;
-    /* Public result fields */
-    workspace->startup_cost = 0.0;
-    workspace->total_cost = 0.0;
-    /* Initialize private data for final_cost_mergejoin */
-    workspace->run_cost = 0.0;
-    workspace->inner_run_cost = 0.0;
-    workspace->outer_rows = 0.0;
-    workspace->inner_rows = 0.0;
-    workspace->outer_skip_rows = 0.0;
-    workspace->inner_skip_rows = 0.0;
+    /* ----------------------------------------------------------------------
+     * 1) Prepare access to per-path cost samples (fallback to scalars)
+     * ----------------------------------------------------------------------
+     * For each side, we may or may not have startup/total cost samples.
+     * We'll read them per sample if present, otherwise use scalars.
+     */
+    const Sample *outer_startup_samp =
+    (IsA(outer_path, IndexPath)
+         ? ((IndexPath *) outer_path)->path.startup_cost_sample
+         : outer_path->startup_cost_sample);
+    const Sample *outer_total_samp =
+    (IsA(outer_path, IndexPath)
+         ? ((IndexPath *) outer_path)->path.total_cost_sample
+         : outer_path->total_cost_sample);
 
-    /* ------------------------------- Point-to-Point ------------------------------- */
-    for (int sample_idx = 0; sample_idx < outer_sample_count; ++sample_idx) {
-        double outer_path_rows
-                = outer_is_const
-                      ? outer_first_rows
-                      : outer_path_rows_sample->sample[sample_idx];
-        double inner_path_rows
-                = inner_is_const
-                      ? inner_first_rows
-                      : inner_path_rows_sample->sample[sample_idx];
+    const Sample *inner_startup_samp =
+    (IsA(inner_path, IndexPath)
+         ? ((IndexPath *) inner_path)->path.startup_cost_sample
+         : inner_path->startup_cost_sample);
+    const Sample *inner_total_samp =
+    (IsA(inner_path, IndexPath)
+         ? ((IndexPath *) inner_path)->path.total_cost_sample
+         : inner_path->total_cost_sample);
 
-        Cost startup_cost = 0;
-        Cost run_cost = 0;
-        Cost inner_run_cost;
-        double outer_rows,
-                inner_rows,
-                outer_skip_rows,
-                inner_skip_rows;
-        Selectivity outerstartsel,
-                outerendsel,
-                innerstartsel,
-                innerendsel;
-        Path sort_path; /* dummy for result of cost_sort */
+    /* ----------------------------------------------------------------------
+     * 2) Compute merge-scan selectivities from the first mergeclause
+     * ----------------------------------------------------------------------
+     * These selectivities are properties of ordering and clause, not samples.
+     * Later we'll convert them to per-sample row counts and then re-normalize.
+     */
+    Selectivity outerstartsel, outerendsel, innerstartsel, innerendsel;
 
-        /* Protect some assumptions below that rowcounts aren't zero */
-        if (outer_path_rows <= 0)
-            outer_path_rows = 1;
-        if (inner_path_rows <= 0)
-            inner_path_rows = 1;
+    if (mergeclauses && jointype != JOIN_FULL) {
+        RestrictInfo *firstclause = (RestrictInfo *) linitial(mergeclauses);
+        List *opathkeys = outersortkeys ? outersortkeys : outer_path->pathkeys;
+        List *ipathkeys = innersortkeys ? innersortkeys : inner_path->pathkeys;
+        PathKey *opathkey;
+        PathKey *ipathkey;
+        MergeScanSelCache *cache;
 
-        /*
-         * A merge join will stop as soon as it exhausts either input stream
-         * (unless it's an outer join, in which case the outer side has to be
-         * scanned all the way anyway).  Estimate fraction of the left and right
-         * inputs that will actually need to be scanned.  Likewise, we can
-         * estimate the number of rows that will be skipped before the first join
-         * pair is found, which should be factored into startup cost. We use only
-         * the first (most significant) merge clause for this purpose. Since
-         * mergejoinscansel() is a fairly expensive computation, we cache the
-         * results in the merge clause RestrictInfo.
-         */
-        if (mergeclauses && jointype != JOIN_FULL) {
-            RestrictInfo *firstclause = (RestrictInfo *) linitial(mergeclauses);
-            List *opathkeys;
-            List *ipathkeys;
-            PathKey *opathkey;
-            PathKey *ipathkey;
-            MergeScanSelCache *cache;
+        Assert(opathkeys && ipathkeys);
+        opathkey = (PathKey *) linitial(opathkeys);
+        ipathkey = (PathKey *) linitial(ipathkeys);
 
-            /* Get the input pathkeys to determine the sort-order details */
-            opathkeys = outersortkeys ? outersortkeys : outer_path->pathkeys;
-            ipathkeys = innersortkeys ? innersortkeys : inner_path->pathkeys;
-            Assert(opathkeys);
-            Assert(ipathkeys);
-            opathkey = (PathKey *) linitial(opathkeys);
-            ipathkey = (PathKey *) linitial(ipathkeys);
-            /* debugging check */
-            if (opathkey->pk_opfamily != ipathkey->pk_opfamily ||
-                opathkey->pk_eclass->ec_collation != ipathkey->pk_eclass->ec_collation ||
-                opathkey->pk_strategy != ipathkey->pk_strategy ||
-                opathkey->pk_nulls_first != ipathkey->pk_nulls_first)
-                elog(ERROR, "left and right pathkeys do not match in mergejoin");
+        /* Debug check: ordering compatibility for mergejoin. */
+        if (opathkey->pk_opfamily != ipathkey->pk_opfamily ||
+            opathkey->pk_eclass->ec_collation != ipathkey->pk_eclass->ec_collation ||
+            opathkey->pk_nulls_first != ipathkey->pk_nulls_first)
+            elog(ERROR, "left and right pathkeys do not match in mergejoin");
 
-            /* Get the selectivity with caching */
-            cache = cached_scansel(root, firstclause, opathkey);
+        cache = cached_scansel(root, firstclause, opathkey);
 
-            if (bms_is_subset(firstclause->left_relids,
-                              outer_path->parent->relids)) {
-                /* left side of clause is outer */
-                outerstartsel = cache->leftstartsel;
-                outerendsel = cache->leftendsel;
-                innerstartsel = cache->rightstartsel;
-                innerendsel = cache->rightendsel;
-            } else {
-                /* left side of clause is inner */
-                outerstartsel = cache->rightstartsel;
-                outerendsel = cache->rightendsel;
-                innerstartsel = cache->leftstartsel;
-                innerendsel = cache->leftendsel;
-            }
-            if (jointype == JOIN_LEFT ||
-                jointype == JOIN_ANTI) {
-                outerstartsel = 0.0;
-                outerendsel = 1.0;
-            } else if (jointype == JOIN_RIGHT ||
-                       jointype == JOIN_RIGHT_ANTI) {
-                innerstartsel = 0.0;
-                innerendsel = 1.0;
-            }
+        if (bms_is_subset(firstclause->left_relids, outer_path->parent->relids)) {
+            /* left side of clause is outer */
+            outerstartsel = cache->leftstartsel;
+            outerendsel = cache->leftendsel;
+            innerstartsel = cache->rightstartsel;
+            innerendsel = cache->rightendsel;
         } else {
-            /* cope with clauseless or full mergejoin */
-            outerstartsel = innerstartsel = 0.0;
-            outerendsel = innerendsel = 1.0;
+            /* left side of clause is inner */
+            outerstartsel = cache->rightstartsel;
+            outerendsel = cache->rightendsel;
+            innerstartsel = cache->leftstartsel;
+            innerendsel = cache->leftendsel;
         }
 
-        /*
-         * Convert selectivities to row counts.  We force outer_rows and
-         * inner_rows to be at least 1, but the skip_rows estimates can be zero.
-         */
-        outer_skip_rows = rint(outer_path_rows * outerstartsel);
-        inner_skip_rows = rint(inner_path_rows * innerstartsel);
-        outer_rows = clamp_row_est(outer_path_rows * outerendsel);
-        inner_rows = clamp_row_est(inner_path_rows * innerendsel);
+        if (jointype == JOIN_LEFT || jointype == JOIN_ANTI) {
+            outerstartsel = 0.0;
+            outerendsel = 1.0;
+        } else if (jointype == JOIN_RIGHT || jointype == JOIN_RIGHT_ANTI) {
+            innerstartsel = 0.0;
+            innerendsel = 1.0;
+        }
+    } else {
+        /* Clauseless or FULL mergejoin: scan entire ranges. */
+        outerstartsel = innerstartsel = 0.0;
+        outerendsel = innerendsel = 1.0;
+    }
+
+    /* ----------------------------------------------------------------------
+     * 3) Initialize accumulators for scalar (mean) lower bounds
+     * ---------------------------------------------------------------------- */
+    Cost startup_accum = 0;
+    Cost total_accum = 0;
+    Cost run_accum = 0;
+    Cost inner_run_accum = 0;
+    double outer_rows_accum = 0;
+    double inner_rows_accum = 0;
+    double outer_skip_accum = 0;
+    double inner_skip_accum = 0;
+
+    /* ----------------------------------------------------------------------
+     * 4) Per-sample evaluation (point-to-point)
+     * ----------------------------------------------------------------------
+     * For each sample i, fetch outer/inner rows and costs from the i-th sample
+     * (or from sample[0]/scalars if const), then compute the fractional
+     * contribution to startup/run cost as in upstream logic.
+     */
+    for (int i = 0; i < sample_count; ++i) {
+        /* 4.1) Fetch per-sample input rows (guard against <= 0) */
+        double outer_path_rows = GET_ROW(outer_rows_samp, i, outer_path->rows, outer_is_const);
+        double inner_path_rows = GET_ROW(inner_rows_samp, i, inner_path->rows, inner_is_const);
+        if (outer_path_rows <= 0) outer_path_rows = 1;
+        if (inner_path_rows <= 0) inner_path_rows = 1;
+
+        /* 4.2) Convert selectivities to per-sample row counts (lower bounds) */
+        double outer_skip_rows = rint(outer_path_rows * outerstartsel);
+        double inner_skip_rows = rint(inner_path_rows * innerstartsel);
+        double outer_rows = clamp_row_est(outer_path_rows * outerendsel);
+        double inner_rows = clamp_row_est(inner_path_rows * innerendsel);
 
         Assert(outer_skip_rows <= outer_rows);
         Assert(inner_skip_rows <= inner_rows);
 
-        /*
-         * Readjust scan selectivities to account for above rounding.  This is
-         * normally an insignificant effect, but when there are only a few rows in
-         * the inputs, failing to do this makes for a large percentage error.
+        /* 4.3) Renormalize selectivities after rounding (small-N stability) */
+        double outerstartsel_i = outer_skip_rows / outer_path_rows;
+        double innerstartsel_i = inner_skip_rows / inner_path_rows;
+        double outerendsel_i = outer_rows / outer_path_rows;
+        double innerendsel_i = inner_rows / inner_path_rows;
+
+        Assert(outerstartsel_i <= outerendsel_i);
+        Assert(innerstartsel_i <= innerendsel_i);
+
+        /* 4.4) Build per-sample startup/run costs for each side
+         *      If sorting is required, cost it per sample using that sample's rows
+         *      and the sample's upstream input costs. Otherwise, use upstream
+         *      path costs per sample and slice them by selectivity.
          */
-        outerstartsel = outer_skip_rows / outer_path_rows;
-        innerstartsel = inner_skip_rows / inner_path_rows;
-        outerendsel = outer_rows / outer_path_rows;
-        innerendsel = inner_rows / inner_path_rows;
+        Cost startup_cost = 0;
+        Cost run_cost = 0;
+        Cost inner_run_cost;
 
-        Assert(outerstartsel <= outerendsel);
-        Assert(innerstartsel <= innerendsel);
+        Path sort_path; /* dummy holder for cost_sort result */
 
-        /* cost of source data */
+        /* ---- OUTER side ---- */
+        if (outersortkeys) {
+            /* Per-sample: feed cost_sort with this sample's outer rows.
+             * We also pass the input total cost of this sample to reflect
+             * the upstream cost in the sort pipeline.
+             */
+            Cost outer_total_cost_i =
+                    GET_COST(outer_total_samp, i, outer_path->total_cost, outer_is_const);
 
-        if (outersortkeys) /* do we need to sort outer? */
-        {
             cost_sort(&sort_path,
                       root,
                       outersortkeys,
-                      outer_path->total_cost,
-                      outer_path_rows,
+                      outer_total_cost_i, /* input total cost (your signature) */
+                      outer_path_rows, /* input rows for this sample       */
                       outer_path->pathtarget->width,
                       0.0,
                       work_mem,
                       -1.0);
+
+            /* Slice sort cost into startup & run fractions per upstream logic */
             startup_cost += sort_path.startup_cost;
-            startup_cost += (sort_path.total_cost - sort_path.startup_cost)
-                    * outerstartsel;
-            run_cost += (sort_path.total_cost - sort_path.startup_cost)
-                    * (outerendsel - outerstartsel);
+            startup_cost += (sort_path.total_cost - sort_path.startup_cost) * outerstartsel_i;
+            run_cost += (sort_path.total_cost - sort_path.startup_cost) * (outerendsel_i - outerstartsel_i);
         } else {
-            startup_cost += outer_path->startup_cost;
-            startup_cost += (outer_path->total_cost - outer_path->startup_cost)
-                    * outerstartsel;
-            run_cost += (outer_path->total_cost - outer_path->startup_cost)
-                    * (outerendsel - outerstartsel);
+            /* Use outer path's own per-sample costs */
+            Cost outer_startup_cost_i =
+                    GET_COST(outer_startup_samp, i, outer_path->startup_cost, outer_is_const);
+            Cost outer_total_cost_i =
+                    GET_COST(outer_total_samp, i, outer_path->total_cost, outer_is_const);
+
+            startup_cost += outer_startup_cost_i;
+            startup_cost += (outer_total_cost_i - outer_startup_cost_i) * outerstartsel_i;
+            run_cost += (outer_total_cost_i - outer_startup_cost_i) * (outerendsel_i - outerstartsel_i);
         }
 
-        if (innersortkeys) /* do we need to sort inner? */
-        {
+        /* ---- INNER side ---- */
+        if (innersortkeys) {
+            Cost inner_total_cost_i =
+                    GET_COST(inner_total_samp, i, inner_path->total_cost, inner_is_const);
+
             cost_sort(&sort_path,
                       root,
                       innersortkeys,
-                      inner_path->total_cost,
-                      inner_path_rows,
+                      inner_total_cost_i, /* input total cost (your signature) */
+                      inner_path_rows, /* input rows for this sample        */
                       inner_path->pathtarget->width,
                       0.0,
                       work_mem,
                       -1.0);
+
             startup_cost += sort_path.startup_cost;
-            startup_cost += (sort_path.total_cost - sort_path.startup_cost)
-                    * innerstartsel;
-            inner_run_cost = (sort_path.total_cost - sort_path.startup_cost)
-                             * (innerendsel - innerstartsel);
+            startup_cost += (sort_path.total_cost - sort_path.startup_cost) * innerstartsel_i;
+            inner_run_cost = (sort_path.total_cost - sort_path.startup_cost) * (innerendsel_i - innerstartsel_i);
         } else {
-            startup_cost += inner_path->startup_cost;
-            startup_cost += (inner_path->total_cost - inner_path->startup_cost)
-                    * innerstartsel;
-            inner_run_cost = (inner_path->total_cost - inner_path->startup_cost)
-                             * (innerendsel - innerstartsel);
+            Cost inner_startup_cost_i =
+                    GET_COST(inner_startup_samp, i, inner_path->startup_cost, inner_is_const);
+            Cost inner_total_cost_i =
+                    GET_COST(inner_total_samp, i, inner_path->total_cost, inner_is_const);
+
+            startup_cost += inner_startup_cost_i;
+            startup_cost += (inner_total_cost_i - inner_startup_cost_i) * innerstartsel_i;
+            inner_run_cost = (inner_total_cost_i - inner_startup_cost_i) * (innerendsel_i - innerstartsel_i);
         }
 
-        /*
-         * We can't yet determine whether rescanning occurs, or whether
-         * materialization of the inner input should be done.  The minimum
-         * possible inner input cost, regardless of rescan and materialization
-         * considerations, is inner_run_cost.  We include that in
-         * workspace->total_cost, but not yet in run_cost.
+        /* 4.5) Phase-1 rule: we cannot yet decide on rescans/materialization.
+         *      The minimum inner-side cost to include in total is inner_run_cost.
+         *      Do NOT add it to run_cost yet (leave that to phase-2 decisions).
          */
 
-        /* CPU costs left for later */
+        /* 4.6) Record per-sample lower bounds into workspace */
+        workspace->startup_cost_sample[i] = startup_cost;
+        workspace->total_cost_sample[i] = startup_cost + run_cost + inner_run_cost;
 
-        /* Public result fields */
-        workspace->startup_cost_sample[sample_idx] = startup_cost;
-        workspace->total_cost_sample[sample_idx] = startup_cost + run_cost + inner_run_cost;
-        /* Save private data for final_cost_mergejoin */
-        workspace->run_cost_sample[sample_idx] = run_cost;
-        workspace->inner_run_cost_sample[sample_idx] = inner_run_cost;
-        workspace->outer_rows_sample[sample_idx] = outer_rows;
-        workspace->inner_rows_sample[sample_idx] = inner_rows;
-        workspace->outer_skip_rows_sample[sample_idx] = outer_skip_rows;
-        workspace->inner_skip_rows_sample[sample_idx] = inner_skip_rows;
+        workspace->run_cost_sample[i] = run_cost;
+        workspace->inner_run_cost_sample[i] = inner_run_cost;
+        workspace->outer_rows_sample[i] = outer_rows;
+        workspace->inner_rows_sample[i] = inner_rows;
+        workspace->outer_skip_rows_sample[i] = outer_skip_rows;
+        workspace->inner_skip_rows_sample[i] = inner_skip_rows;
 
-        /* Public result fields */
-        workspace->startup_cost += startup_cost;
-        workspace->total_cost += startup_cost + run_cost + inner_run_cost;
-        /* Save private data for final_cost_mergejoin */
-        workspace->run_cost += run_cost;
-        workspace->inner_run_cost += inner_run_cost;
-        workspace->outer_rows += outer_rows;
-        workspace->inner_rows += inner_rows;
-        workspace->outer_skip_rows += outer_skip_rows;
-        workspace->inner_skip_rows += inner_skip_rows;
+        /* 4.7) Accumulate for scalar (mean) outputs */
+        startup_accum += startup_cost;
+        total_accum += startup_cost + run_cost + inner_run_cost;
+        run_accum += run_cost;
+        inner_run_accum += inner_run_cost;
+        outer_rows_accum += outer_rows;
+        inner_rows_accum += inner_rows;
+        outer_skip_accum += outer_skip_rows;
+        inner_skip_accum += inner_skip_rows;
     }
 
-    /* ------------------------------- Finalization ------------------------------- */
-    /* Public result fields */
-    workspace->startup_cost /= (double) outer_sample_count;
-    workspace->total_cost /= (double) outer_sample_count;
-    /* Save private data for final_cost_mergejoin */
-    workspace->run_cost /= (double) outer_sample_count;
-    workspace->inner_run_cost /= (double) outer_sample_count;
-    workspace->outer_rows /= (double) outer_sample_count;
-    workspace->inner_rows /= (double) outer_sample_count;
-    workspace->outer_skip_rows /= (double) outer_sample_count;
-    workspace->inner_skip_rows /= (double) outer_sample_count;
+    /* ----------------------------------------------------------------------
+     * 5) Finalize scalar lower bounds as per-sample means
+     * ---------------------------------------------------------------------- */
+    const double invN = 1.0 / (double) sample_count;
+
+    workspace->startup_cost = startup_accum * invN;
+    workspace->total_cost = total_accum * invN;
+
+    workspace->run_cost = run_accum * invN;
+    workspace->inner_run_cost = inner_run_accum * invN;
+
+    workspace->outer_rows = outer_rows_accum * invN;
+    workspace->inner_rows = inner_rows_accum * invN;
+    workspace->outer_skip_rows = outer_skip_accum * invN;
+    workspace->inner_skip_rows = inner_skip_accum * invN;
 }
 
 /*
