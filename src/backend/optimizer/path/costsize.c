@@ -720,7 +720,7 @@ void cost_gather_merge(
 
 /*
  * cost_index
- *	  Determines and returns the cost of scanning a relation using an index.
+ *   Determine and return the cost of scanning a relation using an index.
  *
  * 'path' describes the indexscan under consideration, and is complete
  *		except for the fields to be set by this routine
@@ -735,221 +735,135 @@ void cost_gather_merge(
  * restrictions.  Any additional quals evaluated as qpquals may reduce the
  * number of returned tuples, but they won't reduce the number of tuples
  * we have to fetch from the table, so they don't reduce the scan cost.
+ *
+ * This version extends the classic PostgreSQL logic by supporting
+ * per-sample distributions for rows and costs, while preserving original
+ * semantics (esp. under parallelism: rows represent per-worker rows).
  */
 void cost_index(
-    IndexPath *path, PlannerInfo *root, double loop_count,
-    bool partial_path
+    IndexPath *path, PlannerInfo *root,
+    double loop_count,bool partial_path
 ) {
-    /* ------------------------------- Initialization ------------------------------- */
-    bool indexonly = (path->path.pathtype == T_IndexOnlyScan);
-    amcostestimate_function amcostestimate;
-    List *qpquals;
-
+    /* ----------------------------------------------------------------------
+     * 0) Preconditions & basic objects
+     * ----------------------------------------------------------------------
+     * Applies only to base relations; fetch key structs early.
+     */
     IndexOptInfo *index = path->indexinfo;
     RelOptInfo *baserel = index->rel;
+    bool indexonly = (path->path.pathtype == T_IndexOnlyScan);
 
-    /* Should only be applied to base relations */
-    Assert(IsA(baserel, RelOptInfo) &&
-        IsA(index, IndexOptInfo));
+    Assert(IsA(baserel, RelOptInfo) && IsA(index, IndexOptInfo));
     Assert(baserel->relid > 0);
     Assert(baserel->rtekind == RTE_RELATION);
 
-    /*
-     * Mark the path with the correct row estimate, and identify which quals
-     * will need to be enforced as qpquals.  We need not check any quals that
-     * are implied by the index's predicate, so we can use indrestrictinfo not
-     * baserestrictinfo as the list of relevant restriction clauses for the
-     * rel.
+    /* ----------------------------------------------------------------------
+     * 1) Resolve row estimates and qpquals; clone (don't mutate) samples
+     * ----------------------------------------------------------------------
+     * Use param_info (if any) for rows; qpquals are "non-index" quals.
      */
+    List *qpquals;
     if (path->path.param_info) {
         path->path.rows = path->path.param_info->ppi_rows;
-        path->path.rows_sample = duplicate_sample(path->path.param_info->ppi_rows_sample);
-        /* qpquals come from the rel's restriction clauses and ppi_clauses */
+        path->path.rows_sample =
+                duplicate_sample(path->path.param_info->ppi_rows_sample); /* may be NULL */
+
         qpquals = list_concat(
-            extract_nonindex_conditions(
-                path->indexinfo->indrestrictinfo,
-                path->indexclauses
-            ),
-            extract_nonindex_conditions(
-                path->path.param_info->ppi_clauses,
-                path->indexclauses
-            )
-        );
+            extract_nonindex_conditions(path->indexinfo->indrestrictinfo,
+                                        path->indexclauses),
+            extract_nonindex_conditions(path->path.param_info->ppi_clauses,
+                                        path->indexclauses));
     } else {
         path->path.rows = baserel->rows;
-        path->path.rows_sample = duplicate_sample(baserel->rows_sample);
-        /* qpquals come from just the rel's restriction clauses */
-        qpquals = extract_nonindex_conditions(
-            path->indexinfo->indrestrictinfo,
-            path->indexclauses
-        );
+        path->path.rows_sample = duplicate_sample(baserel->rows_sample); /* may be NULL */
+
+        qpquals = extract_nonindex_conditions(path->indexinfo->indrestrictinfo,
+                                              path->indexclauses);
     }
 
-    /* Initialize the startup and total cost samples */
-    const int sample_count = path->path.rows_sample->sample_count;
-    // FIXME: Is this correct?
-    path->path.rows = 0.0;
-    path->path.startup_cost = 0.0;
-    path->path.startup_cost_sample = initialize_sample(sample_count);
-    path->path.total_cost = 0.0;
-    path->path.total_cost_sample = initialize_sample(sample_count);
-
-    /* ------------------------------- Point-to-Point ------------------------------- */
-    for (int sample_idx = 0; sample_idx < sample_count; ++sample_idx) {
-        const double path_rows = path->path.rows_sample->sample[sample_idx];
-
+    /* ----------------------------------------------------------------------
+     * 2) Fallback: no samples -> compute exactly like upstream (single-point)
+     * ----------------------------------------------------------------------
+     * Keep behavior identical to the original function for compatibility.
+     */
+    if (path->path.rows_sample == NULL || path->path.rows_sample->sample_count <= 0) {
         Cost startup_cost = 0;
         Cost run_cost = 0;
         Cost cpu_run_cost = 0;
+        amcostestimate_function amcostestimate;
         Cost indexStartupCost;
         Cost indexTotalCost;
         Selectivity indexSelectivity;
-        double indexCorrelation,
-                csquared;
-        double spc_seq_page_cost,
-                spc_random_page_cost;
-        Cost min_IO_cost,
-                max_IO_cost;
+        double indexCorrelation, csquared;
+        double spc_seq_page_cost, spc_random_page_cost;
+        Cost min_IO_cost, max_IO_cost;
         QualCost qpqual_cost;
         Cost cpu_per_tuple;
-        double tuples_fetched;
-        double pages_fetched;
-        double rand_heap_pages;
-        double index_pages;
+        double tuples_fetched, pages_fetched, rand_heap_pages, index_pages;
 
         if (!enable_indexscan)
             startup_cost += disable_cost;
-        /* we don't need to check enable_indexonlyscan; indxpath.c does that */
 
-        /*
-         * Call index-access-method-specific code to estimate the processing cost
-         * for scanning the index, as well as the selectivity of the index (ie,
-         * the fraction of main-table tuples we will have to retrieve) and its
-         * correlation to the main-table tuple order.  We need a cast here because
-         * pathnodes.h uses a weak function type to avoid including amapi.h.
-         */
         amcostestimate = (amcostestimate_function) index->amcostestimate;
-        amcostestimate(root, path, loop_count,
-                       &indexStartupCost, &indexTotalCost,
-                       &indexSelectivity, &indexCorrelation,
-                       &index_pages);
+        amcostestimate(
+            root, path, loop_count,
+            &indexStartupCost, &indexTotalCost,
+            &indexSelectivity, &indexCorrelation,
+            &index_pages
+        );
 
-        /*
-         * Save amcostestimate's results for possible use in bitmap scan planning.
-         * We don't bother to save indexStartupCost or indexCorrelation, because a
-         * bitmap scan doesn't care about either.
-         */
         path->indextotalcost = indexTotalCost;
         path->indexselectivity = indexSelectivity;
 
-        /* all costs for touching index itself included here */
         startup_cost += indexStartupCost;
         run_cost += indexTotalCost - indexStartupCost;
 
-        /* estimate number of main-table tuples fetched */
         tuples_fetched = clamp_row_est(indexSelectivity * baserel->tuples);
 
-        /* fetch estimated page costs for tablespace containing table */
-        get_tablespace_page_costs(baserel->reltablespace,
-                                  &spc_random_page_cost,
-                                  &spc_seq_page_cost);
+        get_tablespace_page_costs(
+            baserel->reltablespace,
+            &spc_random_page_cost,
+            &spc_seq_page_cost
+        );
 
-        /*----------
-         * Estimate number of main-table pages fetched, and compute I/O cost.
-         *
-         * When the index ordering is uncorrelated with the table ordering,
-         * we use an approximation proposed by Mackert and Lohman (see
-         * index_pages_fetched() for details) to compute the number of pages
-         * fetched, and then charge spc_random_page_cost per page fetched.
-         *
-         * When the index ordering is exactly correlated with the table ordering
-         * (just after a CLUSTER, for example), the number of pages fetched should
-         * be exactly selectivity * table_size.  What's more, all but the first
-         * will be sequential fetches, not the random fetches that occur in the
-         * uncorrelated case.  So if the number of pages is more than 1, we
-         * ought to charge
-         *		spc_random_page_cost + (pages_fetched - 1) * spc_seq_page_cost
-         * For partially-correlated indexes, we ought to charge somewhere between
-         * these two estimates.  We currently interpolate linearly between the
-         * estimates based on the correlation squared (XXX is that appropriate?).
-         *
-         * If it's an index-only scan, then we will not need to fetch any heap
-         * pages for which the visibility map shows all tuples are visible.
-         * Hence, reduce the estimated number of heap fetches accordingly.
-         * We use the measured fraction of the entire heap that is all-visible,
-         * which might not be particularly relevant to the subset of the heap
-         * that this query will fetch; but it's not clear how to do better.
-         *----------
-         */
         if (loop_count > 1) {
-            /*
-             * For repeated indexscans, the appropriate estimate for the
-             * uncorrelated case is to scale up the number of tuples fetched in
-             * the Mackert and Lohman formula by the number of scans, so that we
-             * estimate the number of pages fetched by all the scans; then
-             * pro-rate the costs for one scan.  In this case we assume all the
-             * fetches are random accesses.
-             */
             pages_fetched = index_pages_fetched(
                 tuples_fetched * loop_count,
                 baserel->pages,
                 (double) index->pages,
                 root
             );
-
             if (indexonly)
                 pages_fetched = ceil(pages_fetched * (1.0 - baserel->allvisfrac));
 
             rand_heap_pages = pages_fetched;
-
             max_IO_cost = (pages_fetched * spc_random_page_cost) / loop_count;
 
-            /*
-             * In the perfectly correlated case, the number of pages touched by
-             * each scan is selectivity * table_size, and we can use the Mackert
-             * and Lohman formula at the page level to estimate how much work is
-             * saved by caching across scans.  We still assume all the fetches are
-             * random, though, which is an overestimate that's hard to correct for
-             * without double-counting the cache effects.  (But in most cases
-             * where such a plan is actually interesting, only one page would get
-             * fetched per scan anyway, so it shouldn't matter much.)
-             */
             pages_fetched = ceil(indexSelectivity * (double) baserel->pages);
-
             pages_fetched = index_pages_fetched(
                 pages_fetched * loop_count,
                 baserel->pages,
                 (double) index->pages,
                 root
             );
-
             if (indexonly)
                 pages_fetched = ceil(pages_fetched * (1.0 - baserel->allvisfrac));
 
             min_IO_cost = (pages_fetched * spc_random_page_cost) / loop_count;
         } else {
-            /*
-             * Normal case: apply the Mackert and Lohman formula, and then
-             * interpolate between that and the correlation-derived result.
-             */
             pages_fetched = index_pages_fetched(
                 tuples_fetched,
                 baserel->pages,
                 (double) index->pages,
                 root
             );
-
             if (indexonly)
                 pages_fetched = ceil(pages_fetched * (1.0 - baserel->allvisfrac));
 
             rand_heap_pages = pages_fetched;
-
-            /* max_IO_cost is for the perfectly uncorrelated case (csquared=0) */
             max_IO_cost = pages_fetched * spc_random_page_cost;
 
-            /* min_IO_cost is for the perfectly correlated case (csquared=1) */
             pages_fetched = ceil(indexSelectivity * (double) baserel->pages);
-
             if (indexonly)
                 pages_fetched = ceil(pages_fetched * (1.0 - baserel->allvisfrac));
 
@@ -962,20 +876,9 @@ void cost_index(
         }
 
         if (partial_path) {
-            /*
-             * For index only scans compute workers based on number of index pages
-             * fetched; the number of heap pages we fetch might be so small as to
-             * effectively rule out parallelism, which we don't want to do.
-             */
             if (indexonly)
                 rand_heap_pages = -1;
 
-            /*
-             * Estimate the number of parallel workers required to scan index. Use
-             * the number of heap pages computed considering heap fetches won't be
-             * sequential as for parallel scans the pages are accessed in random
-             * order.
-             */
             path->path.parallel_workers = compute_parallel_worker(
                 baserel,
                 rand_heap_pages,
@@ -983,31 +886,15 @@ void cost_index(
                 max_parallel_workers_per_gather
             );
 
-            /*
-             * Fall out if workers can't be assigned for parallel scan, because in
-             * such a case this path will be rejected.  So there is no benefit in
-             * doing extra computation.
-             */
             if (path->path.parallel_workers <= 0)
                 return;
 
             path->path.parallel_aware = true;
         }
 
-        /*
-         * Now interpolate based on estimated index order correlation to get total
-         * disk I/O cost for main table accesses.
-         */
         csquared = indexCorrelation * indexCorrelation;
-
         run_cost += max_IO_cost + csquared * (min_IO_cost - max_IO_cost);
 
-        /*
-         * Estimate CPU costs per tuple.
-         *
-         * What we want here is cpu_tuple_cost plus the evaluation costs of any
-         * qual clauses that we have to evaluate as qpquals.
-         */
         cost_qual_eval(&qpqual_cost, qpquals, root);
 
         startup_cost += qpqual_cost.startup;
@@ -1015,33 +902,228 @@ void cost_index(
 
         cpu_run_cost += cpu_per_tuple * tuples_fetched;
 
-        /* tlist eval costs are paid per output row, not per tuple scanned */
         startup_cost += path->path.pathtarget->cost.startup;
-        cpu_run_cost += path->path.pathtarget->cost.per_tuple * path_rows;
+        cpu_run_cost += path->path.pathtarget->cost.per_tuple * path->path.rows;
 
-        /* Adjust costing for parallelism, if used. */
         if (path->path.parallel_workers > 0) {
             double parallel_divisor = get_parallel_divisor(&path->path);
-
-            path->path.rows_sample->sample[sample_idx] = clamp_row_est(path_rows / parallel_divisor);
-
-            /* The CPU cost is divided among all the workers. */
+            path->path.rows = clamp_row_est(path->path.rows / parallel_divisor);
             cpu_run_cost /= parallel_divisor;
         }
+
         run_cost += cpu_run_cost;
 
-        path->path.rows += path->path.rows_sample->sample[sample_idx];
-
-        path->path.startup_cost_sample->sample[sample_idx] = startup_cost;
-        path->path.total_cost_sample->sample[sample_idx] = startup_cost + run_cost;
-
-        path->path.startup_cost += startup_cost;
-        path->path.total_cost += startup_cost + run_cost;
+        path->path.startup_cost = startup_cost;
+        path->path.total_cost = startup_cost + run_cost;
+        return;
     }
 
-    path->path.rows /= (double) sample_count;
-    path->path.startup_cost /= (double) sample_count;
-    path->path.total_cost /= (double) sample_count;
+    /* ----------------------------------------------------------------------
+     * 3) Allocate per-sample outputs; set accumulators for scalar means
+     * ----------------------------------------------------------------------
+     * We will keep per-sample startup/total costs and average into scalars.
+     */
+    const int sample_count = path->path.rows_sample->sample_count;
+    Assert(sample_count > 0);
+
+    path->path.startup_cost_sample = initialize_sample(sample_count);
+    path->path.total_cost_sample = initialize_sample(sample_count);
+
+    double rows_accum = 0.0; /* per-worker rows */
+    Cost startup_accum = 0.0;
+    Cost total_accum = 0.0;
+
+    /* ----------------------------------------------------------------------
+     * 4) Precompute sample-invariant terms (I/O, quals, AM costs, etc.)
+     * ----------------------------------------------------------------------
+     * Avoid recomputing inside the loop; prevents subtle inconsistencies.
+     */
+    amcostestimate_function amcostestimate =
+            (amcostestimate_function) index->amcostestimate;
+
+    Cost indexStartupCost;
+    Cost indexTotalCost;
+    Selectivity indexSelectivity;
+    double indexCorrelation;
+    double index_pages; /* double in API */
+
+    amcostestimate(
+        root, path, loop_count,
+        &indexStartupCost, &indexTotalCost,
+        &indexSelectivity, &indexCorrelation,
+        &index_pages
+    );
+
+    /* Save for bitmap planning (as in upstream). */
+    path->indextotalcost = indexTotalCost;
+    path->indexselectivity = indexSelectivity;
+
+    /* Costs for touching the index itself. */
+    const Cost run_cost_index = indexTotalCost - indexStartupCost;
+    Cost startup_bias = 0;
+    if (!enable_indexscan)
+        startup_bias += disable_cost;
+
+    /* Fetch tablespace page costs (heap I/O). */
+    double spc_seq_page_cost, spc_random_page_cost;
+    get_tablespace_page_costs(
+        baserel->reltablespace,
+        &spc_random_page_cost,
+        &spc_seq_page_cost
+    );
+
+    /* Estimate heap tuples fetched (selectivity * table tuples). */
+    const double tuples_fetched =
+            clamp_row_est(indexSelectivity * baserel->tuples);
+
+    /* Compute heap page I/O costs per original logic (independent of samples). */
+    Cost max_IO_cost, min_IO_cost;
+    double pages_fetched, rand_heap_pages;
+
+    if (loop_count > 1) {
+        pages_fetched = index_pages_fetched(
+            tuples_fetched * loop_count,
+            baserel->pages,
+            (double) index->pages,
+            root
+        );
+        if (indexonly)
+            pages_fetched = ceil(pages_fetched * (1.0 - baserel->allvisfrac));
+
+        rand_heap_pages = pages_fetched;
+        max_IO_cost = (pages_fetched * spc_random_page_cost) / loop_count;
+
+        pages_fetched = ceil(indexSelectivity * (double) baserel->pages);
+        pages_fetched = index_pages_fetched(
+            pages_fetched * loop_count,
+            baserel->pages,
+            (double) index->pages,
+            root
+        );
+        if (indexonly)
+            pages_fetched = ceil(pages_fetched * (1.0 - baserel->allvisfrac));
+
+        min_IO_cost = (pages_fetched * spc_random_page_cost) / loop_count;
+    } else {
+        pages_fetched = index_pages_fetched(
+            tuples_fetched,
+            baserel->pages,
+            (double) index->pages,
+            root
+        );
+        if (indexonly)
+            pages_fetched = ceil(pages_fetched * (1.0 - baserel->allvisfrac));
+
+        rand_heap_pages = pages_fetched;
+        max_IO_cost = pages_fetched * spc_random_page_cost;
+
+        pages_fetched = ceil(indexSelectivity * (double) baserel->pages);
+        if (indexonly)
+            pages_fetched = ceil(pages_fetched * (1.0 - baserel->allvisfrac));
+
+        if (pages_fetched > 0) {
+            min_IO_cost = spc_random_page_cost;
+            if (pages_fetched > 1)
+                min_IO_cost += (pages_fetched - 1) * spc_seq_page_cost;
+        } else
+            min_IO_cost = 0;
+    }
+
+    /* Optionally determine parallel workers (upstream semantics). */
+    if (partial_path) {
+        if (indexonly)
+            rand_heap_pages = -1;
+
+        path->path.parallel_workers = compute_parallel_worker(
+            baserel,
+            rand_heap_pages,
+            index_pages,
+            max_parallel_workers_per_gather
+        );
+
+        if (path->path.parallel_workers <= 0)
+            return;
+
+        path->path.parallel_aware = true;
+    }
+
+    /* Interpolate I/O cost based on correlation. */
+    const double csquared = indexCorrelation * indexCorrelation;
+    const Cost heap_io_cost = max_IO_cost + csquared * (min_IO_cost - max_IO_cost);
+
+    /* Qual eval costs (sample-invariant). */
+    QualCost qpqual_cost;
+    cost_qual_eval(&qpqual_cost, qpquals, root);
+
+    const Cost tlist_startup = path->path.pathtarget->cost.startup;
+    const Cost tlist_per_tuple = path->path.pathtarget->cost.per_tuple;
+    const Cost cpu_per_tuple = cpu_tuple_cost + qpqual_cost.per_tuple;
+
+    const bool use_parallel = (path->path.parallel_workers > 0);
+    const double parallel_divisor = use_parallel ? get_parallel_divisor(&path->path) : 1.0;
+
+    /* Base startup cost (no sample dependence). */
+    const Cost startup_base =
+            startup_bias + indexStartupCost + qpqual_cost.startup + tlist_startup;
+
+    /* Base run cost parts independent of samples. */
+    const Cost run_cost_base = run_cost_index + heap_io_cost;
+
+    /* ----------------------------------------------------------------------
+     * 5) Per-sample evaluation (do NOT mutate input samples)
+     * ----------------------------------------------------------------------
+     * For each sample row estimate:
+     *  - compute per-sample CPU run cost (tlist per output row)
+     *  - apply parallel divisor to CPU & rows (not to heap I/O)
+     *  - record sample startup/total; accumulate means for scalars
+     */
+    for (int i = 0; i < sample_count; ++i) {
+        const double sample_rows_global = path->path.rows_sample->sample[i];
+
+        /* 5.1) Per-sample startup cost: identical across samples here. */
+        const Cost startup_cost = startup_base;
+
+        /* 5.2) CPU run cost = scan-all-tuples + tlist per output row. */
+        Cost cpu_run_cost = cpu_per_tuple * baserel->tuples;
+        double worker_rows = sample_rows_global;
+
+        if (use_parallel) {
+            cpu_run_cost /= parallel_divisor;
+            worker_rows = clamp_row_est(sample_rows_global / parallel_divisor);
+        }
+
+        cpu_run_cost += tlist_per_tuple * worker_rows;
+
+        /* 5.3) Total run cost = base (index + heap I/O) + per-sample CPU. */
+        const Cost run_cost = run_cost_base + cpu_run_cost;
+        const Cost total_cost = startup_cost + run_cost;
+
+        /* 5.4) Record per-sample outputs and update accumulators. */
+        path->path.startup_cost_sample->sample[i] = startup_cost;
+        path->path.total_cost_sample->sample[i] = total_cost;
+
+        rows_accum += worker_rows; /* per-worker rows mean */
+        startup_accum += startup_cost;
+        total_accum += total_cost;
+    }
+
+    /* ----------------------------------------------------------------------
+     * 6) Finalize scalar outputs by averaging across samples
+     * ----------------------------------------------------------------------
+     * Keep classic semantics (rows are per-worker under parallelism).
+     */
+    const double invN = 1.0 / (double) sample_count;
+    path->path.rows = rows_accum * invN;
+    path->path.startup_cost = startup_accum * invN;
+    path->path.total_cost = total_accum * invN;
+
+    /* ----------------------------------------------------------------------
+     * 7) Notes
+     * ----------------------------------------------------------------------
+     * - We do not amortize heap I/O under parallelism (same as upstream).
+     * - Helpers duplicate_sample()/initialize_sample() are assumed to
+     *   allocate in the Planner context so samples live as long as the Path.
+     */
 }
 
 void log_join_rows_and_cost_sample(
