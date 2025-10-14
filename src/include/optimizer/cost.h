@@ -312,7 +312,7 @@ extern void final_cost_mergejoin(
     PlannerInfo *root,
     MergePath *path,
     JoinCostWorkspace *workspace,
-    JoinPathExtraData *extra
+    const JoinPathExtraData *extra
 );
 
 extern void initial_cost_hashjoin(

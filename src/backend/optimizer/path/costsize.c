@@ -3918,14 +3918,31 @@ void initial_cost_mergejoin(
 void final_cost_mergejoin(
     PlannerInfo *root, MergePath *path,
     JoinCostWorkspace *workspace,
-    JoinPathExtraData *extra
+    const JoinPathExtraData *extra
 ) {
-    /* ------------------------------- Initialization ------------------------------- */
-    const Path *outer_path = path->jpath.outerjoinpath;
-    const Path *inner_path = path->jpath.innerjoinpath;
-    const int workspace_sample_count = workspace->sample_count;
+    /* ------------------------------- 1) Resolve paths & row samples ------------------------------- */
+    Path *outer_path = path->jpath.outerjoinpath;
+    Path *inner_path = path->jpath.innerjoinpath;
 
-    /* Mark the path with the correct row estimate */
+    /* Row samples (support IndexPath->path) */
+    const Sample *outer_rows_samp =
+    (IsA(outer_path, IndexPath)
+         ? ((IndexPath *) outer_path)->path.rows_sample
+         : outer_path->rows_sample);
+    const Sample *inner_rows_samp =
+    (IsA(inner_path, IndexPath)
+         ? ((IndexPath *) inner_path)->path.rows_sample
+         : inner_path->rows_sample);
+
+    const int outer_sc = outer_rows_samp ? outer_rows_samp->sample_count : 0;
+    const int inner_sc = inner_rows_samp ? inner_rows_samp->sample_count : 0;
+    const bool outer_const = (outer_sc <= 1);
+    const bool inner_const = (inner_sc <= 1);
+
+    /* Authoritative loop size from the workspace */
+    const int sample_count = (workspace->sample_count > 0) ? workspace->sample_count : 1;
+
+    /* ------------------------------- 2) Set scalar output rows (+ optional rows_sample) ------------------------------- */
     if (path->jpath.path.param_info) {
         path->jpath.path.rows = path->jpath.path.param_info->ppi_rows;
         path->jpath.path.rows_sample = duplicate_sample(path->jpath.path.param_info->ppi_rows_sample);
@@ -3946,246 +3963,139 @@ void final_cost_mergejoin(
         path->jpath.path.rows_sample = new_sample;
     }
 
-    /* Initialize the startup and total cost samples */
-    path->jpath.path.startup_cost = 0.0;
-    path->jpath.path.startup_cost_sample = initialize_sample(workspace_sample_count);
-    path->jpath.path.total_cost = 0.0;
-    path->jpath.path.total_cost_sample = initialize_sample(workspace_sample_count);
-
-    QualCost merge_qual_cost;
-    QualCost qp_qual_cost;
-    List *mergeclauses = path->path_mergeclauses;
-    const List *innersortkeys = path->innersortkeys;
-    double rescannedtuples;
-
-    /* ------------------------------- Common Process ------------------------------- */
-    double inner_path_rows = inner_path->rows;
-    const Cost inner_run_cost = workspace->inner_run_cost;
-    const double inner_rows = workspace->inner_rows;
-
-    /* Protect some assumptions below that rowcounts aren't zero */
-    if (inner_path_rows <= 0)
-        inner_path_rows = 1;
-
-    /*
-     * With a SEMI or ANTI join, or if the innerrel is known unique, the
-     * executor will stop scanning for matches after the first match.  When
-     * all the joinclauses are merge clauses, this means we don't ever need to
-     * back up the merge, and so we can skip mark/restore overhead.
-     */
-    if ((path->jpath.jointype == JOIN_SEMI ||
-         path->jpath.jointype == JOIN_ANTI ||
-         extra->inner_unique) &&
-        (list_length(path->jpath.joinrestrictinfo) ==
-         list_length(path->path_mergeclauses))) {
-        path->skip_mark_restore = true;
-    } else {
-        path->skip_mark_restore = false;
-    }
-
-    /*
-     * Compute cost of the mergequals and qpquals (other restriction clauses)
-     * separately.
-     */
-    cost_qual_eval(&merge_qual_cost, mergeclauses, root);
+    /* ------------------------------- 3) Split merge-qual vs. other-qual costs (sample-invariant) ------------------------------- */
+    QualCost merge_qual_cost, qp_qual_cost;
+    cost_qual_eval(&merge_qual_cost, path->path_mergeclauses, root);
     cost_qual_eval(&qp_qual_cost, path->jpath.joinrestrictinfo, root);
     qp_qual_cost.startup -= merge_qual_cost.startup;
     qp_qual_cost.per_tuple -= merge_qual_cost.per_tuple;
 
-    /*
-     * Get approx # tuples passing the mergequals.  We use approx_tuple_count
-     * here because we need an estimate done with JOIN_INNER semantics.
-     */
-    const double mergejointuples = approx_tuple_count(root, &path->jpath, mergeclauses);
+    const Cost tlist_startup = path->jpath.path.pathtarget->cost.startup;
+    const Cost tlist_per_tuple = path->jpath.path.pathtarget->cost.per_tuple;
 
-    /*
-     * When there are equal merge keys in the outer relation, the mergejoin
-     * must rescan any matching tuples in the inner relation. This means
-     * re-fetching inner tuples; we have to estimate how often that happens.
-     *
-     * For regular inner and outer joins, the number of re-fetches can be
-     * estimated approximately as size of merge join output minus size of
-     * inner relation. Assume that the distinct key values are 1, 2, ..., and
-     * denote the number of values of each key in the outer relation as m1,
-     * m2, ...; in the inner relation, n1, n2, ...  Then we have
-     *
-     * size of join = m1 * n1 + m2 * n2 + ...
-     *
-     * number of rescanned tuples = (m1 - 1) * n1 + (m2 - 1) * n2 + ... = m1 *
-     * n1 + m2 * n2 + ... - (n1 + n2 + ...) = size of join - size of inner
-     * relation
-     *
-     * This equation works correctly for outer tuples having no inner match
-     * (nk = 0), but not for inner tuples having no outer match (mk = 0); we
-     * are effectively subtracting those from the number of rescanned tuples,
-     * when we should not.  Can we do better without expensive selectivity
-     * computations?
-     *
-     * The whole issue is moot if we are working from a unique-ified outer
-     * input, or if we know we don't need to mark/restore at all.
-     */
-    if (IsA(outer_path, UniquePath) || path->skip_mark_restore)
-        rescannedtuples = 0;
-    else {
-        rescannedtuples = mergejointuples - inner_path_rows;
-        /* Must clamp because of possible underestimate */
-        if (rescannedtuples < 0)
-            rescannedtuples = 0;
-    }
-
-    /*
-     * We'll inflate various costs this much to account for rescanning.  Note
-     * that this is to be multiplied by something involving inner_rows, or
-     * another number related to the portion of the inner rel we'll scan.
-     */
-    const double rescanratio = 1.0 + (rescannedtuples / inner_rows);
-
-    /*
-     * Decide whether we want to materialize the inner input to shield it from
-     * mark/restore and performing re-fetches.  Our cost model for regular
-     * re-fetches is that a re-fetch costs the same as an original fetch,
-     * which is probably an overestimate; but on the other hand we ignore the
-     * bookkeeping costs of mark/restore.  Not clear if it's worth developing
-     * a more refined model.  So we just need to inflate the inner run cost by
-     * rescanratio.
-     */
-    const Cost bare_inner_cost = inner_run_cost * rescanratio;
-
-    /*
-     * When we interpose a Material node the re-fetch cost is assumed to be
-     * just cpu_operator_cost per tuple, independently of the underlying
-     * plan's cost; and we charge an extra cpu_operator_cost per original
-     * fetch as well.  Note that we're assuming the materialize node will
-     * never spill to disk, since it only has to remember tuples back to the
-     * last mark.  (If there are a huge number of duplicates, our other cost
-     * factors will make the path so expensive that it probably won't get
-     * chosen anyway.)	So we don't use cost_rescan here.
-     *
-     * Note: keep this estimate in sync with create_mergejoin_plan's labeling
-     * of the generated Material node.
-     */
-    const Cost mat_inner_cost = inner_run_cost +
-                                cpu_operator_cost * inner_rows * rescanratio;
-
-    /*
-     * If we don't need mark/restore at all, we don't need materialization.
-     */
-    if (path->skip_mark_restore)
-        path->materialize_inner = false;
-
-        /*
-         * Prefer materializing if it looks cheaper, unless the user has asked to
-         * suppress materialization.
-         */
-    else if (enable_material && mat_inner_cost < bare_inner_cost)
-        path->materialize_inner = true;
-
-        /*
-         * Even if materializing doesn't look cheaper, we *must* do it if the
-         * inner path is to be used directly (without sorting) and it doesn't
-         * support mark/restore.
-         *
-         * Since the inner side must be ordered, and only Sorts and IndexScans can
-         * create order to begin with, and they both support mark/restore, you
-         * might think there's no problem --- but you'd be wrong.  Nestloop and
-         * merge joins can *preserve* the order of their inputs, so they can be
-         * selected as the input of a mergejoin, and they don't support
-         * mark/restore at present.
-         *
-         * We don't test the value of enable_material here, because
-         * materialization is required for correctness in this case, and turning
-         * it off does not entitle us to deliver an invalid plan.
-         */
-    else if (innersortkeys == NIL &&
-             !ExecSupportsMarkRestore(inner_path))
-        path->materialize_inner = true;
-
-        /*
-         * Also, force materializing if the inner path is to be sorted and the
-         * sort is expected to spill to disk.  This is because the final merge
-         * pass can be done on-the-fly if it doesn't have to support mark/restore.
-         * We don't try to adjust the cost estimates for this consideration,
-         * though.
-         *
-         * Since materialization is a performance optimization in this case,
-         * rather than necessary for correctness, we skip it if enable_material is
-         * off.
-         */
-    else if (enable_material && innersortkeys != NIL &&
-             relation_byte_size(inner_path_rows,
-                                inner_path->pathtarget->width) >
-             (work_mem * 1024L))
-        path->materialize_inner = true;
+    /* ------------------------------- 4) Decide skip_mark_restore & materialize (DO THIS ONCE) ------------------------------- */
+    /* 4.1) Decide if mark/restore can be skipped (same rule as upstream) */
+    if ((path->jpath.jointype == JOIN_SEMI ||
+         path->jpath.jointype == JOIN_ANTI ||
+         extra->inner_unique) &&
+        (list_length(path->jpath.joinrestrictinfo) ==
+         list_length(path->path_mergeclauses)))
+        path->skip_mark_restore = true;
     else
-        path->materialize_inner = false;
+        path->skip_mark_restore = false;
 
-    /* ------------------------------- Point-to-Point ------------------------------- */
-    for (int sample_idx = 0; sample_idx < workspace_sample_count; ++sample_idx) {
-        Cost startup_cost = workspace->startup_cost_sample[sample_idx];
-        Cost run_cost = workspace->run_cost_sample[sample_idx];
-        // const Cost inner_run_cost = workspace->inner_run_cost_sample[sample_idx];
-        const double outer_rows = workspace->outer_rows_sample[sample_idx];
-        // const double inner_rows = workspace->inner_rows_sample[sample_idx];
-        const double outer_skip_rows = workspace->outer_skip_rows_sample[sample_idx];
-        const double inner_skip_rows = workspace->inner_skip_rows_sample[sample_idx];
+    /* 4.2) Compute rescannedtuples / rescanratio using SCALARS (stable across samples) */
+    double inner_path_rows_scalar = inner_path->rows;
+    if (inner_path_rows_scalar <= 0)
+        inner_path_rows_scalar = 1;
 
-        /*
-         * We could include disable_cost in the preliminary estimate, but that
-         * would amount to optimizing for the case where the join method is
-         * disabled, which doesn't seem like the way to bet.
-         */
-        if (!enable_mergejoin)
-            startup_cost += disable_cost;
+    /* INNER-semantics estimate for tuples passing merge quals (scalar) */
+    const double mergejointuples_scalar =
+            approx_tuple_count(root, &path->jpath, path->path_mergeclauses);
 
-        /* Charge the right incremental cost for the chosen case */
-        if (path->materialize_inner)
-            run_cost += mat_inner_cost;
-        else
-            run_cost += bare_inner_cost;
+    /* From workspace (scalar means) */
+    const double inner_rows_scalar = Max(workspace->inner_rows, 1.0);
+    const double outer_rows_scalar = Max(workspace->outer_rows, 1.0);
 
-        /* CPU costs */
-
-        /*
-         * The number of tuple comparisons needed is approximately number of outer
-         * rows plus number of inner rows plus number of rescanned tuples (can we
-         * refine this?).  At each one, we need to evaluate the mergejoin quals.
-         */
-        startup_cost += merge_qual_cost.startup;
-        startup_cost += merge_qual_cost.per_tuple *
-                (outer_skip_rows + inner_skip_rows * rescanratio);
-        run_cost += merge_qual_cost.per_tuple *
-        ((outer_rows - outer_skip_rows) +
-         (inner_rows - inner_skip_rows) * rescanratio);
-
-        /*
-         * For each tuple that gets through the mergejoin proper, we charge
-         * cpu_tuple_cost plus the cost of evaluating additional restriction
-         * clauses that are to be applied at the join.  (This is pessimistic since
-         * not all of the quals may get evaluated at each tuple.)
-         *
-         * Note: we could adjust for SEMI/ANTI joins skipping some qual
-         * evaluations here, but it's probably not worth the trouble.
-         */
-        startup_cost += qp_qual_cost.startup;
-        const Cost cpu_per_tuple = cpu_tuple_cost + qp_qual_cost.per_tuple;
-        run_cost += cpu_per_tuple * mergejointuples;
-
-        /* tlist eval costs are paid per output row, not per tuple scanned */
-        startup_cost += path->jpath.path.pathtarget->cost.startup;
-        run_cost += path->jpath.path.pathtarget->cost.per_tuple * path->jpath.path.rows_sample->sample[sample_idx];
-
-        path->jpath.path.startup_cost_sample->sample[sample_idx] = startup_cost;
-        path->jpath.path.total_cost_sample->sample[sample_idx] = startup_cost + run_cost;
-
-        path->jpath.path.startup_cost += startup_cost;
-        path->jpath.path.total_cost += startup_cost + run_cost;
+    double rescannedtuples_scalar;
+    if (IsA(outer_path, UniquePath) || path->skip_mark_restore)
+        rescannedtuples_scalar = 0.0;
+    else {
+        rescannedtuples_scalar = mergejointuples_scalar - inner_path_rows_scalar;
+        if (rescannedtuples_scalar < 0) rescannedtuples_scalar = 0.0;
     }
 
-    /* ------------------------------- Finalization ------------------------------- */
-    path->jpath.path.startup_cost /= (double) workspace_sample_count;
-    path->jpath.path.total_cost /= (double) workspace_sample_count;
+    const double rescanratio = 1.0 + (rescannedtuples_scalar / inner_rows_scalar);
 
-    log_join_rows_and_cost_sample(&path->jpath);
+    /* 4.3) Decide whether to materialize inner (use scalar costs; DO NOT flip per-sample) */
+    const Cost inner_run_cost_scalar = workspace->inner_run_cost; /* from initial phase (scalar mean) */
+    const Cost bare_inner_cost =
+            inner_run_cost_scalar * rescanratio;
+
+    const Cost mat_inner_cost =
+            inner_run_cost_scalar + cpu_operator_cost * inner_rows_scalar * rescanratio;
+
+    if (path->skip_mark_restore) {
+        path->materialize_inner = false; /* no mark/restore needed */
+    } else if (enable_material && mat_inner_cost < bare_inner_cost) {
+        path->materialize_inner = true; /* cheaper to materialize */
+    } else if (path->innersortkeys == NIL && !ExecSupportsMarkRestore(inner_path)) {
+        path->materialize_inner = true; /* required for correctness */
+    } else if (enable_material && path->innersortkeys != NIL &&
+               relation_byte_size(inner_path_rows_scalar, inner_path->pathtarget->width) >
+               (work_mem * 1024L)) {
+        path->materialize_inner = true; /* avoid sort’s mark/restore with spill risk */
+    } else {
+        path->materialize_inner = false;
+    }
+
+    /* ------------------------------- 5) Initialize per-sample outputs ------------------------------- */
+    path->jpath.path.startup_cost = 0.0;
+    path->jpath.path.startup_cost_sample = initialize_sample(sample_count);
+    path->jpath.path.total_cost = 0.0;
+    path->jpath.path.total_cost_sample = initialize_sample(sample_count);
+
+    /* Optional: match original behavior of penalizing when mergejoin is disabled. */
+    if (!enable_mergejoin) {
+        workspace->startup_cost += disable_cost;
+        for (int i = 0; i < sample_count; ++i) {
+            workspace->startup_cost_sample[i] += disable_cost;
+        }
+    }
+
+    /* ------------------------------- 6) Per-sample refinement ------------------------------- */
+    Cost startup_accum = 0.0, total_accum = 0.0;
+
+    for (int i = 0; i < sample_count; ++i) {
+        /* 6.1) Start from initial lower bounds for this sample */
+        Cost startup_cost_i = workspace->startup_cost_sample[i];
+        Cost run_cost_i = workspace->run_cost_sample[i];
+        Cost inner_run_cost_i = workspace->inner_run_cost_sample[i];
+
+        /* 6.2) Sample-specific row counts (protect against <= 0) */
+        double outer_rows_i = GET_ROW(outer_rows_samp, i, outer_path->rows, outer_const);
+        double inner_rows_i = GET_ROW(inner_rows_samp, i, inner_path->rows, inner_const);
+        const double outer_skip_i = workspace->outer_skip_rows_sample[i];
+        const double inner_skip_i = workspace->inner_skip_rows_sample[i];
+        if (outer_rows_i <= 0) outer_rows_i = 1;
+        if (inner_rows_i <= 0) inner_rows_i = 1;
+
+        /* 6.3) Charge the right incremental inner cost based on chosen strategy (fixed rescanratio) */
+        if (path->materialize_inner)
+            run_cost_i += inner_run_cost_i + cpu_operator_cost * inner_rows_i * rescanratio;
+        else
+            run_cost_i += inner_run_cost_i * rescanratio;
+
+        /* 6.4) CPU for merge quals: compare cost on skipped vs scanned portions */
+        startup_cost_i += merge_qual_cost.startup;
+        startup_cost_i += merge_qual_cost.per_tuple *
+                (outer_skip_i + inner_skip_i * rescanratio);
+        run_cost_i += merge_qual_cost.per_tuple *
+        ((outer_rows_i - outer_skip_i) +
+         (inner_rows_i - inner_skip_i) * rescanratio);
+
+        /* 6.5) CPU for qp quals (tuples that pass the merge join proper) */
+        const double mergejointuples_i = mergejointuples_scalar; /* keep scalar (inner semantics) */
+        startup_cost_i += qp_qual_cost.startup;
+        run_cost_i += (cpu_tuple_cost + qp_qual_cost.per_tuple) * mergejointuples_i;
+
+        /* 6.6) Tlist costs: startup once; per-tuple on output rows (scalar rows) */
+        startup_cost_i += tlist_startup;
+        run_cost_i += tlist_per_tuple * path->jpath.path.rows;
+
+        /* 6.7) Store results */
+        const Cost total_cost_i = startup_cost_i + run_cost_i;
+        path->jpath.path.startup_cost_sample->sample[i] = startup_cost_i;
+        path->jpath.path.total_cost_sample->sample[i] = total_cost_i;
+
+        startup_accum += startup_cost_i;
+        total_accum += total_cost_i;
+    }
+
+    /* ------------------------------- 7) Finalize scalar outputs (means) ------------------------------- */
+    const double invN = 1.0 / (double) sample_count;
+    path->jpath.path.startup_cost = startup_accum * invN;
+    path->jpath.path.total_cost = total_accum * invN;
 }
 
 /*
