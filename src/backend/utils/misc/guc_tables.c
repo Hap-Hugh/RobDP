@@ -4612,6 +4612,16 @@ struct config_string ConfigureNamesString[] =
 		NULL, SessionMemLoadAll, NULL
 	},
 
+	{
+		{"joinrel_path_count_file", PGC_USERSET, DEVELOPER_OPTIONS,
+			gettext_noop("Set the base filename for join relation's path statistics."),
+			NULL
+		},
+		&joinrel_path_count_file,
+		"/opt/error_profile/pathcount.csv",
+		NULL, NULL, NULL
+	},
+
 	/* End-of-list marker */
 	{
 		{NULL, 0, 0, NULL, NULL}, NULL, NULL, NULL, NULL, NULL

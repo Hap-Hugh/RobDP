@@ -16,6 +16,8 @@
 
 #include "nodes/pathnodes.h"
 
+/* GUC Parameters */
+extern char *joinrel_path_count_file;
 
 /*
  * allpaths.c
