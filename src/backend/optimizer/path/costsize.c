@@ -319,59 +319,7 @@ void cost_seqscan(
     }
 
     /* ----------------------------------------------------------------------
-     * 2) Degenerate path: no samples -> fall back to classic single-point
-     * ----------------------------------------------------------------------
-     * If there is no sample distribution, compute costs exactly as the
-     * upstream PostgreSQL version does (keeping semantics identical).
-     */
-    if (path->rows_sample == NULL || path->rows_sample->sample_count <= 0) {
-        Cost startup_cost = 0;
-        Cost cpu_run_cost;
-        Cost disk_run_cost;
-        double spc_seq_page_cost;
-        QualCost qpqual_cost;
-        Cost cpu_per_tuple;
-
-        if (!enable_seqscan)
-            startup_cost += disable_cost;
-
-        /* Fetch estimated page cost for the tablespace containing the table. */
-        get_tablespace_page_costs(
-            baserel->reltablespace,
-            NULL,
-            &spc_seq_page_cost
-        );
-
-        /* Disk costs. */
-        disk_run_cost = spc_seq_page_cost * baserel->pages;
-
-        /* CPU costs (restriction quals). */
-        get_restriction_qual_cost(root, baserel, param_info, &qpqual_cost);
-        startup_cost += qpqual_cost.startup;
-        cpu_per_tuple = cpu_tuple_cost + qpqual_cost.per_tuple;
-
-        /* CPU run cost for scanning all tuples. */
-        cpu_run_cost = cpu_per_tuple * baserel->tuples;
-
-        /* Target list eval costs are per output row. */
-        startup_cost += path->pathtarget->cost.startup;
-        cpu_run_cost += path->pathtarget->cost.per_tuple * path->rows;
-
-        /* Parallel adjustment (keep original semantics: rows become per-worker). */
-        if (path->parallel_workers > 0) {
-            double parallel_divisor = get_parallel_divisor(path);
-
-            cpu_run_cost /= parallel_divisor;
-            path->rows = clamp_row_est(path->rows / parallel_divisor);
-        }
-
-        path->startup_cost = startup_cost;
-        path->total_cost = startup_cost + cpu_run_cost + disk_run_cost;
-        return;
-    }
-
-    /* ----------------------------------------------------------------------
-     * 3) Allocate per-sample outputs and initialize accumulators
+     * 2) Allocate per-sample outputs and initialize accumulators
      * ----------------------------------------------------------------------
      * We compute startup/total costs per sample, then average for the
      * scalar fields to remain backward-compatible with callers that
@@ -388,7 +336,7 @@ void cost_seqscan(
     Cost total_accum = 0.0; /* total cost average accumulator       */
 
     /* ----------------------------------------------------------------------
-     * 4) Precompute terms that do not vary across samples
+     * 3) Precompute terms that do not vary across samples
      * ----------------------------------------------------------------------
      * This reduces overhead and avoids subtle inconsistencies.
      */
@@ -411,7 +359,7 @@ void cost_seqscan(
     const double parallel_divisor = use_parallel ? get_parallel_divisor(path) : 1.0;
 
     /* ----------------------------------------------------------------------
-     * 5) Per-sample evaluation
+     * 4) Per-sample evaluation
      * ----------------------------------------------------------------------
      * For each sample row estimate:
      *  - compute startup cost (constant across samples except for the tlist)
@@ -423,29 +371,30 @@ void cost_seqscan(
     for (int i = 0; i < sample_count; ++i) {
         const double sample_rows_global = path->rows_sample->sample[i];
 
-        /* 5.1) Startup cost for this sample (no sample-specific addends here). */
+        /* 4.1) Startup cost for this sample (no sample-specific addends here). */
         Cost startup_cost = 0;
         startup_cost += startup_cost_bias;
         startup_cost += qpqual_cost.startup;
         startup_cost += tlist_startup;
 
-        /* 5.2) CPU run cost: scan all tuples + tlist per *output* row. */
+        /* 4.2) CPU run cost: scan all tuples + tlist per *output* row. */
         Cost cpu_run_cost = cpu_per_tuple * baserel->tuples;
 
-        /* 5.3) Parallel adjustment: divide CPU by workers; rows become per-worker. */
+        /* 4.3) Parallel adjustment: divide CPU by workers; rows become per-worker. */
         double worker_rows = sample_rows_global;
         if (use_parallel) {
             cpu_run_cost /= parallel_divisor;
             worker_rows = clamp_row_est(sample_rows_global / parallel_divisor);
         }
 
-        /* 5.4) Add tlist per-output-row cost based on worker_rows. */
+        /* 4.4) Add tlist per-output-row cost based on worker_rows. */
         cpu_run_cost += tlist_per_tuple * worker_rows;
 
-        /* 5.5) Total cost for this sample. Disk cost is not amortized. */
+        /* 4.5) Total cost for this sample. Disk cost is not amortized. */
         const Cost total_cost = startup_cost + cpu_run_cost + disk_run_cost;
 
-        /* 5.6) Record per-sample results and update accumulators. */
+        /* 4.6) Record per-sample results and update accumulators. */
+        path->rows_sample->sample[i] = worker_rows;
         path->startup_cost_sample->sample[i] = startup_cost;
         path->total_cost_sample->sample[i] = total_cost;
 
@@ -455,7 +404,7 @@ void cost_seqscan(
     }
 
     /* ----------------------------------------------------------------------
-     * 6) Finalize scalar outputs by averaging across samples
+     * 5) Finalize scalar outputs by averaging across samples
      * ----------------------------------------------------------------------
      * Keep the classic semantics:
      *  - path->rows is per-worker row estimate under parallelism
@@ -467,7 +416,7 @@ void cost_seqscan(
     path->total_cost = total_accum * invN;
 
     /* ----------------------------------------------------------------------
-     * 7) Notes on memory ownership
+     * 6) Notes on memory ownership
      * ----------------------------------------------------------------------
      * The helper routines duplicate_sample()/initialize_sample() are assumed
      * to allocate in the Planner context so that the samples live as long as
@@ -574,20 +523,34 @@ void cost_gather(
     }
 
     /* ------------------------------- 2) Subpath costs (scalar + sample) ------------------------------- */
-    const Sample *sp_startup = path->subpath->startup_cost_sample;
-    const Sample *sp_total = path->subpath->total_cost_sample;
+    Path *subpath = path->subpath;
 
-    const int has_cost_samples
-            = sp_startup && sp_total
-              && sp_startup->sample_count > 0 && sp_total->sample_count > 0;
+    const Sample *rows_samp = path->path.rows_sample; /* may be NULL */
+    const Sample *sub_startup_samp =
+    (IsA(subpath, IndexPath)
+         ? ((IndexPath *) subpath)->path.startup_cost_sample
+         : subpath->startup_cost_sample);
+    const Sample *sub_total_samp =
+    (IsA(subpath, IndexPath)
+         ? ((IndexPath *) subpath)->path.total_cost_sample
+         : subpath->total_cost_sample);
 
-    const int sample_count = has_cost_samples ? sp_startup->sample_count : 1;
+    Assert(sub_startup_samp != NULL && sub_startup_samp->sample_count > 0);
+    Assert(sub_total_samp != NULL && sub_total_samp->sample_count > 0);
+    const bool sub_startup_is_const = sub_startup_samp->sample_count == 1;
+    const bool sub_total_is_const = sub_total_samp->sample_count == 1;
 
     const bool rows_is_const
             = path->path.rows_sample == NULL
               || path->path.rows_sample->sample_count <= 1;
 
-    const Sample *rows_samp = path->path.rows_sample; /* may be NULL */
+    /* Decide loop sample_count: if all have N>1, require same N; otherwise use the non-1 side. */
+    int sample_count;
+    if (sub_startup_is_const && sub_total_is_const && rows_is_const) {
+        sample_count = 1;
+    } else {
+        sample_count = error_sample_count;
+    }
 
     path->path.startup_cost = 0.0;
     path->path.startup_cost_sample = initialize_sample(sample_count);
@@ -597,10 +560,10 @@ void cost_gather(
     /* ------------------------------- 4) Per-sample aggregation ------------------------------- */
     for (int i = 0; i < sample_count; ++i) {
         /* 4.1) Read subpath costs for this sample (fallback to scalar if no samples) */
-        const Cost sub_startup_i =
-                GET_COST(sp_startup, i, path->subpath->startup_cost, false);
-        const Cost sub_total_i =
-                GET_COST(sp_total, i, path->subpath->total_cost, false);
+        const Cost sub_startup_i
+                = GET_COST(sub_startup_samp, i, path->subpath->startup_cost, sub_startup_is_const);
+        const Cost sub_total_i
+                = GET_COST(sub_total_samp, i, path->subpath->total_cost, sub_total_is_const);
         Cost startup_cost = sub_startup_i;
         Cost run_cost = sub_total_i - sub_startup_i;
 
@@ -782,7 +745,7 @@ void cost_gather_merge(
  */
 void cost_index(
     IndexPath *path, PlannerInfo *root,
-    double loop_count,bool partial_path
+    const double loop_count, const bool partial_path
 ) {
     /* ----------------------------------------------------------------------
      * 0) Preconditions & basic objects
@@ -822,144 +785,7 @@ void cost_index(
     }
 
     /* ----------------------------------------------------------------------
-     * 2) Fallback: no samples -> compute exactly like upstream (single-point)
-     * ----------------------------------------------------------------------
-     * Keep behavior identical to the original function for compatibility.
-     */
-    if (path->path.rows_sample == NULL || path->path.rows_sample->sample_count <= 0) {
-        Cost startup_cost = 0;
-        Cost run_cost = 0;
-        Cost cpu_run_cost = 0;
-        amcostestimate_function amcostestimate;
-        Cost indexStartupCost;
-        Cost indexTotalCost;
-        Selectivity indexSelectivity;
-        double indexCorrelation, csquared;
-        double spc_seq_page_cost, spc_random_page_cost;
-        Cost min_IO_cost, max_IO_cost;
-        QualCost qpqual_cost;
-        Cost cpu_per_tuple;
-        double tuples_fetched, pages_fetched, rand_heap_pages, index_pages;
-
-        if (!enable_indexscan)
-            startup_cost += disable_cost;
-
-        amcostestimate = (amcostestimate_function) index->amcostestimate;
-        amcostestimate(
-            root, path, loop_count,
-            &indexStartupCost, &indexTotalCost,
-            &indexSelectivity, &indexCorrelation,
-            &index_pages
-        );
-
-        path->indextotalcost = indexTotalCost;
-        path->indexselectivity = indexSelectivity;
-
-        startup_cost += indexStartupCost;
-        run_cost += indexTotalCost - indexStartupCost;
-
-        tuples_fetched = clamp_row_est(indexSelectivity * baserel->tuples);
-
-        get_tablespace_page_costs(
-            baserel->reltablespace,
-            &spc_random_page_cost,
-            &spc_seq_page_cost
-        );
-
-        if (loop_count > 1) {
-            pages_fetched = index_pages_fetched(
-                tuples_fetched * loop_count,
-                baserel->pages,
-                (double) index->pages,
-                root
-            );
-            if (indexonly)
-                pages_fetched = ceil(pages_fetched * (1.0 - baserel->allvisfrac));
-
-            rand_heap_pages = pages_fetched;
-            max_IO_cost = (pages_fetched * spc_random_page_cost) / loop_count;
-
-            pages_fetched = ceil(indexSelectivity * (double) baserel->pages);
-            pages_fetched = index_pages_fetched(
-                pages_fetched * loop_count,
-                baserel->pages,
-                (double) index->pages,
-                root
-            );
-            if (indexonly)
-                pages_fetched = ceil(pages_fetched * (1.0 - baserel->allvisfrac));
-
-            min_IO_cost = (pages_fetched * spc_random_page_cost) / loop_count;
-        } else {
-            pages_fetched = index_pages_fetched(
-                tuples_fetched,
-                baserel->pages,
-                (double) index->pages,
-                root
-            );
-            if (indexonly)
-                pages_fetched = ceil(pages_fetched * (1.0 - baserel->allvisfrac));
-
-            rand_heap_pages = pages_fetched;
-            max_IO_cost = pages_fetched * spc_random_page_cost;
-
-            pages_fetched = ceil(indexSelectivity * (double) baserel->pages);
-            if (indexonly)
-                pages_fetched = ceil(pages_fetched * (1.0 - baserel->allvisfrac));
-
-            if (pages_fetched > 0) {
-                min_IO_cost = spc_random_page_cost;
-                if (pages_fetched > 1)
-                    min_IO_cost += (pages_fetched - 1) * spc_seq_page_cost;
-            } else
-                min_IO_cost = 0;
-        }
-
-        if (partial_path) {
-            if (indexonly)
-                rand_heap_pages = -1;
-
-            path->path.parallel_workers = compute_parallel_worker(
-                baserel,
-                rand_heap_pages,
-                index_pages,
-                max_parallel_workers_per_gather
-            );
-
-            if (path->path.parallel_workers <= 0)
-                return;
-
-            path->path.parallel_aware = true;
-        }
-
-        csquared = indexCorrelation * indexCorrelation;
-        run_cost += max_IO_cost + csquared * (min_IO_cost - max_IO_cost);
-
-        cost_qual_eval(&qpqual_cost, qpquals, root);
-
-        startup_cost += qpqual_cost.startup;
-        cpu_per_tuple = cpu_tuple_cost + qpqual_cost.per_tuple;
-
-        cpu_run_cost += cpu_per_tuple * tuples_fetched;
-
-        startup_cost += path->path.pathtarget->cost.startup;
-        cpu_run_cost += path->path.pathtarget->cost.per_tuple * path->path.rows;
-
-        if (path->path.parallel_workers > 0) {
-            double parallel_divisor = get_parallel_divisor(&path->path);
-            path->path.rows = clamp_row_est(path->path.rows / parallel_divisor);
-            cpu_run_cost /= parallel_divisor;
-        }
-
-        run_cost += cpu_run_cost;
-
-        path->path.startup_cost = startup_cost;
-        path->path.total_cost = startup_cost + run_cost;
-        return;
-    }
-
-    /* ----------------------------------------------------------------------
-     * 3) Allocate per-sample outputs; set accumulators for scalar means
+     * 2) Allocate per-sample outputs; set accumulators for scalar means
      * ----------------------------------------------------------------------
      * We will keep per-sample startup/total costs and average into scalars.
      */
@@ -974,7 +800,7 @@ void cost_index(
     Cost total_accum = 0.0;
 
     /* ----------------------------------------------------------------------
-     * 4) Precompute sample-invariant terms (I/O, quals, AM costs, etc.)
+     * 3) Precompute sample-invariant terms (I/O, quals, AM costs, etc.)
      * ----------------------------------------------------------------------
      * Avoid recomputing inside the loop; prevents subtle inconsistencies.
      */
@@ -1110,7 +936,7 @@ void cost_index(
     const Cost run_cost_base = run_cost_index + heap_io_cost;
 
     /* ----------------------------------------------------------------------
-     * 5) Per-sample evaluation (do NOT mutate input samples)
+     * 4) Per-sample evaluation (do NOT mutate input samples)
      * ----------------------------------------------------------------------
      * For each sample row estimate:
      *  - compute per-sample CPU run cost (tlist per output row)
@@ -1124,7 +950,7 @@ void cost_index(
         const Cost startup_cost = startup_base;
 
         /* 5.2) CPU run cost = scan-all-tuples + tlist per output row. */
-        Cost cpu_run_cost = cpu_per_tuple * baserel->tuples;
+        Cost cpu_run_cost = cpu_per_tuple * tuples_fetched;
         double worker_rows = sample_rows_global;
 
         if (use_parallel) {
@@ -1139,6 +965,7 @@ void cost_index(
         const Cost total_cost = startup_cost + run_cost;
 
         /* 5.4) Record per-sample outputs and update accumulators. */
+        path->path.rows_sample->sample[i] = worker_rows;
         path->path.startup_cost_sample->sample[i] = startup_cost;
         path->path.total_cost_sample->sample[i] = total_cost;
 
@@ -1148,7 +975,7 @@ void cost_index(
     }
 
     /* ----------------------------------------------------------------------
-     * 6) Finalize scalar outputs by averaging across samples
+     * 5) Finalize scalar outputs by averaging across samples
      * ----------------------------------------------------------------------
      * Keep classic semantics (rows are per-worker under parallelism).
      */
@@ -1158,7 +985,7 @@ void cost_index(
     path->path.total_cost = total_accum * invN;
 
     /* ----------------------------------------------------------------------
-     * 7) Notes
+     * 6) Notes
      * ----------------------------------------------------------------------
      * - We do not amortize heap I/O under parallelism (same as upstream).
      * - Helpers duplicate_sample()/initialize_sample() are assumed to
@@ -3300,24 +3127,30 @@ void initial_cost_nestloop(
          ? ((IndexPath *) inner_path)->path.total_cost_sample
          : inner_path->total_cost_sample);
 
-    const int outer_sc = (outer_rows_samp ? outer_rows_samp->sample_count : 0);
-    const int inner_sc = (inner_rows_samp ? inner_rows_samp->sample_count : 0);
-    const bool outer_is_const = (outer_sc <= 1);
-    const bool inner_is_const = (inner_sc <= 1);
+    Assert(outer_rows_samp != NULL && outer_rows_samp->sample_count > 0);
+    Assert(inner_rows_samp != NULL && inner_rows_samp->sample_count > 0);
+    const bool outer_rows_is_const = outer_rows_samp->sample_count == 1;
+    const bool inner_rows_is_const = inner_rows_samp->sample_count == 1;
 
-    /* Decide loop sample_count: if both have N>1, require same N; otherwise use the non-1 side. */
-    int sample_count = 1;
-    if (!outer_is_const && !inner_is_const) {
-        Assert(outer_sc == inner_sc);
-        sample_count = outer_sc;
-    } else if (!outer_is_const) {
-        sample_count = outer_sc;
-    } else if (!inner_is_const) {
-        sample_count = inner_sc;
-    } else {
+    Assert(outer_startup_samp != NULL && outer_startup_samp->sample_count > 0);
+    Assert(outer_total_samp != NULL && outer_total_samp->sample_count > 0);
+    const bool outer_startup_is_const = outer_startup_samp->sample_count == 1;
+    const bool outer_total_is_const = outer_total_samp->sample_count == 1;
+
+    Assert(inner_startup_samp != NULL && inner_startup_samp->sample_count > 0);
+    Assert(inner_total_samp != NULL && inner_total_samp->sample_count > 0);
+    const bool inner_startup_is_const = inner_startup_samp->sample_count == 1;
+    const bool inner_total_is_const = inner_total_samp->sample_count == 1;
+
+    /* Decide loop sample_count: if all have N>1, require same N; otherwise use the non-1 side. */
+    int sample_count;
+    if (outer_rows_is_const && inner_rows_is_const
+        && outer_startup_is_const && outer_total_is_const
+        && inner_startup_is_const && inner_total_is_const) {
         sample_count = 1;
+    } else {
+        sample_count = error_sample_count;
     }
-
     workspace->sample_count = sample_count;
 
     /* ------------------------------- 2) Init accumulators & private fields ------------------------------- */
@@ -3346,15 +3179,15 @@ void initial_cost_nestloop(
     /* ------------------------------- 4) Per-sample evaluation ------------------------------- */
     for (int i = 0; i < sample_count; ++i) {
         /* 4.1) Rows per sample (guard against <= 0) */
-        double outer_rows_i = GET_ROW(outer_rows_samp, i, outer_path->rows, outer_is_const);
+        double outer_rows_i = GET_ROW(outer_rows_samp, i, outer_path->rows, outer_rows_is_const);
         if (outer_rows_i <= 0) outer_rows_i = 1;
 
         /* 4.2) Per-sample input costs */
-        const Cost outer_startup_i = GET_COST(outer_startup_samp, i, outer_path->startup_cost, outer_is_const);
-        const Cost outer_total_i = GET_COST(outer_total_samp, i, outer_path->total_cost, outer_is_const);
+        const Cost outer_startup_i = GET_COST(outer_startup_samp, i, outer_path->startup_cost, outer_startup_is_const);
+        const Cost outer_total_i = GET_COST(outer_total_samp, i, outer_path->total_cost, outer_total_is_const);
 
-        const Cost inner_startup_i = GET_COST(inner_startup_samp, i, inner_path->startup_cost, inner_is_const);
-        const Cost inner_total_i = GET_COST(inner_total_samp, i, inner_path->total_cost, inner_is_const);
+        const Cost inner_startup_i = GET_COST(inner_startup_samp, i, inner_path->startup_cost, inner_startup_is_const);
+        const Cost inner_total_i = GET_COST(inner_total_samp, i, inner_path->total_cost, inner_total_is_const);
 
         /* 4.3) Phase-1 startup/run base (as in upstream semantics) */
         Cost startup_cost = 0.0;
@@ -3439,13 +3272,14 @@ void final_cost_nestloop(
          ? ((IndexPath *) inner_path)->path.rows_sample
          : inner_path->rows_sample);
 
-    const int outer_sc = outer_rows_samp ? outer_rows_samp->sample_count : 0;
-    const int inner_sc = inner_rows_samp ? inner_rows_samp->sample_count : 0;
-    const bool outer_is_const = (outer_sc <= 1);
-    const bool inner_is_const = (inner_sc <= 1);
+    Assert(outer_rows_samp != NULL && outer_rows_samp->sample_count > 0);
+    Assert(inner_rows_samp != NULL && inner_rows_samp->sample_count > 0);
+    const bool outer_rows_is_const = outer_rows_samp->sample_count == 1;
+    const bool inner_rows_is_const = inner_rows_samp->sample_count == 1;
 
     /* Authoritative loop size comes from the workspace */
-    const int sample_count = (workspace->sample_count > 0) ? workspace->sample_count : 1;
+    Assert(workspace->sample_count > 0);
+    const int sample_count = workspace->sample_count;
 
     /* ------------------------------- 2) Determine scalar output rows ------------------------------- */
     /* Mark rows (scalar) per PG semantics: param_info or parent->rows */
@@ -3503,8 +3337,8 @@ void final_cost_nestloop(
         Cost run_cost_i = workspace->run_cost_sample[i];
 
         /* 5.2) Per-sample input rows (guard against <= 0) */
-        double outer_rows_i = GET_ROW(outer_rows_samp, i, outer_path->rows, outer_is_const);
-        double inner_rows_i = GET_ROW(inner_rows_samp, i, inner_path->rows, inner_is_const);
+        double outer_rows_i = GET_ROW(outer_rows_samp, i, outer_path->rows, outer_rows_is_const);
+        double inner_rows_i = GET_ROW(inner_rows_samp, i, inner_path->rows, inner_rows_is_const);
         if (outer_rows_i <= 0) outer_rows_i = 1;
         if (inner_rows_i <= 0) inner_rows_i = 1;
 
@@ -3649,7 +3483,7 @@ void initial_cost_mergejoin(
     JoinPathExtraData *extra
 ) {
     /* ----------------------------------------------------------------------
-     * 0) Resolve per-path row samples (support IndexPath->path as well)
+     * 0) Resolve per-path row samples and costs
      * ---------------------------------------------------------------------- */
     const Sample *outer_rows_samp =
     (IsA(outer_path, IndexPath)
@@ -3660,33 +3494,6 @@ void initial_cost_mergejoin(
          ? ((IndexPath *) inner_path)->path.rows_sample
          : inner_path->rows_sample);
 
-    const int outer_sc = (outer_rows_samp ? outer_rows_samp->sample_count : 0);
-    const int inner_sc = (inner_rows_samp ? inner_rows_samp->sample_count : 0);
-
-    const bool outer_is_const = (outer_sc <= 1); /* 0 -> fallback to scalar, 1 -> const */
-    const bool inner_is_const = (inner_sc <= 1);
-
-    /* Decide loop sample_count: if both have N>1, require same N; otherwise use the non-1 side. */
-    int sample_count = 1;
-    if (!outer_is_const && !inner_is_const) {
-        Assert(outer_sc == inner_sc);
-        sample_count = outer_sc;
-    } else if (!outer_is_const) {
-        sample_count = outer_sc;
-    } else if (!inner_is_const) {
-        sample_count = inner_sc;
-    } else {
-        sample_count = 1; /* both const/scalar */
-    }
-
-    workspace->sample_count = sample_count;
-
-    /* ----------------------------------------------------------------------
-     * 1) Prepare access to per-path cost samples (fallback to scalars)
-     * ----------------------------------------------------------------------
-     * For each side, we may or may not have startup/total cost samples.
-     * We'll read them per sample if present, otherwise use scalars.
-     */
     const Sample *outer_startup_samp =
     (IsA(outer_path, IndexPath)
          ? ((IndexPath *) outer_path)->path.startup_cost_sample
@@ -3705,8 +3512,34 @@ void initial_cost_mergejoin(
          ? ((IndexPath *) inner_path)->path.total_cost_sample
          : inner_path->total_cost_sample);
 
+    Assert(outer_rows_samp != NULL && outer_rows_samp->sample_count > 0);
+    Assert(inner_rows_samp != NULL && inner_rows_samp->sample_count > 0);
+    const bool outer_rows_is_const = outer_rows_samp->sample_count == 1;
+    const bool inner_rows_is_const = inner_rows_samp->sample_count == 1;
+
+    Assert(outer_startup_samp != NULL && outer_startup_samp->sample_count > 0);
+    Assert(outer_total_samp != NULL && outer_total_samp->sample_count > 0);
+    const bool outer_startup_is_const = outer_startup_samp->sample_count == 1;
+    const bool outer_total_is_const = outer_total_samp->sample_count == 1;
+
+    Assert(inner_startup_samp != NULL && inner_startup_samp->sample_count > 0);
+    Assert(inner_total_samp != NULL && inner_total_samp->sample_count > 0);
+    const bool inner_startup_is_const = inner_startup_samp->sample_count == 1;
+    const bool inner_total_is_const = inner_total_samp->sample_count == 1;
+
+    /* Decide loop sample_count: if all have N>1, require same N; otherwise use the non-1 side. */
+    int sample_count;
+    if (outer_rows_is_const && inner_rows_is_const
+        && outer_startup_is_const && outer_total_is_const
+        && inner_startup_is_const && inner_total_is_const) {
+        sample_count = 1;
+    } else {
+        sample_count = error_sample_count;
+    }
+    workspace->sample_count = sample_count;
+
     /* ----------------------------------------------------------------------
-     * 2) Compute merge-scan selectivities from the first mergeclause
+     * 1) Compute merge-scan selectivities from the first mergeclause
      * ----------------------------------------------------------------------
      * These selectivities are properties of ordering and clause, not samples.
      * Later we'll convert them to per-sample row counts and then re-normalize.
@@ -3761,7 +3594,7 @@ void initial_cost_mergejoin(
     }
 
     /* ----------------------------------------------------------------------
-     * 3) Initialize accumulators for scalar (mean) lower bounds
+     * 2) Initialize accumulators for scalar (mean) lower bounds
      * ---------------------------------------------------------------------- */
     Cost startup_accum = 0;
     Cost total_accum = 0;
@@ -3773,20 +3606,20 @@ void initial_cost_mergejoin(
     double inner_skip_accum = 0;
 
     /* ----------------------------------------------------------------------
-     * 4) Per-sample evaluation (point-to-point)
+     * 3) Per-sample evaluation (point-to-point)
      * ----------------------------------------------------------------------
      * For each sample i, fetch outer/inner rows and costs from the i-th sample
      * (or from sample[0]/scalars if const), then compute the fractional
      * contribution to startup/run cost as in upstream logic.
      */
     for (int i = 0; i < sample_count; ++i) {
-        /* 4.1) Fetch per-sample input rows (guard against <= 0) */
-        double outer_path_rows = GET_ROW(outer_rows_samp, i, outer_path->rows, outer_is_const);
-        double inner_path_rows = GET_ROW(inner_rows_samp, i, inner_path->rows, inner_is_const);
+        /* 3.1) Fetch per-sample input rows (guard against <= 0) */
+        double outer_path_rows = GET_ROW(outer_rows_samp, i, outer_path->rows, outer_rows_is_const);
+        double inner_path_rows = GET_ROW(inner_rows_samp, i, inner_path->rows, inner_rows_is_const);
         if (outer_path_rows <= 0) outer_path_rows = 1;
         if (inner_path_rows <= 0) inner_path_rows = 1;
 
-        /* 4.2) Convert selectivities to per-sample row counts (lower bounds) */
+        /* 3.2) Convert selectivities to per-sample row counts (lower bounds) */
         double outer_skip_rows = rint(outer_path_rows * outerstartsel);
         double inner_skip_rows = rint(inner_path_rows * innerstartsel);
         double outer_rows = clamp_row_est(outer_path_rows * outerendsel);
@@ -3795,7 +3628,7 @@ void initial_cost_mergejoin(
         Assert(outer_skip_rows <= outer_rows);
         Assert(inner_skip_rows <= inner_rows);
 
-        /* 4.3) Renormalize selectivities after rounding (small-N stability) */
+        /* 3.3) Renormalize selectivities after rounding (small-N stability) */
         double outerstartsel_i = outer_skip_rows / outer_path_rows;
         double innerstartsel_i = inner_skip_rows / inner_path_rows;
         double outerendsel_i = outer_rows / outer_path_rows;
@@ -3804,7 +3637,7 @@ void initial_cost_mergejoin(
         Assert(outerstartsel_i <= outerendsel_i);
         Assert(innerstartsel_i <= innerendsel_i);
 
-        /* 4.4) Build per-sample startup/run costs for each side
+        /* 3.4) Build per-sample startup/run costs for each side
          *      If sorting is required, cost it per sample using that sample's rows
          *      and the sample's upstream input costs. Otherwise, use upstream
          *      path costs per sample and slice them by selectivity.
@@ -3822,7 +3655,7 @@ void initial_cost_mergejoin(
              * the upstream cost in the sort pipeline.
              */
             Cost outer_total_cost_i =
-                    GET_COST(outer_total_samp, i, outer_path->total_cost, outer_is_const);
+                    GET_COST(outer_total_samp, i, outer_path->total_cost, outer_total_is_const);
 
             cost_sort(&sort_path,
                       root,
@@ -3841,9 +3674,9 @@ void initial_cost_mergejoin(
         } else {
             /* Use outer path's own per-sample costs */
             Cost outer_startup_cost_i =
-                    GET_COST(outer_startup_samp, i, outer_path->startup_cost, outer_is_const);
+                    GET_COST(outer_startup_samp, i, outer_path->startup_cost, outer_startup_is_const);
             Cost outer_total_cost_i =
-                    GET_COST(outer_total_samp, i, outer_path->total_cost, outer_is_const);
+                    GET_COST(outer_total_samp, i, outer_path->total_cost, outer_total_is_const);
 
             startup_cost += outer_startup_cost_i;
             startup_cost += (outer_total_cost_i - outer_startup_cost_i) * outerstartsel_i;
@@ -3853,7 +3686,7 @@ void initial_cost_mergejoin(
         /* ---- INNER side ---- */
         if (innersortkeys) {
             Cost inner_total_cost_i =
-                    GET_COST(inner_total_samp, i, inner_path->total_cost, inner_is_const);
+                    GET_COST(inner_total_samp, i, inner_path->total_cost, inner_total_is_const);
 
             cost_sort(&sort_path,
                       root,
@@ -3870,21 +3703,21 @@ void initial_cost_mergejoin(
             inner_run_cost = (sort_path.total_cost - sort_path.startup_cost) * (innerendsel_i - innerstartsel_i);
         } else {
             Cost inner_startup_cost_i =
-                    GET_COST(inner_startup_samp, i, inner_path->startup_cost, inner_is_const);
+                    GET_COST(inner_startup_samp, i, inner_path->startup_cost, inner_startup_is_const);
             Cost inner_total_cost_i =
-                    GET_COST(inner_total_samp, i, inner_path->total_cost, inner_is_const);
+                    GET_COST(inner_total_samp, i, inner_path->total_cost, inner_total_is_const);
 
             startup_cost += inner_startup_cost_i;
             startup_cost += (inner_total_cost_i - inner_startup_cost_i) * innerstartsel_i;
             inner_run_cost = (inner_total_cost_i - inner_startup_cost_i) * (innerendsel_i - innerstartsel_i);
         }
 
-        /* 4.5) Phase-1 rule: we cannot yet decide on rescans/materialization.
+        /* 3.5) Phase-1 rule: we cannot yet decide on rescans/materialization.
          *      The minimum inner-side cost to include in total is inner_run_cost.
          *      Do NOT add it to run_cost yet (leave that to phase-2 decisions).
          */
 
-        /* 4.6) Record per-sample lower bounds into workspace */
+        /* 3.6) Record per-sample lower bounds into workspace */
         workspace->startup_cost_sample[i] = startup_cost;
         workspace->total_cost_sample[i] = startup_cost + run_cost + inner_run_cost;
 
@@ -3895,7 +3728,7 @@ void initial_cost_mergejoin(
         workspace->outer_skip_rows_sample[i] = outer_skip_rows;
         workspace->inner_skip_rows_sample[i] = inner_skip_rows;
 
-        /* 4.7) Accumulate for scalar (mean) outputs */
+        /* 3.7) Accumulate for scalar (mean) outputs */
         startup_accum += startup_cost;
         total_accum += startup_cost + run_cost + inner_run_cost;
         run_accum += run_cost;
@@ -3907,7 +3740,7 @@ void initial_cost_mergejoin(
     }
 
     /* ----------------------------------------------------------------------
-     * 5) Finalize scalar lower bounds as per-sample means
+     * 4) Finalize scalar lower bounds as per-sample means
      * ---------------------------------------------------------------------- */
     const double invN = 1.0 / (double) sample_count;
 
@@ -3969,13 +3802,14 @@ void final_cost_mergejoin(
          ? ((IndexPath *) inner_path)->path.rows_sample
          : inner_path->rows_sample);
 
-    const int outer_sc = outer_rows_samp ? outer_rows_samp->sample_count : 0;
-    const int inner_sc = inner_rows_samp ? inner_rows_samp->sample_count : 0;
-    const bool outer_const = (outer_sc <= 1);
-    const bool inner_const = (inner_sc <= 1);
+    Assert(outer_rows_samp != NULL && outer_rows_samp->sample_count > 0);
+    Assert(inner_rows_samp != NULL && inner_rows_samp->sample_count > 0);
+    const bool outer_rows_is_const = outer_rows_samp->sample_count == 1;
+    const bool inner_rows_is_const = inner_rows_samp->sample_count == 1;
 
-    /* Authoritative loop size from the workspace */
-    const int sample_count = (workspace->sample_count > 0) ? workspace->sample_count : 1;
+    /* Authoritative loop size comes from the workspace */
+    Assert(workspace->sample_count > 0);
+    const int sample_count = workspace->sample_count;
 
     /* ------------------------------- 2) Set scalar output rows (+ optional rows_sample) ------------------------------- */
     if (path->jpath.path.param_info) {
@@ -4085,11 +3919,11 @@ void final_cost_mergejoin(
         /* 6.1) Start from initial lower bounds for this sample */
         Cost startup_cost_i = workspace->startup_cost_sample[i];
         Cost run_cost_i = workspace->run_cost_sample[i];
-        Cost inner_run_cost_i = workspace->inner_run_cost_sample[i];
+        const Cost inner_run_cost_i = workspace->inner_run_cost_sample[i];
 
         /* 6.2) Sample-specific row counts (protect against <= 0) */
-        double outer_rows_i = GET_ROW(outer_rows_samp, i, outer_path->rows, outer_const);
-        double inner_rows_i = GET_ROW(inner_rows_samp, i, inner_path->rows, inner_const);
+        double outer_rows_i = GET_ROW(outer_rows_samp, i, outer_path->rows, outer_rows_is_const);
+        double inner_rows_i = GET_ROW(inner_rows_samp, i, inner_path->rows, inner_rows_is_const);
         const double outer_skip_i = workspace->outer_skip_rows_sample[i];
         const double inner_skip_i = workspace->inner_skip_rows_sample[i];
         if (outer_rows_i <= 0) outer_rows_i = 1;
@@ -4254,24 +4088,30 @@ void initial_cost_hashjoin(
          ? ((IndexPath *) inner_path)->path.total_cost_sample
          : inner_path->total_cost_sample);
 
-    const int outer_sc = (outer_rows_samp ? outer_rows_samp->sample_count : 0);
-    const int inner_sc = (inner_rows_samp ? inner_rows_samp->sample_count : 0);
-    const bool outer_is_const = (outer_sc <= 1);
-    const bool inner_is_const = (inner_sc <= 1);
+    Assert(outer_rows_samp != NULL && outer_rows_samp->sample_count > 0);
+    Assert(inner_rows_samp != NULL && inner_rows_samp->sample_count > 0);
+    const bool outer_rows_is_const = outer_rows_samp->sample_count == 1;
+    const bool inner_rows_is_const = inner_rows_samp->sample_count == 1;
 
-    /* Decide loop sample_count: if both have N>1, require same N; otherwise use the non-1 side. */
-    int sample_count = 1;
-    if (!outer_is_const && !inner_is_const) {
-        Assert(outer_sc == inner_sc);
-        sample_count = outer_sc;
-    } else if (!outer_is_const) {
-        sample_count = outer_sc;
-    } else if (!inner_is_const) {
-        sample_count = inner_sc;
-    } else {
+    Assert(outer_startup_samp != NULL && outer_startup_samp->sample_count > 0);
+    Assert(outer_total_samp != NULL && outer_total_samp->sample_count > 0);
+    const bool outer_startup_is_const = outer_startup_samp->sample_count == 1;
+    const bool outer_total_is_const = outer_total_samp->sample_count == 1;
+
+    Assert(inner_startup_samp != NULL && inner_startup_samp->sample_count > 0);
+    Assert(inner_total_samp != NULL && inner_total_samp->sample_count > 0);
+    const bool inner_startup_is_const = inner_startup_samp->sample_count == 1;
+    const bool inner_total_is_const = inner_total_samp->sample_count == 1;
+
+    /* Decide loop sample_count: if all have N>1, require same N; otherwise use the non-1 side. */
+    int sample_count;
+    if (outer_rows_is_const && inner_rows_is_const
+        && outer_startup_is_const && outer_total_is_const
+        && inner_startup_is_const && inner_total_is_const) {
         sample_count = 1;
+    } else {
+        sample_count = error_sample_count;
     }
-
     workspace->sample_count = sample_count;
 
     /* ------------------------------------------------------------------
@@ -4299,16 +4139,16 @@ void initial_cost_hashjoin(
      * ------------------------------------------------------------------ */
     for (int i = 0; i < sample_count; ++i) {
         /* 4.1) Fetch per-sample rows (guard against <= 0) */
-        double outer_rows_i = GET_ROW(outer_rows_samp, i, outer_path->rows, outer_is_const);
-        double inner_rows_i = GET_ROW(inner_rows_samp, i, inner_path->rows, inner_is_const);
+        double outer_rows_i = GET_ROW(outer_rows_samp, i, outer_path->rows, outer_rows_is_const);
+        double inner_rows_i = GET_ROW(inner_rows_samp, i, inner_path->rows, inner_rows_is_const);
         if (outer_rows_i <= 0) outer_rows_i = 1;
         if (inner_rows_i <= 0) inner_rows_i = 1;
 
         /* 4.2) Fetch per-sample input costs for both sides */
-        Cost outer_startup_i = GET_COST(outer_startup_samp, i, outer_path->startup_cost, outer_is_const);
-        Cost outer_total_i = GET_COST(outer_total_samp, i, outer_path->total_cost, outer_is_const);
-        Cost inner_startup_i = GET_COST(inner_startup_samp, i, inner_path->startup_cost, inner_is_const);
-        Cost inner_total_i = GET_COST(inner_total_samp, i, inner_path->total_cost, inner_is_const);
+        const Cost outer_startup_i = GET_COST(outer_startup_samp, i, outer_path->startup_cost, outer_startup_is_const);
+        const Cost outer_total_i = GET_COST(outer_total_samp, i, outer_path->total_cost, outer_total_is_const);
+        const Cost inner_startup_i = GET_COST(inner_startup_samp, i, inner_path->startup_cost, inner_startup_is_const);
+        const Cost inner_total_i = GET_COST(inner_total_samp, i, inner_path->total_cost, inner_total_is_const);
 
         /* 4.3) Source data costs (lower bound): outer contributes startup+run; inner contributes total as startup */
         Cost startup_cost = 0;
@@ -4389,7 +4229,7 @@ void initial_cost_hashjoin(
     workspace->numbuckets = pg_nextpower2_32(workspace->numbuckets);
 
     workspace->numbatches = (int) rint(numbatches_acc * invN);
-    workspace->numbatches = pg_nextpower2_32(Max(2, workspace->numbatches));
+    workspace->numbatches = pg_nextpower2_32(workspace->numbatches);
 
     workspace->inner_rows_total = inner_rows_total_acc * invN;
 
@@ -4426,14 +4266,14 @@ void final_cost_hashjoin(
          ? ((IndexPath *) inner_path)->path.rows_sample
          : inner_path->rows_sample);
 
-    const int outer_sc = outer_rows_samp ? outer_rows_samp->sample_count : 0;
-    const int inner_sc = inner_rows_samp ? inner_rows_samp->sample_count : 0;
-    const bool outer_const = (outer_sc <= 1);
-    const bool inner_const = (inner_sc <= 1);
+    Assert(outer_rows_samp != NULL && outer_rows_samp->sample_count > 0);
+    Assert(inner_rows_samp != NULL && inner_rows_samp->sample_count > 0);
+    const bool outer_rows_is_const = outer_rows_samp->sample_count == 1;
+    const bool inner_rows_is_const = inner_rows_samp->sample_count == 1;
 
     /* Authoritative loop size comes from the workspace */
-    const int sample_count = (workspace->sample_count > 0) ? workspace->sample_count : 1;
-    const int workspace_sample_count = sample_count;
+    Assert(workspace->sample_count > 0);
+    const int sample_count = workspace->sample_count;
 
     /* ------------------------------- 2) Determine scalar output rows (+ rows_sample) ------------------------------- */
     /* Mark rows (scalar) per PG semantics: param_info or parent->rows; also copy rows_sample */
@@ -4459,9 +4299,9 @@ void final_cost_hashjoin(
 
     /* ------------------------------- 3) Initialize per-sample output slots ------------------------------- */
     path->jpath.path.startup_cost = 0.0;
-    path->jpath.path.startup_cost_sample = initialize_sample(workspace_sample_count);
+    path->jpath.path.startup_cost_sample = initialize_sample(sample_count);
     path->jpath.path.total_cost = 0.0;
-    path->jpath.path.total_cost_sample = initialize_sample(workspace_sample_count);
+    path->jpath.path.total_cost_sample = initialize_sample(sample_count);
 
     /* Optional: match original behavior of penalizing when hashjoin is disabled. */
     if (!enable_hashjoin) {
@@ -4499,8 +4339,8 @@ void final_cost_hashjoin(
         Cost run_cost_i = workspace->run_cost_sample[i];
 
         /* 6.2) Per-sample input rows (guard against <= 0) */
-        double outer_rows_i = GET_ROW(outer_rows_samp, i, outer_path->rows, outer_const);
-        double inner_rows_i = GET_ROW(inner_rows_samp, i, inner_path->rows, inner_const);
+        double outer_rows_i = GET_ROW(outer_rows_samp, i, outer_path->rows, outer_rows_is_const);
+        double inner_rows_i = GET_ROW(inner_rows_samp, i, inner_path->rows, inner_rows_is_const);
         if (outer_rows_i <= 0) outer_rows_i = 1;
         if (inner_rows_i <= 0) inner_rows_i = 1;
 

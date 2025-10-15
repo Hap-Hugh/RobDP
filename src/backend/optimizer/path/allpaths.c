@@ -3296,7 +3296,42 @@ standard_join_search(PlannerInfo *root, int levels_needed, List *initial_rels) {
 
     root->join_rel_level[1] = initial_rels;
 
+    elog(LOG, "\n[lev 1]");
+    ListCell *lc0;
+    foreach(lc0, root->join_rel_level[1]) {
+        elog(LOG, "\n[rel %d]", foreach_current_index(lc0));
+
+        rel = (RelOptInfo *) lfirst(lc0);
+
+        ListCell *lc1;
+        foreach(lc1, rel->pathlist) {
+            elog(LOG, "[path %d]", foreach_current_index(lc1));
+            const Path *path = lfirst(lc1);
+            elog(LOG, "[path type] %d", path->pathtype);
+            const Sample *sample = path->total_cost_sample;
+            const int sample_count = sample->sample_count;
+            elog(LOG, "  [total cost avg] %.3f", path->total_cost);
+            for (int sample_idx = 0; sample_idx < sample_count; ++sample_idx) {
+                elog(LOG, "  [total cost %d] %.3f", sample_idx, sample->sample[sample_idx]);
+            }
+        }
+
+        foreach(lc1, rel->partial_pathlist) {
+            elog(LOG, "[partial path %d]", foreach_current_index(lc1));
+            const Path *partial_path = lfirst(lc1);
+            elog(LOG, "[partial path type] %d", partial_path->pathtype);
+            const Sample *sample = partial_path->total_cost_sample;
+            const int sample_count = sample->sample_count;
+            elog(LOG, "  [total cost avg] %.3f", partial_path->total_cost);
+            for (int sample_idx = 0; sample_idx < sample_count; ++sample_idx) {
+                elog(LOG, "  [total cost %d] %.3f", sample_idx, sample->sample[sample_idx]);
+            }
+        }
+    }
+
     for (lev = 2; lev <= levels_needed; lev++) {
+        elog(LOG, "\n[lev %d]", lev);
+
         ListCell *lc;
 
         /*
@@ -3317,7 +3352,34 @@ standard_join_search(PlannerInfo *root, int levels_needed, List *initial_rels) {
          * set_cheapest().
          */
         foreach(lc, root->join_rel_level[lev]) {
+            elog(LOG, "\n[rel %d]", foreach_current_index(lc));
+
             rel = (RelOptInfo *) lfirst(lc);
+
+            ListCell *lc1;
+            foreach(lc1, rel->pathlist) {
+                elog(LOG, "[path %d]", foreach_current_index(lc1));
+                const Path *path = lfirst(lc1);
+                elog(LOG, "[path type] %d", path->pathtype);
+                const Sample *sample = path->total_cost_sample;
+                const int sample_count = sample->sample_count;
+                elog(LOG, "  [total cost avg] %.3f", path->total_cost);
+                for (int sample_idx = 0; sample_idx < sample_count; ++sample_idx) {
+                    elog(LOG, "  [total cost %d] %.3f", sample_idx, sample->sample[sample_idx]);
+                }
+            }
+
+            foreach(lc1, rel->partial_pathlist) {
+                elog(LOG, "[partial path %d]", foreach_current_index(lc1));
+                const Path *partial_path = lfirst(lc1);
+                elog(LOG, "[partial path type] %d", partial_path->pathtype);
+                const Sample *sample = partial_path->total_cost_sample;
+                const int sample_count = sample->sample_count;
+                elog(LOG, "  [total cost avg] %.3f", partial_path->total_cost);
+                for (int sample_idx = 0; sample_idx < sample_count; ++sample_idx) {
+                    elog(LOG, "  [total cost %d] %.3f", sample_idx, sample->sample[sample_idx]);
+                }
+            }
 
             /* Create paths for partitionwise joins. */
             generate_partitionwise_join_paths(root, rel);
@@ -3332,6 +3394,33 @@ standard_join_search(PlannerInfo *root, int levels_needed, List *initial_rels) {
 
             /* Find and save the cheapest paths for this rel */
             set_cheapest(rel);
+
+            elog(LOG, "\n[rel %d]", foreach_current_index(lc));
+
+            ListCell *lc2;
+            foreach(lc2, rel->pathlist) {
+                elog(LOG, "[path %d]", foreach_current_index(lc2));
+                const Path *path = lfirst(lc2);
+                elog(LOG, "[path type] %d", path->pathtype);
+                const Sample *sample = path->total_cost_sample;
+                const int sample_count = sample->sample_count;
+                elog(LOG, "  [total cost avg] %.3f", path->total_cost);
+                for (int sample_idx = 0; sample_idx < sample_count; ++sample_idx) {
+                    elog(LOG, "  [total cost %d] %.3f", sample_idx, sample->sample[sample_idx]);
+                }
+            }
+
+            foreach(lc2, rel->partial_pathlist) {
+                elog(LOG, "[partial path %d]", foreach_current_index(lc2));
+                const Path *partial_path = lfirst(lc2);
+                elog(LOG, "[partial path type] %d", partial_path->pathtype);
+                const Sample *sample = partial_path->total_cost_sample;
+                const int sample_count = sample->sample_count;
+                elog(LOG, "  [total cost avg] %.3f", partial_path->total_cost);
+                for (int sample_idx = 0; sample_idx < sample_count; ++sample_idx) {
+                    elog(LOG, "  [total cost %d] %.3f", sample_idx, sample->sample[sample_idx]);
+                }
+            }
 
 #ifdef OPTIMIZER_DEBUG
             debug_print_rel(root, rel);
