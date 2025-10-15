@@ -523,26 +523,18 @@ void cost_gather(
     }
 
     /* ------------------------------- 2) Subpath costs (scalar + sample) ------------------------------- */
-    Path *subpath = path->subpath;
+    const Path *subpath = path->subpath;
 
     const Sample *rows_samp = path->path.rows_sample; /* may be NULL */
-    const Sample *sub_startup_samp =
-    (IsA(subpath, IndexPath)
-         ? ((IndexPath *) subpath)->path.startup_cost_sample
-         : subpath->startup_cost_sample);
-    const Sample *sub_total_samp =
-    (IsA(subpath, IndexPath)
-         ? ((IndexPath *) subpath)->path.total_cost_sample
-         : subpath->total_cost_sample);
-
-    Assert(sub_startup_samp != NULL && sub_startup_samp->sample_count > 0);
-    Assert(sub_total_samp != NULL && sub_total_samp->sample_count > 0);
-    const bool sub_startup_is_const = sub_startup_samp->sample_count == 1;
-    const bool sub_total_is_const = sub_total_samp->sample_count == 1;
+    const Sample *sub_startup_samp = subpath->startup_cost_sample;
+    const Sample *sub_total_samp = subpath->total_cost_sample;
 
     const bool rows_is_const
-            = path->path.rows_sample == NULL
-              || path->path.rows_sample->sample_count <= 1;
+            = rows_samp == NULL || rows_samp->sample_count <= 1;
+    const bool sub_startup_is_const
+            = sub_startup_samp == NULL || sub_startup_samp->sample_count <= 1;
+    const bool sub_total_is_const
+            = sub_total_samp == NULL || sub_total_samp->sample_count <= 1;
 
     /* Decide loop sample_count: if all have N>1, require same N; otherwise use the non-1 side. */
     int sample_count;
@@ -3095,37 +3087,19 @@ void initial_cost_nestloop(
     PlannerInfo *root,
     JoinCostWorkspace *workspace,
     const JoinType jointype,
-    Path *outer_path,
+    const Path *outer_path,
     Path *inner_path,
     const JoinPathExtraData *extra
 ) {
     /* ------------------------------- 1) Resolve samples & loop count ------------------------------- */
-    const Sample *outer_rows_samp =
-    (IsA(outer_path, IndexPath)
-         ? ((IndexPath *) outer_path)->path.rows_sample
-         : outer_path->rows_sample);
-    const Sample *inner_rows_samp =
-    (IsA(inner_path, IndexPath)
-         ? ((IndexPath *) inner_path)->path.rows_sample
-         : inner_path->rows_sample);
+    const Sample *outer_rows_samp = outer_path->rows_sample;
+    const Sample *inner_rows_samp = inner_path->rows_sample;
 
-    const Sample *outer_startup_samp =
-    (IsA(outer_path, IndexPath)
-         ? ((IndexPath *) outer_path)->path.startup_cost_sample
-         : outer_path->startup_cost_sample);
-    const Sample *outer_total_samp =
-    (IsA(outer_path, IndexPath)
-         ? ((IndexPath *) outer_path)->path.total_cost_sample
-         : outer_path->total_cost_sample);
+    const Sample *outer_startup_samp = outer_path->startup_cost_sample;
+    const Sample *outer_total_samp = outer_path->total_cost_sample;
 
-    const Sample *inner_startup_samp =
-    (IsA(inner_path, IndexPath)
-         ? ((IndexPath *) inner_path)->path.startup_cost_sample
-         : inner_path->startup_cost_sample);
-    const Sample *inner_total_samp =
-    (IsA(inner_path, IndexPath)
-         ? ((IndexPath *) inner_path)->path.total_cost_sample
-         : inner_path->total_cost_sample);
+    const Sample *inner_startup_samp = inner_path->startup_cost_sample;
+    const Sample *inner_total_samp = inner_path->total_cost_sample;
 
     Assert(outer_rows_samp != NULL && outer_rows_samp->sample_count > 0);
     Assert(inner_rows_samp != NULL && inner_rows_samp->sample_count > 0);
@@ -3259,18 +3233,12 @@ void final_cost_nestloop(
     const JoinPathExtraData *extra
 ) {
     /* ------------------------------- 1) Resolve paths & samples ------------------------------- */
-    Path *outer_path = path->jpath.outerjoinpath;
-    Path *inner_path = path->jpath.innerjoinpath;
+    const Path *outer_path = path->jpath.outerjoinpath;
+    const Path *inner_path = path->jpath.innerjoinpath;
 
-    /* Row samples (support IndexPath->path) */
-    const Sample *outer_rows_samp =
-    (IsA(outer_path, IndexPath)
-         ? ((IndexPath *) outer_path)->path.rows_sample
-         : outer_path->rows_sample);
-    const Sample *inner_rows_samp =
-    (IsA(inner_path, IndexPath)
-         ? ((IndexPath *) inner_path)->path.rows_sample
-         : inner_path->rows_sample);
+    /* Row samples */
+    const Sample *outer_rows_samp = outer_path->rows_sample;
+    const Sample *inner_rows_samp = inner_path->rows_sample;
 
     Assert(outer_rows_samp != NULL && outer_rows_samp->sample_count > 0);
     Assert(inner_rows_samp != NULL && inner_rows_samp->sample_count > 0);
@@ -3485,32 +3453,14 @@ void initial_cost_mergejoin(
     /* ----------------------------------------------------------------------
      * 0) Resolve per-path row samples and costs
      * ---------------------------------------------------------------------- */
-    const Sample *outer_rows_samp =
-    (IsA(outer_path, IndexPath)
-         ? ((IndexPath *) outer_path)->path.rows_sample
-         : outer_path->rows_sample);
-    const Sample *inner_rows_samp =
-    (IsA(inner_path, IndexPath)
-         ? ((IndexPath *) inner_path)->path.rows_sample
-         : inner_path->rows_sample);
+    const Sample *outer_rows_samp = outer_path->rows_sample;
+    const Sample *inner_rows_samp = inner_path->rows_sample;
 
-    const Sample *outer_startup_samp =
-    (IsA(outer_path, IndexPath)
-         ? ((IndexPath *) outer_path)->path.startup_cost_sample
-         : outer_path->startup_cost_sample);
-    const Sample *outer_total_samp =
-    (IsA(outer_path, IndexPath)
-         ? ((IndexPath *) outer_path)->path.total_cost_sample
-         : outer_path->total_cost_sample);
+    const Sample *outer_startup_samp = outer_path->startup_cost_sample;
+    const Sample *outer_total_samp = outer_path->total_cost_sample;
 
-    const Sample *inner_startup_samp =
-    (IsA(inner_path, IndexPath)
-         ? ((IndexPath *) inner_path)->path.startup_cost_sample
-         : inner_path->startup_cost_sample);
-    const Sample *inner_total_samp =
-    (IsA(inner_path, IndexPath)
-         ? ((IndexPath *) inner_path)->path.total_cost_sample
-         : inner_path->total_cost_sample);
+    const Sample *inner_startup_samp = inner_path->startup_cost_sample;
+    const Sample *inner_total_samp = inner_path->total_cost_sample;
 
     Assert(outer_rows_samp != NULL && outer_rows_samp->sample_count > 0);
     Assert(inner_rows_samp != NULL && inner_rows_samp->sample_count > 0);
@@ -3789,18 +3739,12 @@ void final_cost_mergejoin(
     const JoinPathExtraData *extra
 ) {
     /* ------------------------------- 1) Resolve paths & row samples ------------------------------- */
-    Path *outer_path = path->jpath.outerjoinpath;
+    const Path *outer_path = path->jpath.outerjoinpath;
     Path *inner_path = path->jpath.innerjoinpath;
 
-    /* Row samples (support IndexPath->path) */
-    const Sample *outer_rows_samp =
-    (IsA(outer_path, IndexPath)
-         ? ((IndexPath *) outer_path)->path.rows_sample
-         : outer_path->rows_sample);
-    const Sample *inner_rows_samp =
-    (IsA(inner_path, IndexPath)
-         ? ((IndexPath *) inner_path)->path.rows_sample
-         : inner_path->rows_sample);
+    /* Row samples */
+    const Sample *outer_rows_samp = outer_path->rows_sample;
+    const Sample *inner_rows_samp = inner_path->rows_sample;
 
     Assert(outer_rows_samp != NULL && outer_rows_samp->sample_count > 0);
     Assert(inner_rows_samp != NULL && inner_rows_samp->sample_count > 0);
@@ -4061,32 +4005,14 @@ void initial_cost_hashjoin(
     /* ------------------------------------------------------------------
      * 1) Resolve samples and pick loop count
      * ------------------------------------------------------------------ */
-    const Sample *outer_rows_samp =
-    (IsA(outer_path, IndexPath)
-         ? ((IndexPath *) outer_path)->path.rows_sample
-         : outer_path->rows_sample);
-    const Sample *inner_rows_samp =
-    (IsA(inner_path, IndexPath)
-         ? ((IndexPath *) inner_path)->path.rows_sample
-         : inner_path->rows_sample);
+    const Sample *outer_rows_samp = outer_path->rows_sample;
+    const Sample *inner_rows_samp = inner_path->rows_sample;
 
-    const Sample *outer_startup_samp =
-    (IsA(outer_path, IndexPath)
-         ? ((IndexPath *) outer_path)->path.startup_cost_sample
-         : outer_path->startup_cost_sample);
-    const Sample *outer_total_samp =
-    (IsA(outer_path, IndexPath)
-         ? ((IndexPath *) outer_path)->path.total_cost_sample
-         : outer_path->total_cost_sample);
+    const Sample *outer_startup_samp = outer_path->startup_cost_sample;
+    const Sample *outer_total_samp = outer_path->total_cost_sample;
 
-    const Sample *inner_startup_samp =
-    (IsA(inner_path, IndexPath)
-         ? ((IndexPath *) inner_path)->path.startup_cost_sample
-         : inner_path->startup_cost_sample);
-    const Sample *inner_total_samp =
-    (IsA(inner_path, IndexPath)
-         ? ((IndexPath *) inner_path)->path.total_cost_sample
-         : inner_path->total_cost_sample);
+    const Sample *inner_startup_samp = inner_path->startup_cost_sample;
+    const Sample *inner_total_samp = inner_path->total_cost_sample;
 
     Assert(outer_rows_samp != NULL && outer_rows_samp->sample_count > 0);
     Assert(inner_rows_samp != NULL && inner_rows_samp->sample_count > 0);
@@ -4253,18 +4179,12 @@ void final_cost_hashjoin(
     const JoinPathExtraData *extra
 ) {
     /* ------------------------------- 1) Resolve paths & input samples ------------------------------- */
-    Path *outer_path = path->jpath.outerjoinpath;
-    Path *inner_path = path->jpath.innerjoinpath;
+    const Path *outer_path = path->jpath.outerjoinpath;
+    const Path *inner_path = path->jpath.innerjoinpath;
 
-    /* Row samples (support IndexPath->path) */
-    const Sample *outer_rows_samp =
-    (IsA(outer_path, IndexPath)
-         ? ((IndexPath *) outer_path)->path.rows_sample
-         : outer_path->rows_sample);
-    const Sample *inner_rows_samp =
-    (IsA(inner_path, IndexPath)
-         ? ((IndexPath *) inner_path)->path.rows_sample
-         : inner_path->rows_sample);
+    /* Row samples */
+    const Sample *outer_rows_samp = outer_path->rows_sample;
+    const Sample *inner_rows_samp = inner_path->rows_sample;
 
     Assert(outer_rows_samp != NULL && outer_rows_samp->sample_count > 0);
     Assert(inner_rows_samp != NULL && inner_rows_samp->sample_count > 0);
