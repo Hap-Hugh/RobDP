@@ -216,6 +216,31 @@ typedef struct PathPenalty {
 
 /* Ascending by max_penalty; tie-break with total sample[0], then pointer */
 static int
+compare_penalty_desc(const void *a, const void *b) {
+    const PathPenalty *pa = (const PathPenalty *) a;
+    const PathPenalty *pb = (const PathPenalty *) b;
+
+    if (pa->max_penalty < pb->max_penalty) return 1;
+    if (pa->max_penalty > pb->max_penalty) return -1;
+
+    /* Optional tie-breakers for deterministic ordering */
+    /* Prefer smaller total cost at first sample (if present) */
+    if (pa->path->total_cost_sample->sample_count > 0 &&
+        pb->path->total_cost_sample->sample_count > 0) {
+        double a0 = TOTAL_SAMPLE(pa->path, 0);
+        double b0 = TOTAL_SAMPLE(pb->path, 0);
+        if (a0 < b0) return -1;
+        if (a0 > b0) return 1;
+    }
+
+    /* Last resort: pointer address to keep total order deterministic */
+    if (pa->path < pb->path) return -1;
+    if (pa->path > pb->path) return 1;
+    return 0;
+}
+
+/* Ascending by max_penalty; tie-break with total sample[0], then pointer */
+static int
 compare_penalty_asc(const void *a, const void *b) {
     const PathPenalty *pa = (const PathPenalty *) a;
     const PathPenalty *pb = (const PathPenalty *) b;
@@ -332,7 +357,7 @@ prune_path(List **pathlist_ptr, const int sample_count, const int limit) {
     }
 
     /* Sort ascending by max_penalty (smaller penalty is better) */
-    qsort(arr, path_count, sizeof(PathPenalty), compare_penalty_asc);
+    qsort(arr, path_count, sizeof(PathPenalty), compare_penalty_desc);
 
     /* Construct new list with only the best `limit` paths */
     List *new_list = NIL;
