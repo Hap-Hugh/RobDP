@@ -13,6 +13,8 @@
  *-------------------------------------------------------------------------
  */
 
+#include <float.h>
+
 #include "postgres.h"
 
 #include <limits.h>
@@ -89,6 +91,7 @@ set_rel_pathlist_hook_type set_rel_pathlist_hook = NULL;
 /* Hook for plugins to replace standard_join_search() */
 join_search_hook_type join_search_hook = NULL;
 
+void prune_path(List **pathlist_ptr, int sample_count, int limit);
 
 static void set_base_rel_consider_startup(PlannerInfo *root);
 
@@ -200,6 +203,156 @@ static void recurse_push_qual(Node *setOp, Query *topquery,
 static void remove_unused_subquery_outputs(Query *subquery, RelOptInfo *rel,
                                            Bitmapset *extra_used_attrs);
 
+
+/* Access j-th total-cost sample of a Path (no range check here). */
+#define TOTAL_SAMPLE(pathPtr, j)   ((pathPtr)->total_cost_sample->sample[(j)])
+#define START_SAMPLE(pathPtr, j)   ((pathPtr)->startup_cost_sample->sample[(j)])
+
+/* Pair for sorting by max_penalty */
+typedef struct PathPenalty {
+    Path *path;
+    double max_penalty;
+} PathPenalty;
+
+/* Ascending by max_penalty; tie-break with total sample[0], then pointer */
+static int
+compare_penalty_asc(const void *a, const void *b) {
+    const PathPenalty *pa = (const PathPenalty *) a;
+    const PathPenalty *pb = (const PathPenalty *) b;
+
+    if (pa->max_penalty < pb->max_penalty) return -1;
+    if (pa->max_penalty > pb->max_penalty) return 1;
+
+    /* Optional tie-breakers for deterministic ordering */
+    /* Prefer smaller total cost at first sample (if present) */
+    if (pa->path->total_cost_sample->sample_count > 0 &&
+        pb->path->total_cost_sample->sample_count > 0) {
+        double a0 = TOTAL_SAMPLE(pa->path, 0);
+        double b0 = TOTAL_SAMPLE(pb->path, 0);
+        if (a0 < b0) return -1;
+        if (a0 > b0) return 1;
+    }
+
+    /* Last resort: pointer address to keep total order deterministic */
+    if (pa->path < pb->path) return -1;
+    if (pa->path > pb->path) return 1;
+    return 0;
+}
+
+/*
+ * prune_path
+ *
+ * Keep only the top `limit` paths with the smallest max_penalty.
+ * All other paths are pfreed and removed from the list.
+ *
+ * Steps:
+ *  1. Compute per-sample minima across all paths' total-cost samples.
+ *  2. For each path, compute max_penalty = max_j( path[j] - min_total[j] ).
+ *  3. Sort by ascending max_penalty.
+ *  4. Keep only the first `limit` paths, delete the rest.
+ *
+ * Returns:
+ *  Nothing (modifies pathlist in-place).
+ */
+void
+prune_path(List **pathlist_ptr, const int sample_count, const int limit) {
+    List *pathlist = *pathlist_ptr;
+    int path_count;
+    double *min_total_cost;
+    PathPenalty *arr;
+    ListCell *lc;
+    int i, j;
+
+    Assert(pathlist != NIL);
+    Assert(sample_count >= 1);
+    Assert(limit >= 1);
+    Assert(sample_count <= DIST_MAX_SAMPLE);
+
+    path_count = list_length(pathlist);
+
+    /* Trivial case: keep all */
+    if (path_count <= limit) {
+        return;
+    }
+
+    /* Initialize per-sample minima to +inf for the requested sample_count */
+    min_total_cost = (double *) palloc(sizeof(double) * sample_count);
+    for (j = 0; j < sample_count; j++)
+        min_total_cost[j] = DBL_MAX;
+
+    /* Pass 1: compute per-sample minima across *all* paths (bounded by each path's sample_count) */
+    foreach(lc, pathlist) {
+        Path *p = (Path *) lfirst(lc);
+        Sample *ts = p->total_cost_sample;
+
+        /* Defensive: require total_cost_sample to exist */
+        Assert(ts != NULL);
+        Assert(ts->sample_count >= 0 && ts->sample_count <= DIST_MAX_SAMPLE);
+
+        /* Pre-clear keep flag; we will enable top-`limit` later */
+        p->should_keep = false;
+
+        /* Use the intersection length for minima update */
+        int effective = ts->sample_count < sample_count ? ts->sample_count : sample_count;
+
+        for (j = 0; j < effective; j++) {
+            double v = ts->sample[j];
+            if (v < min_total_cost[j])
+                min_total_cost[j] = v;
+        }
+        /* If a path has fewer samples than sample_count, we simply skip the tail here. */
+    }
+
+    /* Build array of (path, max_penalty) for sorting */
+    arr = (PathPenalty *) palloc(sizeof(PathPenalty) * path_count);
+
+    i = 0;
+    foreach(lc, pathlist) {
+        Path *p = (Path *) lfirst(lc);
+        Sample *ts = p->total_cost_sample;
+        int effective = ts->sample_count < sample_count ? ts->sample_count : sample_count;
+
+        double max_pen = -DBL_MAX;
+
+        /* A path with zero effective samples is degenerate; treat penalty as +inf to sink it. */
+        if (effective <= 0) {
+            max_pen = DBL_MAX;
+        } else {
+            for (j = 0; j < effective; j++) {
+                /* penalty at j = path's total cost sample - per-sample minimum */
+                double pen = ts->sample[j] - min_total_cost[j];
+                if (pen > max_pen)
+                    max_pen = pen;
+            }
+        }
+
+        arr[i].path = p;
+        arr[i].max_penalty = max_pen;
+        i++;
+    }
+
+    /* Sort ascending by max_penalty (smaller penalty is better) */
+    qsort(arr, path_count, sizeof(PathPenalty), compare_penalty_asc);
+
+    /* Construct new list with only the best `limit` paths */
+    List *new_list = NIL;
+    for (i = 0; i < limit; i++)
+        new_list = lappend(new_list, arr[i].path);
+
+    /* Free remaining paths beyond limit */
+    for (i = limit; i < path_count; i++) {
+        Path *p = arr[i].path;
+        if (!IsA(p, IndexPath))
+            pfree(p);
+    }
+
+    /* Replace original list */
+    list_free(pathlist);
+    *pathlist_ptr = new_list;
+
+    pfree(min_total_cost);
+    pfree(arr);
+}
 
 /*
  * make_one_rel
@@ -3356,6 +3509,8 @@ standard_join_search(PlannerInfo *root, int levels_needed, List *initial_rels) {
 
             rel = (RelOptInfo *) lfirst(lc);
 
+            prune_path(&rel->pathlist, error_sample_count, 8);
+
             ListCell *lc1;
             foreach(lc1, rel->pathlist) {
                 elog(LOG, "[path %d]", foreach_current_index(lc1));
@@ -3368,6 +3523,8 @@ standard_join_search(PlannerInfo *root, int levels_needed, List *initial_rels) {
                     elog(LOG, "  [total cost %d] %.3f", sample_idx, sample->sample[sample_idx]);
                 }
             }
+
+            prune_path(&rel->partial_pathlist, error_sample_count, 8);
 
             foreach(lc1, rel->partial_pathlist) {
                 elog(LOG, "[partial path %d]", foreach_current_index(lc1));
