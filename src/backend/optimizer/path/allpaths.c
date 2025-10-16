@@ -390,7 +390,7 @@ prune_path(
     const int path_count = list_length(pathlist);
 
     /* Step 1: compute per-sample minima */
-    double min_total_cost[sample_count];
+    double *min_total_cost = palloc(sizeof(double) * sample_count);
     for (j = 0; j < sample_count; j++)
         min_total_cost[j] = DBL_MAX;
 
@@ -505,6 +505,8 @@ prune_path(
     list_free(pathlist);
     *pathlist_ptr = new_list;
 
+    /* free allocated arrays */
+    pfree(min_total_cost);
     pfree(arr);
 }
 
@@ -3663,7 +3665,7 @@ standard_join_search(PlannerInfo *root, int levels_needed, List *initial_rels) {
 
             rel = (RelOptInfo *) lfirst(lc);
 
-            prune_path(&rel->pathlist, error_sample_count, 8, 0);
+            prune_path(&rel->pathlist, error_sample_count, 1, 1);
 
             ListCell *lc1;
             foreach(lc1, rel->pathlist) {
@@ -3678,7 +3680,7 @@ standard_join_search(PlannerInfo *root, int levels_needed, List *initial_rels) {
                 }
             }
 
-            prune_path(&rel->partial_pathlist, error_sample_count, 8, 0);
+            prune_path(&rel->partial_pathlist, error_sample_count, 1, 1);
 
             foreach(lc1, rel->partial_pathlist) {
                 elog(LOG, "[partial path %d]", foreach_current_index(lc1));
