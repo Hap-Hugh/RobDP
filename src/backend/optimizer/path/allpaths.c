@@ -91,261 +91,342 @@ set_rel_pathlist_hook_type set_rel_pathlist_hook = NULL;
 /* Hook for plugins to replace standard_join_search() */
 join_search_hook_type join_search_hook = NULL;
 
-void prune_path(List **pathlist_ptr, int sample_count, int limit);
+void prune_path(
+    List **pathlist_ptr,
+    int sample_count,
+    int mc_path_limit, int mp_path_limit
+);
 
-static void set_base_rel_consider_startup(PlannerInfo *root);
+static void set_base_rel_consider_startup(
+    PlannerInfo *root
+);
 
-static void set_base_rel_sizes(PlannerInfo *root);
+static void set_base_rel_sizes(
+    PlannerInfo *root
+);
 
-static void set_base_rel_pathlists(PlannerInfo *root);
+static void set_base_rel_pathlists(
+    PlannerInfo *root
+);
 
-static void set_rel_size(PlannerInfo *root, RelOptInfo *rel,
-                         Index rti, RangeTblEntry *rte);
+static void set_rel_size(
+    PlannerInfo *root,
+    RelOptInfo *rel,
+    Index rti,
+    RangeTblEntry *rte
+);
 
-static void set_rel_pathlist(PlannerInfo *root, RelOptInfo *rel,
-                             Index rti, RangeTblEntry *rte);
+static void set_rel_pathlist(
+    PlannerInfo *root,
+    RelOptInfo *rel,
+    Index rti,
+    RangeTblEntry *rte
+);
 
-static void set_plain_rel_size(PlannerInfo *root, RelOptInfo *rel,
-                               RangeTblEntry *rte);
+static void set_plain_rel_size(
+    PlannerInfo *root,
+    RelOptInfo *rel,
+    RangeTblEntry *rte
+);
 
-static void create_plain_partial_paths(PlannerInfo *root, RelOptInfo *rel);
+static void create_plain_partial_paths(
+    PlannerInfo *root,
+    RelOptInfo *rel
+);
 
-static void set_rel_consider_parallel(PlannerInfo *root, RelOptInfo *rel,
-                                      RangeTblEntry *rte);
+static void set_rel_consider_parallel(
+    PlannerInfo *root,
+    RelOptInfo *rel,
+    RangeTblEntry *rte
+);
 
-static void set_plain_rel_pathlist(PlannerInfo *root, RelOptInfo *rel,
-                                   RangeTblEntry *rte);
+static void set_plain_rel_pathlist(
+    PlannerInfo *root,
+    RelOptInfo *rel,
+    RangeTblEntry *rte
+);
 
-static void set_tablesample_rel_size(PlannerInfo *root, RelOptInfo *rel,
-                                     RangeTblEntry *rte);
+static void set_tablesample_rel_size(
+    PlannerInfo *root,
+    RelOptInfo *rel,
+    RangeTblEntry *rte
+);
 
-static void set_tablesample_rel_pathlist(PlannerInfo *root, RelOptInfo *rel,
-                                         RangeTblEntry *rte);
+static void set_tablesample_rel_pathlist(
+    PlannerInfo *root,
+    RelOptInfo *rel,
+    RangeTblEntry *rte
+);
 
-static void set_foreign_size(PlannerInfo *root, RelOptInfo *rel,
-                             RangeTblEntry *rte);
+static void set_foreign_size(
+    PlannerInfo *root,
+    RelOptInfo *rel,
+    RangeTblEntry *rte
+);
 
-static void set_foreign_pathlist(PlannerInfo *root, RelOptInfo *rel,
-                                 RangeTblEntry *rte);
+static void set_foreign_pathlist(
+    PlannerInfo *root,
+    RelOptInfo *rel,
+    RangeTblEntry *rte
+);
 
-static void set_append_rel_size(PlannerInfo *root, RelOptInfo *rel,
-                                Index rti, RangeTblEntry *rte);
+static void set_append_rel_size(
+    PlannerInfo *root,
+    RelOptInfo *rel,
+    Index rti,
+    RangeTblEntry *rte
+);
 
-static void set_append_rel_pathlist(PlannerInfo *root, RelOptInfo *rel,
-                                    Index rti, RangeTblEntry *rte);
+static void set_append_rel_pathlist(
+    PlannerInfo *root,
+    RelOptInfo *rel,
+    Index rti,
+    RangeTblEntry *rte
+);
 
-static void generate_orderedappend_paths(PlannerInfo *root, RelOptInfo *rel,
-                                         List *live_childrels,
-                                         List *all_child_pathkeys);
+static void generate_orderedappend_paths(
+    PlannerInfo *root,
+    RelOptInfo *rel,
+    List *live_childrels,
+    List *all_child_pathkeys
+);
 
-static Path *get_cheapest_parameterized_child_path(PlannerInfo *root,
-                                                   RelOptInfo *rel,
-                                                   Relids required_outer);
+static Path *get_cheapest_parameterized_child_path(
+    PlannerInfo *root,
+    RelOptInfo *rel,
+    Relids required_outer
+);
 
-static void accumulate_append_subpath(Path *path,
-                                      List **subpaths,
-                                      List **special_subpaths);
+static void accumulate_append_subpath(
+    Path *path,
+    List **subpaths,
+    List **special_subpaths
+);
 
-static Path *get_singleton_append_subpath(Path *path);
+static Path *get_singleton_append_subpath(
+    Path *path
+);
 
-static void set_dummy_rel_pathlist(RelOptInfo *rel);
+static void set_dummy_rel_pathlist(
+    RelOptInfo *rel
+);
 
-static void set_subquery_pathlist(PlannerInfo *root, RelOptInfo *rel,
-                                  Index rti, RangeTblEntry *rte);
+static void set_subquery_pathlist(
+    PlannerInfo *root,
+    RelOptInfo *rel,
+    Index rti,
+    RangeTblEntry *rte
+);
 
-static void set_function_pathlist(PlannerInfo *root, RelOptInfo *rel,
-                                  RangeTblEntry *rte);
+static void set_function_pathlist(
+    PlannerInfo *root,
+    RelOptInfo *rel,
+    RangeTblEntry *rte
+);
 
-static void set_values_pathlist(PlannerInfo *root, RelOptInfo *rel,
-                                RangeTblEntry *rte);
+static void set_values_pathlist(
+    PlannerInfo *root,
+    RelOptInfo *rel,
+    RangeTblEntry *rte
+);
 
-static void set_tablefunc_pathlist(PlannerInfo *root, RelOptInfo *rel,
-                                   RangeTblEntry *rte);
+static void set_tablefunc_pathlist(
+    PlannerInfo *root,
+    RelOptInfo *rel,
+    RangeTblEntry *rte
+);
 
-static void set_cte_pathlist(PlannerInfo *root, RelOptInfo *rel,
-                             RangeTblEntry *rte);
+static void set_cte_pathlist(
+    PlannerInfo *root,
+    RelOptInfo *rel,
+    RangeTblEntry *rte
+);
 
-static void set_namedtuplestore_pathlist(PlannerInfo *root, RelOptInfo *rel,
-                                         RangeTblEntry *rte);
+static void set_namedtuplestore_pathlist(
+    PlannerInfo *root,
+    RelOptInfo *rel,
+    RangeTblEntry *rte
+);
 
-static void set_result_pathlist(PlannerInfo *root, RelOptInfo *rel,
-                                RangeTblEntry *rte);
+static void set_result_pathlist(
+    PlannerInfo *root,
+    RelOptInfo *rel,
+    RangeTblEntry *rte
+);
 
-static void set_worktable_pathlist(PlannerInfo *root, RelOptInfo *rel,
-                                   RangeTblEntry *rte);
+static void set_worktable_pathlist(
+    PlannerInfo *root,
+    RelOptInfo *rel,
+    RangeTblEntry *rte
+);
 
-static RelOptInfo *make_rel_from_joinlist(PlannerInfo *root, List *joinlist);
+static RelOptInfo *make_rel_from_joinlist(
+    PlannerInfo *root,
+    List *joinlist
+);
 
-static bool subquery_is_pushdown_safe(Query *subquery, Query *topquery,
-                                      pushdown_safety_info *safetyInfo);
+static bool subquery_is_pushdown_safe(
+    Query *subquery,
+    Query *topquery,
+    pushdown_safety_info *safetyInfo
+);
 
-static bool recurse_pushdown_safe(Node *setOp, Query *topquery,
-                                  pushdown_safety_info *safetyInfo);
+static bool recurse_pushdown_safe(
+    Node *setOp,
+    Query *topquery,
+    pushdown_safety_info *safetyInfo
+);
 
-static void check_output_expressions(Query *subquery,
-                                     pushdown_safety_info *safetyInfo);
+static void check_output_expressions(
+    Query *subquery,
+    pushdown_safety_info *safetyInfo
+);
 
-static void compare_tlist_datatypes(List *tlist, List *colTypes,
-                                    pushdown_safety_info *safetyInfo);
+static void compare_tlist_datatypes(
+    List *tlist,
+    List *colTypes,
+    pushdown_safety_info *safetyInfo
+);
 
-static bool targetIsInAllPartitionLists(TargetEntry *tle, Query *query);
+static bool targetIsInAllPartitionLists(
+    TargetEntry *tle,
+    Query *query
+);
 
-static pushdown_safe_type qual_is_pushdown_safe(Query *subquery, Index rti,
-                                                RestrictInfo *rinfo,
-                                                pushdown_safety_info *safetyInfo);
+static pushdown_safe_type qual_is_pushdown_safe(
+    Query *subquery,
+    Index rti,
+    RestrictInfo *rinfo,
+    pushdown_safety_info *safetyInfo
+);
 
-static void subquery_push_qual(Query *subquery,
-                               RangeTblEntry *rte, Index rti, Node *qual);
+static void subquery_push_qual(
+    Query *subquery,
+    RangeTblEntry *rte,
+    Index rti,
+    Node *qual
+);
 
-static void recurse_push_qual(Node *setOp, Query *topquery,
-                              RangeTblEntry *rte, Index rti, Node *qual);
+static void recurse_push_qual(
+    Node *setOp,
+    Query *topquery,
+    RangeTblEntry *rte,
+    Index rti,
+    Node *qual
+);
 
-static void remove_unused_subquery_outputs(Query *subquery, RelOptInfo *rel,
-                                           Bitmapset *extra_used_attrs);
-
+static void remove_unused_subquery_outputs(
+    Query *subquery,
+    RelOptInfo *rel,
+    Bitmapset *extra_used_attrs
+);
 
 /* Access j-th total-cost sample of a Path (no range check here). */
 #define TOTAL_SAMPLE(pathPtr, j)   ((pathPtr)->total_cost_sample->sample[(j)])
 #define START_SAMPLE(pathPtr, j)   ((pathPtr)->startup_cost_sample->sample[(j)])
 
-/* Pair for sorting by max_penalty */
-typedef struct PathPenalty {
+
+typedef struct PathRank {
     Path *path;
     double max_penalty;
-} PathPenalty;
+    double total_cost;
+    bool keep_mp; /* selected in top mp_path_limit by penalty */
+    bool keep_mc; /* selected in top mc_path_limit by total cost */
+} PathRank;
 
-/* Ascending by max_penalty; tie-break with total sample[0], then pointer */
-static int
-compare_penalty_desc(const void *a, const void *b) {
-    const PathPenalty *pa = (const PathPenalty *) a;
-    const PathPenalty *pb = (const PathPenalty *) b;
-
-    if (pa->max_penalty < pb->max_penalty) return 1;
-    if (pa->max_penalty > pb->max_penalty) return -1;
-
-    /* Optional tie-breakers for deterministic ordering */
-    /* Prefer smaller total cost at first sample (if present) */
-    if (pa->path->total_cost_sample->sample_count > 0 &&
-        pb->path->total_cost_sample->sample_count > 0) {
-        double a0 = TOTAL_SAMPLE(pa->path, 0);
-        double b0 = TOTAL_SAMPLE(pb->path, 0);
-        if (a0 < b0) return -1;
-        if (a0 > b0) return 1;
-    }
-
-    /* Last resort: pointer address to keep total order deterministic */
-    if (pa->path < pb->path) return -1;
-    if (pa->path > pb->path) return 1;
-    return 0;
-}
-
-/* Ascending by max_penalty; tie-break with total sample[0], then pointer */
+/* Comparator: ascending by max_penalty; tiebreak by pointer */
 static int
 compare_penalty_asc(const void *a, const void *b) {
-    const PathPenalty *pa = (const PathPenalty *) a;
-    const PathPenalty *pb = (const PathPenalty *) b;
+    const PathRank *pa = a;
+    const PathRank *pb = b;
 
-    if (pa->max_penalty < pb->max_penalty) return -1;
-    if (pa->max_penalty > pb->max_penalty) return 1;
+    if (pa->max_penalty < pb->max_penalty)
+        return -1;
+    if (pa->max_penalty > pb->max_penalty)
+        return 1;
 
-    /* Optional tie-breakers for deterministic ordering */
-    /* Prefer smaller total cost at first sample (if present) */
-    if (pa->path->total_cost_sample->sample_count > 0 &&
-        pb->path->total_cost_sample->sample_count > 0) {
-        double a0 = TOTAL_SAMPLE(pa->path, 0);
-        double b0 = TOTAL_SAMPLE(pb->path, 0);
-        if (a0 < b0) return -1;
-        if (a0 > b0) return 1;
-    }
-
-    /* Last resort: pointer address to keep total order deterministic */
-    if (pa->path < pb->path) return -1;
-    if (pa->path > pb->path) return 1;
+    /* deterministic final tiebreaker */
+    if (pa->path < pb->path)
+        return -1;
+    if (pa->path > pb->path)
+        return 1;
     return 0;
 }
 
-/*
- * prune_path
- *
- * Keep only the top `limit` paths with the smallest max_penalty.
- * All other paths are pfreed and removed from the list.
- *
- * Steps:
- *  1. Compute per-sample minima across all paths' total-cost samples.
- *  2. For each path, compute max_penalty = max_j( path[j] - min_total[j] ).
- *  3. Sort by ascending max_penalty.
- *  4. Keep only the first `limit` paths, delete the rest.
- *
- * Returns:
- *  Nothing (modifies pathlist in-place).
- */
+/* Comparator: ascending by total_cost; tiebreak by pointer */
+static int
+compare_total_cost_asc(const void *a, const void *b) {
+    const PathRank *pa = a;
+    const PathRank *pb = b;
+
+    if (pa->total_cost < pb->total_cost)
+        return -1;
+    if (pa->total_cost > pb->total_cost)
+        return 1;
+
+    /* deterministic final tiebreaker */
+    if (pa->path < pb->path)
+        return -1;
+    if (pa->path > pb->path)
+        return 1;
+    return 0;
+}
+
 void
-prune_path(List **pathlist_ptr, const int sample_count, const int limit) {
+prune_path(
+    List **pathlist_ptr, const int sample_count,
+    const int mc_path_limit, const int mp_path_limit
+) {
     List *pathlist = *pathlist_ptr;
-    int path_count;
-    double *min_total_cost;
-    PathPenalty *arr;
     ListCell *lc;
-    int i, j;
+    int j;
 
     Assert(pathlist != NIL);
     Assert(sample_count >= 1);
-    Assert(limit >= 1);
+    Assert(mp_path_limit >= 1);
+    Assert(mc_path_limit >= 0);
     Assert(sample_count <= DIST_MAX_SAMPLE);
 
-    path_count = list_length(pathlist);
+    const int path_count = list_length(pathlist);
 
-    /* Trivial case: keep all */
-    if (path_count <= limit) {
-        return;
-    }
-
-    /* Initialize per-sample minima to +inf for the requested sample_count */
-    min_total_cost = (double *) palloc(sizeof(double) * sample_count);
+    /* Step 1: compute per-sample minima */
+    double min_total_cost[sample_count];
     for (j = 0; j < sample_count; j++)
         min_total_cost[j] = DBL_MAX;
 
-    /* Pass 1: compute per-sample minima across *all* paths (bounded by each path's sample_count) */
     foreach(lc, pathlist) {
-        Path *p = (Path *) lfirst(lc);
-        Sample *ts = p->total_cost_sample;
+        Path *p = lfirst(lc);
+        const Sample *ts = p->total_cost_sample;
 
-        /* Defensive: require total_cost_sample to exist */
         Assert(ts != NULL);
         Assert(ts->sample_count >= 0 && ts->sample_count <= DIST_MAX_SAMPLE);
 
-        /* Pre-clear keep flag; we will enable top-`limit` later */
         p->should_keep = false;
 
-        /* Use the intersection length for minima update */
-        int effective = ts->sample_count < sample_count ? ts->sample_count : sample_count;
-
+        const int effective = Min(ts->sample_count, sample_count);
         for (j = 0; j < effective; j++) {
-            double v = ts->sample[j];
+            const double v = ts->sample[j];
             if (v < min_total_cost[j])
                 min_total_cost[j] = v;
         }
-        /* If a path has fewer samples than sample_count, we simply skip the tail here. */
     }
 
-    /* Build array of (path, max_penalty) for sorting */
-    arr = (PathPenalty *) palloc(sizeof(PathPenalty) * path_count);
+    /* Step 2: build array of PathRank structs */
+    PathRank *arr = palloc(sizeof(PathRank) * path_count);
+    int i = 0;
 
-    i = 0;
     foreach(lc, pathlist) {
-        Path *p = (Path *) lfirst(lc);
-        Sample *ts = p->total_cost_sample;
-        int effective = ts->sample_count < sample_count ? ts->sample_count : sample_count;
+        Path *p = lfirst(lc);
+        const Sample *ts = p->total_cost_sample;
+        const int effective = Min(ts->sample_count, sample_count);
 
         double max_pen = -DBL_MAX;
 
-        /* A path with zero effective samples is degenerate; treat penalty as +inf to sink it. */
-        if (effective <= 0) {
+        if (effective <= 0)
             max_pen = DBL_MAX;
-        } else {
+        else {
             for (j = 0; j < effective; j++) {
-                /* penalty at j = path's total cost sample - per-sample minimum */
-                double pen = ts->sample[j] - min_total_cost[j];
+                const double pen = ts->sample[j] - min_total_cost[j];
                 if (pen > max_pen)
                     max_pen = pen;
             }
@@ -353,29 +434,77 @@ prune_path(List **pathlist_ptr, const int sample_count, const int limit) {
 
         arr[i].path = p;
         arr[i].max_penalty = max_pen;
+        arr[i].total_cost = p->total_cost;
+        arr[i].keep_mp = false;
+        arr[i].keep_mc = false;
         i++;
     }
 
-    /* Sort ascending by max_penalty (smaller penalty is better) */
-    qsort(arr, path_count, sizeof(PathPenalty), compare_penalty_desc);
+    /* Step 3a: sort by max_penalty */
+    qsort(arr, path_count, sizeof(PathRank), compare_penalty_asc);
 
-    /* Construct new list with only the best `limit` paths */
-    List *new_list = NIL;
-    for (i = 0; i < limit; i++)
-        new_list = lappend(new_list, arr[i].path);
-
-    /* Free remaining paths beyond limit */
-    for (i = limit; i < path_count; i++) {
-        Path *p = arr[i].path;
-        if (!IsA(p, IndexPath))
-            pfree(p);
+    /* Log top few penalties for debug */
+    const int show = Min(path_count, 8);
+    for (i = 0; i < show; i++) {
+        elog(LOG, "prune_path: rank %d: path=%p max_penalty=%.6f total_cost=%.6f",
+             i, (void *) arr[i].path, arr[i].max_penalty, arr[i].total_cost);
     }
 
-    /* Replace original list */
+    /* Mark top mp_path_limit for penalty */
+    const int take_mp = Min(mp_path_limit, path_count);
+    for (i = 0; i < take_mp; i++)
+        arr[i].keep_mp = true;
+
+    /* Step 3b: sort a copy by total_cost */
+    PathRank *by_total = palloc(sizeof(PathRank) * path_count);
+    memcpy(by_total, arr, sizeof(PathRank) * path_count);
+
+    qsort(by_total, path_count, sizeof(PathRank), compare_total_cost_asc);
+
+    const int take_mc = Min(mc_path_limit, path_count);
+    for (i = 0; i < take_mc; i++) {
+        const Path *p = by_total[i].path;
+        /* Find same path in arr[] and mark keep_mc = true */
+        for (int k = 0; k < path_count; k++) {
+            if (arr[k].path == p) {
+                arr[k].keep_mc = true;
+                break;
+            }
+        }
+    }
+
+    pfree(by_total);
+
+    /* Step 4: build union of both selections */
+    List *new_list = NIL;
+    int kept = 0;
+
+    for (i = 0; i < path_count; i++) {
+        if (arr[i].keep_mp || arr[i].keep_mc) {
+            arr[i].path->should_keep = true;
+            new_list = lappend(new_list, arr[i].path);
+            kept++;
+        }
+    }
+
+    Assert(kept <= take_mp + take_mc);
+
+    elog(LOG, "prune_path: kept %d paths (mp=%d, mc=%d, total=%d)",
+         kept, take_mp, take_mc, path_count);
+
+    /* Step 5: free paths not kept */
+    for (i = 0; i < path_count; i++) {
+        Path *p = arr[i].path;
+        if (!p->should_keep) {
+            if (!IsA(p, IndexPath))
+                pfree(p);
+        }
+    }
+
+    /* Replace list */
     list_free(pathlist);
     *pathlist_ptr = new_list;
 
-    pfree(min_total_cost);
     pfree(arr);
 }
 
@@ -3534,7 +3663,7 @@ standard_join_search(PlannerInfo *root, int levels_needed, List *initial_rels) {
 
             rel = (RelOptInfo *) lfirst(lc);
 
-            prune_path(&rel->pathlist, error_sample_count, 8);
+            prune_path(&rel->pathlist, error_sample_count, 8, 0);
 
             ListCell *lc1;
             foreach(lc1, rel->pathlist) {
@@ -3549,7 +3678,7 @@ standard_join_search(PlannerInfo *root, int levels_needed, List *initial_rels) {
                 }
             }
 
-            prune_path(&rel->partial_pathlist, error_sample_count, 8);
+            prune_path(&rel->partial_pathlist, error_sample_count, 8, 0);
 
             foreach(lc1, rel->partial_pathlist) {
                 elog(LOG, "[partial path %d]", foreach_current_index(lc1));
