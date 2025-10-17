@@ -15,6 +15,8 @@
 /* GUC Parameters */
 extern bool enable_rows_dist;
 extern int error_sample_count;
+extern int mc_path_limit;
+extern int mp_path_limit;
 extern int error_sample_seed;
 
 /* Forward Declarations */

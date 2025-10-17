@@ -3547,6 +3547,26 @@ struct config_int ConfigureNamesInt[] =
 		NULL, NULL, NULL
 	},
 
+	{
+		{"mp_path_limit", PGC_USERSET, DEVELOPER_OPTIONS,
+			gettext_noop("Sets the limit of paths of minimum expected penalty."),
+			NULL
+		},
+		&mp_path_limit,
+		1, 1, 64,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"mc_path_limit", PGC_USERSET, DEVELOPER_OPTIONS,
+			gettext_noop("Sets the limit of paths of minimum expected cost."),
+			NULL
+		},
+		&mc_path_limit,
+		1, 1, 64,
+		NULL, NULL, NULL
+	},
+
 	/* End-of-list marker */
 	{
 		{NULL, 0, 0, NULL, NULL}, NULL, 0, 0, 0, NULL, NULL, NULL

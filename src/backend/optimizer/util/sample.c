@@ -17,6 +17,8 @@
 /* GUC Parameters */
 bool enable_rows_dist;
 int error_sample_count;
+int mc_path_limit;
+int mp_path_limit;
 int error_sample_seed;
 
 /* ------------------------------- Utilities ------------------------------- */
