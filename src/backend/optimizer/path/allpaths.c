@@ -3665,7 +3665,7 @@ standard_join_search(PlannerInfo *root, int levels_needed, List *initial_rels) {
 
             rel = (RelOptInfo *) lfirst(lc);
 
-            prune_path(&rel->pathlist, error_sample_count, 1, 1);
+            prune_path(&rel->pathlist, error_sample_count, mc_path_limit, mp_path_limit);
 
             ListCell *lc1;
             foreach(lc1, rel->pathlist) {
@@ -3680,7 +3680,7 @@ standard_join_search(PlannerInfo *root, int levels_needed, List *initial_rels) {
                 }
             }
 
-            prune_path(&rel->partial_pathlist, error_sample_count, 1, 1);
+            prune_path(&rel->partial_pathlist, error_sample_count, mc_path_limit, mp_path_limit);
 
             foreach(lc1, rel->partial_pathlist) {
                 elog(LOG, "[partial path %d]", foreach_current_index(lc1));
