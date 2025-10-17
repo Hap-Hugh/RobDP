@@ -3553,7 +3553,7 @@ struct config_int ConfigureNamesInt[] =
 			NULL
 		},
 		&mp_path_limit,
-		1, 1, 64,
+		1, 0, 64,
 		NULL, NULL, NULL
 	},
 
@@ -3563,7 +3563,7 @@ struct config_int ConfigureNamesInt[] =
 			NULL
 		},
 		&mc_path_limit,
-		1, 1, 64,
+		1, 0, 64,
 		NULL, NULL, NULL
 	},
 
