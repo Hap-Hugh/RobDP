@@ -559,14 +559,13 @@ add_path(RelOptInfo *parent_rel, Path *new_path) {
          * Remove current element from pathlist if dominated by new.
          */
         if (remove_old) {
-            parent_rel->pathlist = foreach_delete_current(parent_rel->pathlist,
-                                                          p1);
-
-            /*
-             * Delete the data pointed-to by the deleted cell, if possible
-             */
-            if (!IsA(old_path, IndexPath))
-                pfree(old_path);
+            parent_rel->additional_pathlist = lappend(
+                parent_rel->additional_pathlist, old_path
+            );
+            parent_rel->pathlist = foreach_delete_current(
+                parent_rel->pathlist, p1
+            );
+            /* Do not recycle the old path */
         } else {
             /* new belongs after this old path if it has cost >= old's */
             if (new_path->total_cost >= old_path->total_cost)
@@ -587,9 +586,10 @@ add_path(RelOptInfo *parent_rel, Path *new_path) {
         parent_rel->pathlist =
                 list_insert_nth(parent_rel->pathlist, insert_at, new_path);
     } else {
-        /* Reject and recycle the new path */
-        if (!IsA(new_path, IndexPath))
-            pfree(new_path);
+        parent_rel->additional_pathlist = lappend(
+            parent_rel->additional_pathlist, new_path
+        );
+        /* Do not recycle the new path */
     }
 }
 
@@ -767,9 +767,13 @@ add_partial_path(RelOptInfo *parent_rel, Path *new_path) {
          * Remove current element from partial_pathlist if dominated by new.
          */
         if (remove_old) {
-            parent_rel->partial_pathlist =
-                    foreach_delete_current(parent_rel->partial_pathlist, p1);
-            pfree(old_path);
+            parent_rel->additional_partial_pathlist = lappend(
+                parent_rel->additional_partial_pathlist, old_path
+            );
+            parent_rel->partial_pathlist = foreach_delete_current(
+                parent_rel->partial_pathlist, p1
+            );
+            /* Do not recycle the old path */
         } else {
             /* new belongs after this old path if it has cost >= old's */
             if (new_path->total_cost >= old_path->total_cost)
@@ -790,8 +794,10 @@ add_partial_path(RelOptInfo *parent_rel, Path *new_path) {
         parent_rel->partial_pathlist =
                 list_insert_nth(parent_rel->partial_pathlist, insert_at, new_path);
     } else {
-        /* Reject and recycle the new path */
-        pfree(new_path);
+        parent_rel->additional_partial_pathlist = lappend(
+            parent_rel->additional_partial_pathlist, new_path
+        );
+        /* Do not recycle the new path */
     }
 }
 
