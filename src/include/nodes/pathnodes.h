@@ -884,8 +884,10 @@ typedef struct RelOptInfo
 	 * materialization information
 	 */
 	List	   *pathlist;		/* Path structures */
+	List	   *additional_pathlist;		/* Path structures */
 	List	   *ppilist;		/* ParamPathInfos used in pathlist */
-	List	   *partial_pathlist;	/* partial Paths */
+	List	   *partial_pathlist;	/* Partial Paths */
+	List	   *additional_partial_pathlist;	/* Partial Paths */
 	struct Path *cheapest_startup_path;
 	struct Path *cheapest_total_path;
 	struct Path *cheapest_unique_path;
