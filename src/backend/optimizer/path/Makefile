@@ -21,6 +21,7 @@ OBJS = \
 	joinpath.o \
 	joinrels.o \
 	pathkeys.o \
-	tidpath.o
+	tidpath.o \
+	prunepath.o \
 
 include $(top_srcdir)/src/backend/common.mk
