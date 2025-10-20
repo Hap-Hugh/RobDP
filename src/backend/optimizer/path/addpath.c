@@ -33,19 +33,6 @@ path_less_total_cost(const Path *a, const Path *b) {
 }
 
 static void
-path_minheap_sift_up(Path **heap, int idx) {
-    while (idx > 0) {
-        int parent = (idx - 1) >> 1;
-        if (!path_less_total_cost(heap[idx], heap[parent]))
-            break;
-        Path *tmp = heap[parent];
-        heap[parent] = heap[idx];
-        heap[idx] = tmp;
-        idx = parent;
-    }
-}
-
-static void
 path_minheap_sift_down(Path **heap, int n, int idx) {
     for (;;) {
         int l = (idx << 1) + 1;
@@ -64,14 +51,6 @@ path_minheap_sift_down(Path **heap, int n, int idx) {
         heap[idx] = tmp;
         idx = smallest;
     }
-}
-
-static void
-path_minheap_push(Path **heap, int *pn, Path *val) {
-    int n = *pn;
-    heap[n] = val;
-    path_minheap_sift_up(heap, n);
-    *pn = n + 1;
 }
 
 static Path *
@@ -134,15 +113,6 @@ rankidx_maxheap_sift_down(int *heap, int n, int idx, const PathRank *arr) {
         heap[idx] = tmp;
         idx = largest;
     }
-}
-
-/* Linear search in the pathtype array [0..groups_count). Type count is small. */
-static int
-find_type_index(const int *types, int groups_count, int pathtype) {
-    for (int i = 0; i < groups_count; i++)
-        if (types[i] == pathtype)
-            return i;
-    return -1;
 }
 
 /* Push new index; if heap is full (size==k) and new item is better (smaller penalty),
@@ -275,7 +245,6 @@ consider_additional_path(
     }
     for (int i = k - 1; i >= 0; i--) {
         Path *winner = rank_arr[tmp[i]].path;
-        /* NOTE: 与你当前版本一致，这里不做去重。如果需要去重，套一层 list_contains_path_ptr 即可。 */
         pathlist = lappend(pathlist, winner);
     }
     pfree(tmp);
