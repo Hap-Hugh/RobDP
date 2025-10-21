@@ -3547,17 +3547,6 @@ struct config_int ConfigureNamesInt[] =
 		NULL, NULL, NULL
 	},
 
-	{
-		{"mp_path_limit", PGC_USERSET, DEVELOPER_OPTIONS,
-			gettext_noop("Sets the maximum number of additional paths from a join relation's "
-				"additional pathlist, based on minimum penalty."),
-			NULL
-		},
-		&mp_path_limit,
-		1, 0, 16,
-		NULL, NULL, NULL
-	},
-
 	/* End-of-list marker */
 	{
 		{NULL, 0, 0, NULL, NULL}, NULL, 0, 0, 0, NULL, NULL, NULL

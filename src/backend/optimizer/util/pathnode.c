@@ -409,10 +409,9 @@ set_cheapest(RelOptInfo *parent_rel) {
  */
 void
 add_path(RelOptInfo *parent_rel, Path *new_path) {
-    bool accept_new = true; /* unless we find a superior old path */
-    int insert_at = 0; /* where to insert new item */
-    List *new_path_pathkeys;
-    ListCell *p1;
+    int insert_at = 0;
+    int idx = 0;
+    ListCell *lc;
 
     /*
      * This is a convenient place to check for query cancel --- no part of the
@@ -420,177 +419,25 @@ add_path(RelOptInfo *parent_rel, Path *new_path) {
      */
     CHECK_FOR_INTERRUPTS();
 
-    /* Pretend parameterized paths have no pathkeys, per comment above */
-    new_path_pathkeys = new_path->param_info ? NIL : new_path->pathkeys;
-
-    /*
-     * Loop to check proposed new path against old paths.  Note it is possible
-     * for more than one old path to be tossed out because new_path dominates
-     * it.
-     */
-    foreach(p1, parent_rel->pathlist) {
-        Path *old_path = (Path *) lfirst(p1);
-        bool remove_old = false; /* unless new proves superior */
-        PathCostComparison costcmp;
-        PathKeysComparison keyscmp;
-        BMS_Comparison outercmp;
-
-        /*
-         * Do a fuzzy cost comparison with standard fuzziness limit.
-         */
-        costcmp = compare_path_costs_fuzzily(new_path, old_path,
-                                             STD_FUZZ_FACTOR);
-
-        /*
-         * If the two paths compare differently for startup and total cost,
-         * then we want to keep both, and we can skip comparing pathkeys and
-         * required_outer rels.  If they compare the same, proceed with the
-         * other comparisons.  Row count is checked last.  (We make the tests
-         * in this order because the cost comparison is most likely to turn
-         * out "different", and the pathkeys comparison next most likely.  As
-         * explained above, row count very seldom makes a difference, so even
-         * though it's cheap to compare there's not much point in checking it
-         * earlier.)
-         */
-        if (costcmp != COSTS_DIFFERENT) {
-            /* Similarly check to see if either dominates on pathkeys */
-            List *old_path_pathkeys;
-
-            old_path_pathkeys = old_path->param_info ? NIL : old_path->pathkeys;
-            keyscmp = compare_pathkeys(new_path_pathkeys,
-                                       old_path_pathkeys);
-            if (keyscmp != PATHKEYS_DIFFERENT) {
-                switch (costcmp) {
-                    case COSTS_EQUAL:
-                        outercmp = bms_subset_compare(PATH_REQ_OUTER(new_path),
-                                                      PATH_REQ_OUTER(old_path));
-                        if (keyscmp == PATHKEYS_BETTER1) {
-                            if ((outercmp == BMS_EQUAL ||
-                                 outercmp == BMS_SUBSET1) &&
-                                new_path->rows <= old_path->rows &&
-                                new_path->parallel_safe >= old_path->parallel_safe)
-                                remove_old = true; /* new dominates old */
-                        } else if (keyscmp == PATHKEYS_BETTER2) {
-                            if ((outercmp == BMS_EQUAL ||
-                                 outercmp == BMS_SUBSET2) &&
-                                new_path->rows >= old_path->rows &&
-                                new_path->parallel_safe <= old_path->parallel_safe)
-                                accept_new = false; /* old dominates new */
-                        } else /* keyscmp == PATHKEYS_EQUAL */
-                        {
-                            if (outercmp == BMS_EQUAL) {
-                                /*
-                                 * Same pathkeys and outer rels, and fuzzily
-                                 * the same cost, so keep just one; to decide
-                                 * which, first check parallel-safety, then
-                                 * rows, then do a fuzzy cost comparison with
-                                 * very small fuzz limit.  (We used to do an
-                                 * exact cost comparison, but that results in
-                                 * annoying platform-specific plan variations
-                                 * due to roundoff in the cost estimates.)	If
-                                 * things are still tied, arbitrarily keep
-                                 * only the old path.  Notice that we will
-                                 * keep only the old path even if the
-                                 * less-fuzzy comparison decides the startup
-                                 * and total costs compare differently.
-                                 */
-                                if (new_path->parallel_safe >
-                                    old_path->parallel_safe)
-                                    remove_old = true; /* new dominates old */
-                                else if (new_path->parallel_safe <
-                                         old_path->parallel_safe)
-                                    accept_new = false; /* old dominates new */
-                                else if (new_path->rows < old_path->rows)
-                                    remove_old = true; /* new dominates old */
-                                else if (new_path->rows > old_path->rows)
-                                    accept_new = false; /* old dominates new */
-                                else if (compare_path_costs_fuzzily(new_path,
-                                                                    old_path,
-                                                                    1.0000000001) == COSTS_BETTER1)
-                                    remove_old = true; /* new dominates old */
-                                else
-                                    accept_new = false; /* old equals or
-														 * dominates new */
-                            } else if (outercmp == BMS_SUBSET1 &&
-                                       new_path->rows <= old_path->rows &&
-                                       new_path->parallel_safe >= old_path->parallel_safe)
-                                remove_old = true; /* new dominates old */
-                            else if (outercmp == BMS_SUBSET2 &&
-                                     new_path->rows >= old_path->rows &&
-                                     new_path->parallel_safe <= old_path->parallel_safe)
-                                accept_new = false; /* old dominates new */
-                            /* else different parameterizations, keep both */
-                        }
-                        break;
-                    case COSTS_BETTER1:
-                        if (keyscmp != PATHKEYS_BETTER2) {
-                            outercmp = bms_subset_compare(PATH_REQ_OUTER(new_path),
-                                                          PATH_REQ_OUTER(old_path));
-                            if ((outercmp == BMS_EQUAL ||
-                                 outercmp == BMS_SUBSET1) &&
-                                new_path->rows <= old_path->rows &&
-                                new_path->parallel_safe >= old_path->parallel_safe)
-                                remove_old = true; /* new dominates old */
-                        }
-                        break;
-                    case COSTS_BETTER2:
-                        if (keyscmp != PATHKEYS_BETTER1) {
-                            outercmp = bms_subset_compare(PATH_REQ_OUTER(new_path),
-                                                          PATH_REQ_OUTER(old_path));
-                            if ((outercmp == BMS_EQUAL ||
-                                 outercmp == BMS_SUBSET2) &&
-                                new_path->rows >= old_path->rows &&
-                                new_path->parallel_safe <= old_path->parallel_safe)
-                                accept_new = false; /* old dominates new */
-                        }
-                        break;
-                    case COSTS_DIFFERENT:
-
-                        /*
-                         * can't get here, but keep this case to keep compiler
-                         * quiet
-                         */
-                        break;
-                }
-            }
-        }
-
-        /*
-         * Remove current element from pathlist if dominated by new.
-         */
-        if (remove_old) {
-            parent_rel->additional_pathlist = lappend(
-                parent_rel->additional_pathlist, old_path
-            );
-            parent_rel->pathlist = foreach_delete_current(
-                parent_rel->pathlist, p1
-            );
-            /* Do not recycle the old path */
-        } else {
-            /* new belongs after this old path if it has cost >= old's */
-            if (new_path->total_cost >= old_path->total_cost)
-                insert_at = foreach_current_index(p1) + 1;
-        }
-
-        /*
-         * If we found an old path that dominates new_path, we can quit
-         * scanning the pathlist; we will not add new_path, and we assume
-         * new_path cannot dominate any other elements of the pathlist.
-         */
-        if (!accept_new)
+    switch (nodeTag(new_path)) {
+        case T_BitmapHeapPath:
+        case T_BitmapAndPath:
+        case T_BitmapOrPath:
+            pfree(new_path);
+            return;
+        default:
             break;
     }
 
-    if (accept_new) {
-        /* Accept the new path: insert it at proper place in pathlist */
-        parent_rel->pathlist =
-                list_insert_nth(parent_rel->pathlist, insert_at, new_path);
-    } else {
-        parent_rel->additional_pathlist = lappend(
-            parent_rel->additional_pathlist, new_path
-        );
-        /* Do not recycle the new path */
+    foreach(lc, parent_rel->pathlist) {
+        const Path *old_path = (Path *) lfirst(lc);
+        if (new_path->total_cost >= old_path->total_cost)
+            insert_at = idx + 1;
+        idx++;
     }
+    parent_rel->pathlist = list_insert_nth(
+        parent_rel->pathlist, insert_at, new_path
+    );
 }
 
 /*
@@ -709,96 +556,35 @@ add_path_precheck(RelOptInfo *parent_rel,
  */
 void
 add_partial_path(RelOptInfo *parent_rel, Path *new_path) {
-    bool accept_new = true; /* unless we find a superior old path */
-    int insert_at = 0; /* where to insert new item */
-    ListCell *p1;
-
-    /* Check for query cancel. */
-    CHECK_FOR_INTERRUPTS();
-
-    /* Path to be added must be parallel safe. */
-    Assert(new_path->parallel_safe);
-
-    /* Relation should be OK for parallelism, too. */
-    Assert(parent_rel->consider_parallel);
+    int insert_at = 0;
+    int idx = 0;
+    ListCell *lc;
 
     /*
-     * As in add_path, throw out any paths which are dominated by the new
-     * path, but throw out the new path if some existing path dominates it.
+     * This is a convenient place to check for query cancel --- no part of the
+     * planner goes very long without calling add_path().
      */
-    foreach(p1, parent_rel->partial_pathlist) {
-        Path *old_path = (Path *) lfirst(p1);
-        bool remove_old = false; /* unless new proves superior */
-        PathKeysComparison keyscmp;
+    CHECK_FOR_INTERRUPTS();
 
-        /* Compare pathkeys. */
-        keyscmp = compare_pathkeys(new_path->pathkeys, old_path->pathkeys);
-
-        /* Unless pathkeys are incompatible, keep just one of the two paths. */
-        if (keyscmp != PATHKEYS_DIFFERENT) {
-            if (new_path->total_cost > old_path->total_cost * STD_FUZZ_FACTOR) {
-                /* New path costs more; keep it only if pathkeys are better. */
-                if (keyscmp != PATHKEYS_BETTER1)
-                    accept_new = false;
-            } else if (old_path->total_cost > new_path->total_cost
-                       * STD_FUZZ_FACTOR) {
-                /* Old path costs more; keep it only if pathkeys are better. */
-                if (keyscmp != PATHKEYS_BETTER2)
-                    remove_old = true;
-            } else if (keyscmp == PATHKEYS_BETTER1) {
-                /* Costs are about the same, new path has better pathkeys. */
-                remove_old = true;
-            } else if (keyscmp == PATHKEYS_BETTER2) {
-                /* Costs are about the same, old path has better pathkeys. */
-                accept_new = false;
-            } else if (old_path->total_cost > new_path->total_cost * 1.0000000001) {
-                /* Pathkeys are the same, and the old path costs more. */
-                remove_old = true;
-            } else {
-                /*
-                 * Pathkeys are the same, and new path isn't materially
-                 * cheaper.
-                 */
-                accept_new = false;
-            }
-        }
-
-        /*
-         * Remove current element from partial_pathlist if dominated by new.
-         */
-        if (remove_old) {
-            parent_rel->additional_partial_pathlist = lappend(
-                parent_rel->additional_partial_pathlist, old_path
-            );
-            parent_rel->partial_pathlist = foreach_delete_current(
-                parent_rel->partial_pathlist, p1
-            );
-            /* Do not recycle the old path */
-        } else {
-            /* new belongs after this old path if it has cost >= old's */
-            if (new_path->total_cost >= old_path->total_cost)
-                insert_at = foreach_current_index(p1) + 1;
-        }
-
-        /*
-         * If we found an old path that dominates new_path, we can quit
-         * scanning the partial_pathlist; we will not add new_path, and we
-         * assume new_path cannot dominate any later path.
-         */
-        if (!accept_new)
+    switch (nodeTag(new_path)) {
+        case T_BitmapHeapPath:
+        case T_BitmapAndPath:
+        case T_BitmapOrPath:
+            pfree(new_path);
+            return;
+        default:
             break;
     }
 
-    if (accept_new) {
-        /* Accept the new path: insert it at proper place */
-        parent_rel->partial_pathlist =
-                list_insert_nth(parent_rel->partial_pathlist, insert_at, new_path);
-    } else {
-        parent_rel->additional_partial_pathlist = lappend(
-            parent_rel->additional_partial_pathlist, new_path
-        );
-        /* Do not recycle the new path */
+    foreach(lc, parent_rel->partial_pathlist) {
+        const Path *old_path = (Path *) lfirst(lc);
+        if (new_path->total_cost >= old_path->total_cost)
+            insert_at = idx + 1;
+        idx++;
     }
+    parent_rel->partial_pathlist = list_insert_nth(
+        parent_rel->partial_pathlist, insert_at, new_path
+    );
 }
 
 /*

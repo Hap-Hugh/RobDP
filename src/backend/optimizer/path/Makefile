@@ -22,6 +22,5 @@ OBJS = \
 	joinrels.o \
 	pathkeys.o \
 	tidpath.o \
-	addpath.o \
 
 include $(top_srcdir)/src/backend/common.mk
