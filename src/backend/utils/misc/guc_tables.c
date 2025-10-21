@@ -79,6 +79,7 @@
 #include "utils/guc_tables.h"
 
 #include "optimizer/kde.h"
+#include "optimizer/pathnode.h"
 #include "utils/memutils.h"
 #include "utils/pg_locale.h"
 #include "utils/portal.h"
@@ -3547,17 +3548,6 @@ struct config_int ConfigureNamesInt[] =
 		NULL, NULL, NULL
 	},
 
-	{
-		{"mp_path_limit", PGC_USERSET, DEVELOPER_OPTIONS,
-			gettext_noop("Sets the maximum number of additional paths from a join relation's "
-				"additional pathlist, based on minimum penalty."),
-			NULL
-		},
-		&mp_path_limit,
-		1, 0, 16,
-		NULL, NULL, NULL
-	},
-
 	/* End-of-list marker */
 	{
 		{NULL, 0, 0, NULL, NULL}, NULL, 0, 0, 0, NULL, NULL, NULL
@@ -3847,6 +3837,16 @@ struct config_real ConfigureNamesReal[] =
 		},
 		&error_sample_kde_bandwidth,
 		0.0, 0.0, 1.0,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"std_fuzz_factor", PGC_USERSET, DEVELOPER_OPTIONS,
+			gettext_noop("Sets the standard fuzz factor."),
+			NULL
+		},
+		&std_fuzz_factor,
+		1.01, 1.0, 2.0,
 		NULL, NULL, NULL
 	},
 

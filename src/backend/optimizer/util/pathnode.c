@@ -44,11 +44,11 @@ typedef enum {
 } PathCostComparison;
 
 /*
- * STD_FUZZ_FACTOR is the normal fuzz factor for compare_path_costs_fuzzily.
+ * std_fuzz_factor is the normal fuzz factor for compare_path_costs_fuzzily.
  * XXX is it worth making this user-controllable?  It provides a tradeoff
  * between planner runtime and the accuracy of path cost comparisons.
  */
-#define STD_FUZZ_FACTOR 1.01
+double std_fuzz_factor;
 
 static List *translate_sub_tlist(List *tlist, int relid);
 
@@ -409,6 +409,17 @@ set_cheapest(RelOptInfo *parent_rel) {
  */
 void
 add_path(RelOptInfo *parent_rel, Path *new_path) {
+    /* Ignore all bitmap paths */
+    switch (nodeTag(new_path)) {
+        case T_BitmapHeapPath:
+        case T_BitmapAndPath:
+        case T_BitmapOrPath:
+            pfree(new_path);
+            return;
+        default:
+            break;
+    }
+
     bool accept_new = true; /* unless we find a superior old path */
     int insert_at = 0; /* where to insert new item */
     List *new_path_pathkeys;
@@ -439,7 +450,7 @@ add_path(RelOptInfo *parent_rel, Path *new_path) {
          * Do a fuzzy cost comparison with standard fuzziness limit.
          */
         costcmp = compare_path_costs_fuzzily(new_path, old_path,
-                                             STD_FUZZ_FACTOR);
+                                             std_fuzz_factor);
 
         /*
          * If the two paths compare differently for startup and total cost,
@@ -494,11 +505,9 @@ add_path(RelOptInfo *parent_rel, Path *new_path) {
                                  * less-fuzzy comparison decides the startup
                                  * and total costs compare differently.
                                  */
-                                if (new_path->parallel_safe >
-                                    old_path->parallel_safe)
+                                if (new_path->parallel_safe > old_path->parallel_safe)
                                     remove_old = true; /* new dominates old */
-                                else if (new_path->parallel_safe <
-                                         old_path->parallel_safe)
+                                else if (new_path->parallel_safe < old_path->parallel_safe)
                                     accept_new = false; /* old dominates new */
                                 else if (new_path->rows < old_path->rows)
                                     remove_old = true; /* new dominates old */
@@ -559,9 +568,6 @@ add_path(RelOptInfo *parent_rel, Path *new_path) {
          * Remove current element from pathlist if dominated by new.
          */
         if (remove_old) {
-            parent_rel->additional_pathlist = lappend(
-                parent_rel->additional_pathlist, old_path
-            );
             parent_rel->pathlist = foreach_delete_current(
                 parent_rel->pathlist, p1
             );
@@ -586,9 +592,6 @@ add_path(RelOptInfo *parent_rel, Path *new_path) {
         parent_rel->pathlist =
                 list_insert_nth(parent_rel->pathlist, insert_at, new_path);
     } else {
-        parent_rel->additional_pathlist = lappend(
-            parent_rel->additional_pathlist, new_path
-        );
         /* Do not recycle the new path */
     }
 }
@@ -636,9 +639,9 @@ add_path_precheck(RelOptInfo *parent_rel,
          *
          * Cost comparisons here should match compare_path_costs_fuzzily.
          */
-        if (total_cost > old_path->total_cost * STD_FUZZ_FACTOR) {
+        if (total_cost > old_path->total_cost * std_fuzz_factor) {
             /* new path can win on startup cost only if consider_startup */
-            if (startup_cost > old_path->startup_cost * STD_FUZZ_FACTOR ||
+            if (startup_cost > old_path->startup_cost * std_fuzz_factor ||
                 !consider_startup) {
                 /* new path loses on cost, so check pathkeys... */
                 List *old_path_pathkeys;
@@ -709,6 +712,17 @@ add_path_precheck(RelOptInfo *parent_rel,
  */
 void
 add_partial_path(RelOptInfo *parent_rel, Path *new_path) {
+    /* Ignore all bitmap paths */
+    switch (nodeTag(new_path)) {
+        case T_BitmapHeapPath:
+        case T_BitmapAndPath:
+        case T_BitmapOrPath:
+            pfree(new_path);
+            return;
+        default:
+            break;
+    }
+
     bool accept_new = true; /* unless we find a superior old path */
     int insert_at = 0; /* where to insert new item */
     ListCell *p1;
@@ -736,12 +750,12 @@ add_partial_path(RelOptInfo *parent_rel, Path *new_path) {
 
         /* Unless pathkeys are incompatible, keep just one of the two paths. */
         if (keyscmp != PATHKEYS_DIFFERENT) {
-            if (new_path->total_cost > old_path->total_cost * STD_FUZZ_FACTOR) {
+            if (new_path->total_cost > old_path->total_cost * std_fuzz_factor) {
                 /* New path costs more; keep it only if pathkeys are better. */
                 if (keyscmp != PATHKEYS_BETTER1)
                     accept_new = false;
             } else if (old_path->total_cost > new_path->total_cost
-                       * STD_FUZZ_FACTOR) {
+                       * std_fuzz_factor) {
                 /* Old path costs more; keep it only if pathkeys are better. */
                 if (keyscmp != PATHKEYS_BETTER2)
                     remove_old = true;
@@ -767,9 +781,6 @@ add_partial_path(RelOptInfo *parent_rel, Path *new_path) {
          * Remove current element from partial_pathlist if dominated by new.
          */
         if (remove_old) {
-            parent_rel->additional_partial_pathlist = lappend(
-                parent_rel->additional_partial_pathlist, old_path
-            );
             parent_rel->partial_pathlist = foreach_delete_current(
                 parent_rel->partial_pathlist, p1
             );
@@ -794,9 +805,6 @@ add_partial_path(RelOptInfo *parent_rel, Path *new_path) {
         parent_rel->partial_pathlist =
                 list_insert_nth(parent_rel->partial_pathlist, insert_at, new_path);
     } else {
-        parent_rel->additional_partial_pathlist = lappend(
-            parent_rel->additional_partial_pathlist, new_path
-        );
         /* Do not recycle the new path */
     }
 }
@@ -833,10 +841,10 @@ add_partial_path_precheck(RelOptInfo *parent_rel, Cost total_cost,
 
         keyscmp = compare_pathkeys(pathkeys, old_path->pathkeys);
         if (keyscmp != PATHKEYS_DIFFERENT) {
-            if (total_cost > old_path->total_cost * STD_FUZZ_FACTOR &&
+            if (total_cost > old_path->total_cost * std_fuzz_factor &&
                 keyscmp != PATHKEYS_BETTER1)
                 return false;
-            if (old_path->total_cost > total_cost * STD_FUZZ_FACTOR &&
+            if (old_path->total_cost > total_cost * std_fuzz_factor &&
                 keyscmp != PATHKEYS_BETTER2)
                 return true;
         }

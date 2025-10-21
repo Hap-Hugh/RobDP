@@ -17,6 +17,8 @@
 #include "nodes/bitmapset.h"
 #include "nodes/pathnodes.h"
 
+/* GUC Parameters */
+extern double std_fuzz_factor;
 
 /*
  * prototypes for pathnode.c

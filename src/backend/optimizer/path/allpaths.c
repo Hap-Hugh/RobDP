@@ -28,7 +28,6 @@
 #include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
 #include "nodes/supportnodes.h"
-#include "optimizer/addpath.h"
 #include "optimizer/sample.h"
 #ifdef OPTIMIZER_DEBUG
 #include "nodes/print.h"
@@ -89,8 +88,6 @@ set_rel_pathlist_hook_type set_rel_pathlist_hook = NULL;
 
 /* Hook for plugins to replace standard_join_search() */
 join_search_hook_type join_search_hook = NULL;
-
-int mp_path_limit = 1;
 
 
 static void set_base_rel_consider_startup(PlannerInfo *root);
@@ -3383,16 +3380,6 @@ standard_join_search(PlannerInfo *root, int levels_needed, List *initial_rels) {
                     elog(LOG, "  [total cost %d] %.3f", sample_idx, sample->sample[sample_idx]);
                 }
             }
-
-            /* Try to add additional paths from additional pathlist. */
-            consider_additional_path(
-                &rel->pathlist, rel->additional_pathlist,
-                error_sample_count, mp_path_limit
-            );
-            consider_additional_path(
-                &rel->partial_pathlist, rel->additional_partial_pathlist,
-                error_sample_count, mp_path_limit
-            );
 
             /* Create paths for partitionwise joins. */
             generate_partitionwise_join_paths(root, rel);
