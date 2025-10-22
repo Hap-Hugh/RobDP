@@ -3368,14 +3368,16 @@ standard_join_search(PlannerInfo *root, int levels_needed, List *initial_rels) {
             }
 
             /* Try to add additional paths from additional pathlist. */
-            consider_additional_path(
-                &rel->pathlist, rel->additional_pathlist,
-                error_sample_count, mp_path_limit
-            );
-            consider_additional_path(
-                &rel->partial_pathlist, rel->additional_partial_pathlist,
-                error_sample_count, mp_path_limit
-            );
+            if (mp_path_limit > 0) {
+                consider_additional_path(
+                    &rel->pathlist, rel->additional_pathlist,
+                    error_sample_count, mp_path_limit
+                );
+                consider_additional_path(
+                    &rel->partial_pathlist, rel->additional_partial_pathlist,
+                    error_sample_count, mp_path_limit
+                );
+            }
 
             /* Create paths for partitionwise joins. */
             generate_partitionwise_join_paths(root, rel);
@@ -3428,7 +3430,7 @@ standard_join_search(PlannerInfo *root, int levels_needed, List *initial_rels) {
     ListCell *lc3;
     foreach(lc3, rel->pathlist) {
         Path *path = lfirst(lc3);
-        elog(LOG, "[phase 3] [path %d] [pathtype %d]", foreach_current_index(lc3), path->pathtype);
+        elog(LOG, "[final rel] [path %d] [pathtype %d]", foreach_current_index(lc3), path->pathtype);
         PathHint path_hint;
         get_path_hint(root, path, lev, &path_hint);
         log_path_hint(&path_hint);
@@ -3436,7 +3438,7 @@ standard_join_search(PlannerInfo *root, int levels_needed, List *initial_rels) {
 
     foreach(lc3, rel->partial_pathlist) {
         Path *path = lfirst(lc3);
-        elog(LOG, "[phase 3] [partial path %d] [pathtype %d]", foreach_current_index(lc3), path->pathtype);
+        elog(LOG, "[final rel] [partial path %d] [pathtype %d]", foreach_current_index(lc3), path->pathtype);
         PathHint path_hint;
         get_path_hint(root, path, lev, &path_hint);
         log_path_hint(&path_hint);
