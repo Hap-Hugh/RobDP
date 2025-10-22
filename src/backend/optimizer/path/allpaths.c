@@ -3384,7 +3384,7 @@ standard_join_search(PlannerInfo *root, int levels_needed, List *initial_rels) {
             ListCell *lc2;
             foreach(lc2, rel->pathlist) {
                 Path *path = lfirst(lc2);
-                elog(LOG, "[lev %d] [rel %d] [phase 1] [path %d] [pathtype %d]",
+                elog(LOG, "[lev %d] [rel %d] [phase 2] [path %d] [pathtype %d]",
                      lev, foreach_current_index(lc), foreach_current_index(lc2), path->pathtype);
                 PathHint path_hint;
                 get_path_hint(root, path, lev, &path_hint);
@@ -3393,7 +3393,7 @@ standard_join_search(PlannerInfo *root, int levels_needed, List *initial_rels) {
 
             foreach(lc2, rel->partial_pathlist) {
                 Path *path = lfirst(lc2);
-                elog(LOG, "[lev %d] [rel %d] [phase 1] [partial path %d] [pathtype %d]",
+                elog(LOG, "[lev %d] [rel %d] [phase 2] [partial path %d] [pathtype %d]",
                      lev, foreach_current_index(lc), foreach_current_index(lc2), path->pathtype);
                 PathHint path_hint;
                 get_path_hint(root, path, lev, &path_hint);
@@ -3419,7 +3419,7 @@ standard_join_search(PlannerInfo *root, int levels_needed, List *initial_rels) {
             ListCell *lc3;
             foreach(lc3, rel->pathlist) {
                 Path *path = lfirst(lc3);
-                elog(LOG, "[lev %d] [rel %d] [phase 1] [path %d] [pathtype %d]",
+                elog(LOG, "[lev %d] [rel %d] [phase 3] [path %d] [pathtype %d]",
                      lev, foreach_current_index(lc), foreach_current_index(lc3), path->pathtype);
                 PathHint path_hint;
                 get_path_hint(root, path, lev, &path_hint);
@@ -3428,7 +3428,7 @@ standard_join_search(PlannerInfo *root, int levels_needed, List *initial_rels) {
 
             foreach(lc3, rel->partial_pathlist) {
                 Path *path = lfirst(lc3);
-                elog(LOG, "[lev %d] [rel %d] [phase 1] [partial path %d] [pathtype %d]",
+                elog(LOG, "[lev %d] [rel %d] [phase 3] [partial path %d] [pathtype %d]",
                      lev, foreach_current_index(lc), foreach_current_index(lc3), path->pathtype);
                 PathHint path_hint;
                 get_path_hint(root, path, lev, &path_hint);
