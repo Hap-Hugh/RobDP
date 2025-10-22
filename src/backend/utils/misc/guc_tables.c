@@ -79,6 +79,7 @@
 #include "utils/guc_tables.h"
 
 #include "optimizer/kde.h"
+#include "optimizer/pathnode.h"
 #include "utils/memutils.h"
 #include "utils/pg_locale.h"
 #include "utils/portal.h"
@@ -2009,6 +2010,24 @@ struct config_bool ConfigureNamesBool[] =
 		NULL, NULL, NULL
 	},
 
+	{
+        {"enable_path_final_comp_factor", PGC_USERSET, DEVELOPER_OPTIONS,
+			gettext_noop("Sets whether the comparison factor when adding paths (final comparison) is enabled"),
+		},
+		&enable_path_final_comp_factor,
+		false,
+		NULL, NULL, NULL
+	},
+
+	{
+        {"enable_partial_path_final_comp_factor", PGC_USERSET, DEVELOPER_OPTIONS,
+			gettext_noop("Sets whether the comparison factor when adding partial paths (final comparison) is enabled"),
+		},
+		&enable_partial_path_final_comp_factor,
+		false,
+		NULL, NULL, NULL
+	},
+
 	/* End-of-list marker */
 	{
 		{NULL, 0, 0, NULL, NULL}, NULL, false, NULL, NULL, NULL
@@ -3849,6 +3868,88 @@ struct config_real ConfigureNamesReal[] =
 		0.0, 0.0, 1.0,
 		NULL, NULL, NULL
 	},
+
+    {
+        {
+            "add_path_costs_comp_fuzz_factor", PGC_USERSET, DEVELOPER_OPTIONS,
+            gettext_noop("Sets the fuzz factor that compares the total cost and startup cost in `add_path` function."),
+            gettext_noop("Use a value between 1.0 and 2.0 "
+                         "(boot value is 1.01, which is equal to the original STD_FUZZ_FACTOR)")
+        },
+        &add_path_costs_comp_fuzz_factor,
+        1.01, 1.0, 2.0,
+        NULL, NULL, NULL
+    },
+
+    {
+        {
+            "add_path_comp_factor", PGC_USERSET, DEVELOPER_OPTIONS,
+            gettext_noop("Sets the comparison factor when adding paths"),
+            gettext_noop("Use a value between 1.0 and 2.0 "
+                         "(boot value is 0.0, which means effectively off)")
+        },
+        &add_path_comp_factor,
+        0.0, 0.0, 2.0,
+        NULL, NULL, NULL
+    },
+
+    {
+        {
+            "add_path_final_comp_factor", PGC_USERSET, DEVELOPER_OPTIONS,
+            gettext_noop("Sets the comparison factor when adding paths (final comparison)"),
+            gettext_noop("Use a value between 1.0 and 2.0 (boot value is 1.0000000001)")
+        },
+        &add_path_final_comp_factor,
+        1.0000000001, 1.0, 2.0,
+        NULL, NULL, NULL
+    },
+
+    {
+        {
+            "precheck_path_comp_factor", PGC_USERSET, DEVELOPER_OPTIONS,
+            gettext_noop("Sets the comparison factor when pre-checking paths"),
+            gettext_noop("Use a value between 1.0 and 2.0 "
+                         "(boot value is 1.01, which is equal to the original STD_FUZZ_FACTOR)")
+        },
+        &precheck_path_comp_factor,
+        1.01, 0.0, 2.0,
+        NULL, NULL, NULL
+    },
+
+    {
+        {
+            "add_partial_path_comp_factor", PGC_USERSET, DEVELOPER_OPTIONS,
+            gettext_noop("Sets the comparison factor when adding partial paths"),
+            gettext_noop("Use a value between 1.0 and 2.0 "
+                         "(boot value is 1.01, which is equal to the original STD_FUZZ_FACTOR)")
+        },
+        &add_partial_path_comp_factor,
+        1.01, 0.0, 2.0,
+        NULL, NULL, NULL
+    },
+
+    {
+        {
+            "add_partial_path_final_comp_factor", PGC_USERSET, DEVELOPER_OPTIONS,
+            gettext_noop("Sets the comparison factor when adding partial paths (final comparison)"),
+            gettext_noop("Use a value between 1.0 and 2.0 (boot value is 1.0000000001)")
+        },
+        &add_partial_path_final_comp_factor,
+        1.0000000001, 1.0, 2.0,
+        NULL, NULL, NULL
+    },
+
+    {
+        {
+            "precheck_partial_path_comp_factor", PGC_USERSET, DEVELOPER_OPTIONS,
+            gettext_noop("Sets the comparison factor when pre-checking partial paths"),
+            gettext_noop("Use a value between 1.0 and 2.0 "
+                         "(boot value is 1.01, which is equal to the original STD_FUZZ_FACTOR)")
+        },
+        &precheck_partial_path_comp_factor,
+        1.01, 0.0, 2.0,
+        NULL, NULL, NULL
+    },
 
 	/* End-of-list marker */
 	{
