@@ -23,5 +23,6 @@ OBJS = \
 	pathkeys.o \
 	tidpath.o \
 	addpath.o \
+	pathhint.o \
 
 include $(top_srcdir)/src/backend/common.mk
