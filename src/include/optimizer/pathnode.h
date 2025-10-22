@@ -17,6 +17,19 @@
 #include "nodes/bitmapset.h"
 #include "nodes/pathnodes.h"
 
+/* GUC parameters */
+extern bool enable_path_final_comp_factor;
+extern bool enable_partial_path_final_comp_factor;
+
+extern double add_path_costs_comp_fuzz_factor;
+
+extern double add_path_comp_factor;
+extern double add_path_final_comp_factor;
+extern double precheck_path_comp_factor;
+
+extern double add_partial_path_comp_factor;
+extern double add_partial_path_final_comp_factor;
+extern double precheck_partial_path_comp_factor;
 
 /*
  * prototypes for pathnode.c

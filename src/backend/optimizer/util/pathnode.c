@@ -43,29 +43,52 @@ typedef enum {
     COSTS_DIFFERENT /* neither path dominates the other on cost */
 } PathCostComparison;
 
-/*
- * STD_FUZZ_FACTOR is the normal fuzz factor for compare_path_costs_fuzzily.
- * XXX is it worth making this user-controllable?  It provides a tradeoff
- * between planner runtime and the accuracy of path cost comparisons.
- */
-#define STD_FUZZ_FACTOR 1.01
+/* GUC parameters */
+bool enable_path_final_comp_factor;
+bool enable_partial_path_final_comp_factor;
 
-static List *translate_sub_tlist(List *tlist, int relid);
+double add_path_costs_comp_fuzz_factor;
 
-static int append_total_cost_compare(const ListCell *a, const ListCell *b);
+double add_path_comp_factor;
+double add_path_final_comp_factor;
+double precheck_path_comp_factor;
 
-static int append_startup_cost_compare(const ListCell *a, const ListCell *b);
+double add_partial_path_comp_factor;
+double add_partial_path_final_comp_factor;
+double precheck_partial_path_comp_factor;
 
-static List *reparameterize_pathlist_by_child(PlannerInfo *root,
-                                              List *pathlist,
-                                              RelOptInfo *child_rel);
+static List *translate_sub_tlist(
+    List *tlist,
+    int relid
+);
 
-static bool contain_references_to(PlannerInfo *root, Node *clause,
-                                  Relids relids);
+static int append_total_cost_compare(
+    const ListCell *a,
+    const ListCell *b
+);
 
-static bool ris_contain_references_to(PlannerInfo *root, List *rinfos,
-                                      Relids relids);
+static int append_startup_cost_compare(
+    const ListCell *a,
+    const ListCell *b
+);
 
+static List *reparameterize_pathlist_by_child(
+    PlannerInfo *root,
+    List *pathlist,
+    RelOptInfo *child_rel
+);
+
+static bool contain_references_to(
+    PlannerInfo *root,
+    Node *clause,
+    Relids relids
+);
+
+static bool ris_contain_references_to(
+    PlannerInfo *root,
+    List *rinfos,
+    Relids relids
+);
 
 /*****************************************************************************
  *		MISC. PATH UTILITIES
@@ -438,8 +461,9 @@ add_path(RelOptInfo *parent_rel, Path *new_path) {
         /*
          * Do a fuzzy cost comparison with standard fuzziness limit.
          */
-        costcmp = compare_path_costs_fuzzily(new_path, old_path,
-                                             STD_FUZZ_FACTOR);
+        costcmp = compare_path_costs_fuzzily(
+            new_path, old_path, add_path_costs_comp_fuzz_factor
+        );
 
         /*
          * If the two paths compare differently for startup and total cost,
@@ -457,22 +481,19 @@ add_path(RelOptInfo *parent_rel, Path *new_path) {
             List *old_path_pathkeys;
 
             old_path_pathkeys = old_path->param_info ? NIL : old_path->pathkeys;
-            keyscmp = compare_pathkeys(new_path_pathkeys,
-                                       old_path_pathkeys);
+            keyscmp = compare_pathkeys(new_path_pathkeys, old_path_pathkeys);
             if (keyscmp != PATHKEYS_DIFFERENT) {
                 switch (costcmp) {
                     case COSTS_EQUAL:
                         outercmp = bms_subset_compare(PATH_REQ_OUTER(new_path),
                                                       PATH_REQ_OUTER(old_path));
                         if (keyscmp == PATHKEYS_BETTER1) {
-                            if ((outercmp == BMS_EQUAL ||
-                                 outercmp == BMS_SUBSET1) &&
+                            if ((outercmp == BMS_EQUAL || outercmp == BMS_SUBSET1) &&
                                 new_path->rows <= old_path->rows &&
                                 new_path->parallel_safe >= old_path->parallel_safe)
                                 remove_old = true; /* new dominates old */
                         } else if (keyscmp == PATHKEYS_BETTER2) {
-                            if ((outercmp == BMS_EQUAL ||
-                                 outercmp == BMS_SUBSET2) &&
+                            if ((outercmp == BMS_EQUAL || outercmp == BMS_SUBSET2) &&
                                 new_path->rows >= old_path->rows &&
                                 new_path->parallel_safe <= old_path->parallel_safe)
                                 accept_new = false; /* old dominates new */
@@ -494,23 +515,66 @@ add_path(RelOptInfo *parent_rel, Path *new_path) {
                                  * less-fuzzy comparison decides the startup
                                  * and total costs compare differently.
                                  */
-                                if (new_path->parallel_safe >
-                                    old_path->parallel_safe)
+                                if (new_path->parallel_safe > old_path->parallel_safe)
                                     remove_old = true; /* new dominates old */
-                                else if (new_path->parallel_safe <
-                                         old_path->parallel_safe)
+                                else if (new_path->parallel_safe < old_path->parallel_safe)
                                     accept_new = false; /* old dominates new */
                                 else if (new_path->rows < old_path->rows)
                                     remove_old = true; /* new dominates old */
                                 else if (new_path->rows > old_path->rows)
                                     accept_new = false; /* old dominates new */
-                                else if (compare_path_costs_fuzzily(new_path,
-                                                                    old_path,
-                                                                    1.0000000001) == COSTS_BETTER1)
-                                    remove_old = true; /* new dominates old */
-                                else
-                                    accept_new = false; /* old equals or
-														 * dominates new */
+                                else if (enable_path_final_comp_factor) {
+                                    /*
+                                     * Final cost-based comparison between new_path and old_path when all
+                                     * other path properties (pathkeys, parameterization, parallel safety, etc.)
+                                     * are considered equal.
+                                     *
+                                     * This logic introduces a fuzzy comparison using two thresholds:
+                                     *
+                                     * - A fixed epsilon (1.0000000001) is used to guard against floating-point
+                                     *   instability and to avoid unnecessary replacements between nearly identical paths.
+                                     *
+                                     * - The configurable GUC variable `add_path_final_comp_factor` controls how
+                                     *   much better (or worse) a path must be to trigger replacement. When set to 1.0,
+                                     *   only strictly cheaper paths are accepted. Higher values (e.g., 1.01) allow
+                                     *   retaining slightly more expensive paths for diversity.
+                                     *
+                                     * The logic works as follows:
+                                     * - If new_path is marginally cheaper than old_path (considering epsilon),
+                                     *   and also significantly cheaper (based on comp_factor), we remove the old path.
+                                     * - If old_path is marginally cheaper, and significantly better, we reject the new path.
+                                     * - If costs are extremely close, we default to keeping the old path to avoid unnecessary
+                                     *   path churn, which can degrade planning performance.
+                                     */
+                                    if (new_path->total_cost * 1.0000000001 < old_path->total_cost) {
+                                        /* new path is better */
+                                        if (new_path->total_cost * add_path_final_comp_factor < old_path->total_cost) {
+                                            /* new path is far better */
+                                            remove_old = true;
+                                        }
+                                    } else if (old_path->total_cost * 1.0000000001 < new_path->total_cost) {
+                                        /* old path is better */
+                                        if (old_path->total_cost * add_path_final_comp_factor < new_path->total_cost) {
+                                            /* old path is far better */
+                                            accept_new = false;
+                                        }
+                                    } else {
+                                        /* old path and new path are similar */
+                                        accept_new = false;
+                                        /*
+                                         * NOTE: We can also remove an old path and keep the new path. However,
+                                         * in this way, path replacement occur, which degrades the performance.
+                                         */
+                                    }
+                                } else {
+                                    PathCostComparison final_costcmp = compare_path_costs_fuzzily(
+                                        new_path, old_path, 1.0000000001
+                                    );
+                                    if (final_costcmp == COSTS_BETTER1)
+                                        remove_old = true; /* new dominates old */
+                                    else
+                                        accept_new = false; /* old equals or dominates new */
+                                }
                             } else if (outercmp == BMS_SUBSET1 &&
                                        new_path->rows <= old_path->rows &&
                                        new_path->parallel_safe >= old_path->parallel_safe)
@@ -526,10 +590,10 @@ add_path(RelOptInfo *parent_rel, Path *new_path) {
                         if (keyscmp != PATHKEYS_BETTER2) {
                             outercmp = bms_subset_compare(PATH_REQ_OUTER(new_path),
                                                           PATH_REQ_OUTER(old_path));
-                            if ((outercmp == BMS_EQUAL ||
-                                 outercmp == BMS_SUBSET1) &&
+                            if ((outercmp == BMS_EQUAL || outercmp == BMS_SUBSET1) &&
                                 new_path->rows <= old_path->rows &&
-                                new_path->parallel_safe >= old_path->parallel_safe)
+                                new_path->parallel_safe >= old_path->parallel_safe &&
+                                new_path->total_cost * add_path_comp_factor < old_path->total_cost)
                                 remove_old = true; /* new dominates old */
                         }
                         break;
@@ -537,19 +601,15 @@ add_path(RelOptInfo *parent_rel, Path *new_path) {
                         if (keyscmp != PATHKEYS_BETTER1) {
                             outercmp = bms_subset_compare(PATH_REQ_OUTER(new_path),
                                                           PATH_REQ_OUTER(old_path));
-                            if ((outercmp == BMS_EQUAL ||
-                                 outercmp == BMS_SUBSET2) &&
+                            if ((outercmp == BMS_EQUAL || outercmp == BMS_SUBSET2) &&
                                 new_path->rows >= old_path->rows &&
-                                new_path->parallel_safe <= old_path->parallel_safe)
+                                new_path->parallel_safe <= old_path->parallel_safe &&
+                                old_path->total_cost * add_path_comp_factor < new_path->total_cost)
                                 accept_new = false; /* old dominates new */
                         }
                         break;
                     case COSTS_DIFFERENT:
-
-                        /*
-                         * can't get here, but keep this case to keep compiler
-                         * quiet
-                         */
+                        /* can't get here, but keep this case to keep compiler quiet */
                         break;
                 }
             }
@@ -559,13 +619,13 @@ add_path(RelOptInfo *parent_rel, Path *new_path) {
          * Remove current element from pathlist if dominated by new.
          */
         if (remove_old) {
-            parent_rel->additional_pathlist = lappend(
-                parent_rel->additional_pathlist, old_path
-            );
-            parent_rel->pathlist = foreach_delete_current(
-                parent_rel->pathlist, p1
-            );
-            /* Do not recycle the old path */
+            parent_rel->pathlist = foreach_delete_current(parent_rel->pathlist, p1);
+
+            /*
+             * Delete the data pointed-to by the deleted cell, if possible
+             */
+            if (!IsA(old_path, IndexPath))
+                pfree(old_path);
         } else {
             /* new belongs after this old path if it has cost >= old's */
             if (new_path->total_cost >= old_path->total_cost)
@@ -586,10 +646,9 @@ add_path(RelOptInfo *parent_rel, Path *new_path) {
         parent_rel->pathlist =
                 list_insert_nth(parent_rel->pathlist, insert_at, new_path);
     } else {
-        parent_rel->additional_pathlist = lappend(
-            parent_rel->additional_pathlist, new_path
-        );
-        /* Do not recycle the new path */
+        /* Reject and recycle the new path */
+        if (!IsA(new_path, IndexPath))
+            pfree(new_path);
     }
 }
 
@@ -611,9 +670,11 @@ add_path(RelOptInfo *parent_rel, Path *new_path) {
  * so the required information has to be passed piecemeal.
  */
 bool
-add_path_precheck(RelOptInfo *parent_rel,
-                  Cost startup_cost, Cost total_cost,
-                  List *pathkeys, Relids required_outer) {
+add_path_precheck(
+    RelOptInfo *parent_rel,
+    Cost startup_cost, Cost total_cost,
+    List *pathkeys, Relids required_outer
+) {
     List *new_path_pathkeys;
     bool consider_startup;
     ListCell *p1;
@@ -636,18 +697,16 @@ add_path_precheck(RelOptInfo *parent_rel,
          *
          * Cost comparisons here should match compare_path_costs_fuzzily.
          */
-        if (total_cost > old_path->total_cost * STD_FUZZ_FACTOR) {
+        if (total_cost > old_path->total_cost * precheck_path_comp_factor) {
             /* new path can win on startup cost only if consider_startup */
-            if (startup_cost > old_path->startup_cost * STD_FUZZ_FACTOR ||
+            if (startup_cost > old_path->startup_cost * precheck_path_comp_factor ||
                 !consider_startup) {
                 /* new path loses on cost, so check pathkeys... */
                 List *old_path_pathkeys;
 
                 old_path_pathkeys = old_path->param_info ? NIL : old_path->pathkeys;
-                keyscmp = compare_pathkeys(new_path_pathkeys,
-                                           old_path_pathkeys);
-                if (keyscmp == PATHKEYS_EQUAL ||
-                    keyscmp == PATHKEYS_BETTER2) {
+                keyscmp = compare_pathkeys(new_path_pathkeys, old_path_pathkeys);
+                if (keyscmp == PATHKEYS_EQUAL || keyscmp == PATHKEYS_BETTER2) {
                     /* new path does not win on pathkeys... */
                     if (bms_equal(required_outer, PATH_REQ_OUTER(old_path))) {
                         /* Found an old path that dominates the new one */
@@ -736,14 +795,17 @@ add_partial_path(RelOptInfo *parent_rel, Path *new_path) {
 
         /* Unless pathkeys are incompatible, keep just one of the two paths. */
         if (keyscmp != PATHKEYS_DIFFERENT) {
-            if (new_path->total_cost > old_path->total_cost * STD_FUZZ_FACTOR) {
+            if (new_path->total_cost > old_path->total_cost * 1.01) {
                 /* New path costs more; keep it only if pathkeys are better. */
-                if (keyscmp != PATHKEYS_BETTER1)
+                if (keyscmp != PATHKEYS_BETTER1 &&
+                    new_path->total_cost > old_path->total_cost * add_partial_path_comp_factor)
+                    /* Reject the new path only if new path costs far more */
                     accept_new = false;
-            } else if (old_path->total_cost > new_path->total_cost
-                       * STD_FUZZ_FACTOR) {
+            } else if (old_path->total_cost > new_path->total_cost * 1.01) {
                 /* Old path costs more; keep it only if pathkeys are better. */
-                if (keyscmp != PATHKEYS_BETTER2)
+                if (keyscmp != PATHKEYS_BETTER2 &&
+                    old_path->total_cost > new_path->total_cost * add_partial_path_comp_factor)
+                    /* Remove the old path only if old path costs far more */
                     remove_old = true;
             } else if (keyscmp == PATHKEYS_BETTER1) {
                 /* Costs are about the same, new path has better pathkeys. */
@@ -751,15 +813,59 @@ add_partial_path(RelOptInfo *parent_rel, Path *new_path) {
             } else if (keyscmp == PATHKEYS_BETTER2) {
                 /* Costs are about the same, old path has better pathkeys. */
                 accept_new = false;
-            } else if (old_path->total_cost > new_path->total_cost * 1.0000000001) {
-                /* Pathkeys are the same, and the old path costs more. */
-                remove_old = true;
-            } else {
+            } else if (enable_partial_path_final_comp_factor) {
                 /*
-                 * Pathkeys are the same, and new path isn't materially
-                 * cheaper.
+                 * Final cost-based comparison between new_path and old_path when all
+                 * other properties (pathkeys, parameterization, parallel-safety, etc.)
+                 * are considered equal for partial paths.
+                 *
+                 * This logic uses two thresholds:
+                 *
+                 * - A fixed epsilon (1.0000000001) prevents path churn due to insignificant
+                 *   floating-point differences, helping avoid excessive replacements between
+                 *   nearly identical partial paths.
+                 *
+                 * - The configurable GUC `add_partial_path_final_comp_factor` controls the
+                 *   minimum cost gap required to prefer one partial path over another.
+                 *   When set to 1.0, only strictly cheaper paths will replace others.
+                 *   Larger values (e.g., 1.01) provide tolerance, allowing multiple near-optimal
+                 *   partial paths to coexist for diversity in final plan construction.
+                 *
+                 * The comparison proceeds as:
+                 * - If new_path is marginally better and significantly better, replace the old one.
+                 * - If old_path is marginally better and significantly better, reject the new one.
+                 * - If their costs are too close to call, prefer keeping the old path to avoid
+                 *   unnecessary churn, which can degrade planning performance.
                  */
-                accept_new = false;
+                if (new_path->total_cost * 1.0000000001 < old_path->total_cost) {
+                    /* new path is better */
+                    if (new_path->total_cost * add_partial_path_final_comp_factor < old_path->total_cost) {
+                        /* new path is far better */
+                        remove_old = true;
+                    }
+                } else if (old_path->total_cost * 1.0000000001 < new_path->total_cost) {
+                    /* old path is better */
+                    if (old_path->total_cost * add_partial_path_final_comp_factor < new_path->total_cost) {
+                        /* old path is far better */
+                        accept_new = false;
+                    }
+                } else {
+                    /* old partial path and new partial path are similar */
+                    accept_new = false;
+                    /*
+                     * NOTE: We can also remove an old partial path and keep the new partial path.
+                     * However, in this way, path replacement occur, which degrades the performance.
+                     */
+                }
+            } else {
+                bool new_path_better = old_path->total_cost > new_path->total_cost * 1.0000000001;
+                if (new_path_better) {
+                    /* Pathkeys are the same, and the old path costs more. */
+                    remove_old = true;
+                } else {
+                    /* Pathkeys are the same, and new path isn't materially cheaper. */
+                    accept_new = false;
+                }
             }
         }
 
@@ -767,13 +873,9 @@ add_partial_path(RelOptInfo *parent_rel, Path *new_path) {
          * Remove current element from partial_pathlist if dominated by new.
          */
         if (remove_old) {
-            parent_rel->additional_partial_pathlist = lappend(
-                parent_rel->additional_partial_pathlist, old_path
-            );
-            parent_rel->partial_pathlist = foreach_delete_current(
-                parent_rel->partial_pathlist, p1
-            );
-            /* Do not recycle the old path */
+            parent_rel->partial_pathlist =
+                    foreach_delete_current(parent_rel->partial_pathlist, p1);
+            pfree(old_path);
         } else {
             /* new belongs after this old path if it has cost >= old's */
             if (new_path->total_cost >= old_path->total_cost)
@@ -794,10 +896,8 @@ add_partial_path(RelOptInfo *parent_rel, Path *new_path) {
         parent_rel->partial_pathlist =
                 list_insert_nth(parent_rel->partial_pathlist, insert_at, new_path);
     } else {
-        parent_rel->additional_partial_pathlist = lappend(
-            parent_rel->additional_partial_pathlist, new_path
-        );
-        /* Do not recycle the new path */
+        /* Reject and recycle the new path */
+        pfree(new_path);
     }
 }
 
@@ -812,8 +912,9 @@ add_partial_path(RelOptInfo *parent_rel, Path *new_path) {
  * is surely a loser.
  */
 bool
-add_partial_path_precheck(RelOptInfo *parent_rel, Cost total_cost,
-                          List *pathkeys) {
+add_partial_path_precheck(
+    RelOptInfo *parent_rel, Cost total_cost, List *pathkeys
+) {
     ListCell *p1;
 
     /*
@@ -833,10 +934,10 @@ add_partial_path_precheck(RelOptInfo *parent_rel, Cost total_cost,
 
         keyscmp = compare_pathkeys(pathkeys, old_path->pathkeys);
         if (keyscmp != PATHKEYS_DIFFERENT) {
-            if (total_cost > old_path->total_cost * STD_FUZZ_FACTOR &&
+            if (total_cost > old_path->total_cost * precheck_partial_path_comp_factor &&
                 keyscmp != PATHKEYS_BETTER1)
                 return false;
-            if (old_path->total_cost > total_cost * STD_FUZZ_FACTOR &&
+            if (old_path->total_cost > total_cost * precheck_partial_path_comp_factor &&
                 keyscmp != PATHKEYS_BETTER2)
                 return true;
         }
