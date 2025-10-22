@@ -28,6 +28,7 @@
 #include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
 #include "nodes/supportnodes.h"
+#include "optimizer/pathhint.h"
 #include "optimizer/sample.h"
 #ifdef OPTIMIZER_DEBUG
 #include "nodes/print.h"
@@ -3358,27 +3359,19 @@ standard_join_search(PlannerInfo *root, int levels_needed, List *initial_rels) {
 
             ListCell *lc1;
             foreach(lc1, rel->pathlist) {
-                elog(LOG, "[path %d]", foreach_current_index(lc1));
-                const Path *path = lfirst(lc1);
-                elog(LOG, "[path type] %d", path->pathtype);
-                const Sample *sample = path->total_cost_sample;
-                const int sample_count = sample->sample_count;
-                elog(LOG, "  [total cost avg] %.3f", path->total_cost);
-                for (int sample_idx = 0; sample_idx < sample_count; ++sample_idx) {
-                    elog(LOG, "  [total cost %d] %.3f", sample_idx, sample->sample[sample_idx]);
-                }
+                Path *path = lfirst(lc1);
+                elog(LOG, "[phase 1] [path %d] [pathtype %d]", foreach_current_index(lc1), path->pathtype);
+                PathHint path_hint;
+                get_path_hint(root, path, lev, &path_hint);
+                log_path_hint(&path_hint);
             }
 
             foreach(lc1, rel->partial_pathlist) {
-                elog(LOG, "[partial path %d]", foreach_current_index(lc1));
-                const Path *partial_path = lfirst(lc1);
-                elog(LOG, "[partial path type] %d", partial_path->pathtype);
-                const Sample *sample = partial_path->total_cost_sample;
-                const int sample_count = sample->sample_count;
-                elog(LOG, "  [total cost avg] %.3f", partial_path->total_cost);
-                for (int sample_idx = 0; sample_idx < sample_count; ++sample_idx) {
-                    elog(LOG, "  [total cost %d] %.3f", sample_idx, sample->sample[sample_idx]);
-                }
+                Path *path = lfirst(lc1);
+                elog(LOG, "[phase 1] [partial path %d] [pathtype %d]", foreach_current_index(lc1), path->pathtype);
+                PathHint path_hint;
+                get_path_hint(root, path, lev, &path_hint);
+                log_path_hint(&path_hint);
             }
 
             /* Create paths for partitionwise joins. */
@@ -3399,27 +3392,19 @@ standard_join_search(PlannerInfo *root, int levels_needed, List *initial_rels) {
 
             ListCell *lc2;
             foreach(lc2, rel->pathlist) {
-                elog(LOG, "[path %d]", foreach_current_index(lc2));
-                const Path *path = lfirst(lc2);
-                elog(LOG, "[path type] %d", path->pathtype);
-                const Sample *sample = path->total_cost_sample;
-                const int sample_count = sample->sample_count;
-                elog(LOG, "  [total cost avg] %.3f", path->total_cost);
-                for (int sample_idx = 0; sample_idx < sample_count; ++sample_idx) {
-                    elog(LOG, "  [total cost %d] %.3f", sample_idx, sample->sample[sample_idx]);
-                }
+                Path *path = lfirst(lc2);
+                elog(LOG, "[phase 2] [path %d] [pathtype %d]", foreach_current_index(lc2), path->pathtype);
+                PathHint path_hint;
+                get_path_hint(root, path, lev, &path_hint);
+                log_path_hint(&path_hint);
             }
 
             foreach(lc2, rel->partial_pathlist) {
-                elog(LOG, "[partial path %d]", foreach_current_index(lc2));
-                const Path *partial_path = lfirst(lc2);
-                elog(LOG, "[partial path type] %d", partial_path->pathtype);
-                const Sample *sample = partial_path->total_cost_sample;
-                const int sample_count = sample->sample_count;
-                elog(LOG, "  [total cost avg] %.3f", partial_path->total_cost);
-                for (int sample_idx = 0; sample_idx < sample_count; ++sample_idx) {
-                    elog(LOG, "  [total cost %d] %.3f", sample_idx, sample->sample[sample_idx]);
-                }
+                Path *path = lfirst(lc2);
+                elog(LOG, "[phase 2] [partial path %d] [pathtype %d]", foreach_current_index(lc2), path->pathtype);
+                PathHint path_hint;
+                get_path_hint(root, path, lev, &path_hint);
+                log_path_hint(&path_hint);
             }
 
 #ifdef OPTIMIZER_DEBUG
@@ -3427,7 +3412,6 @@ standard_join_search(PlannerInfo *root, int levels_needed, List *initial_rels) {
 #endif
         }
     }
-
     /*
      * We should have a single rel at the final level.
      */
@@ -3437,25 +3421,21 @@ standard_join_search(PlannerInfo *root, int levels_needed, List *initial_rels) {
 
     rel = (RelOptInfo *) linitial(root->join_rel_level[levels_needed]);
 
-    ListCell *lc;
-    foreach(lc, rel->pathlist) {
-        elog(LOG, "[path %d]", foreach_current_index(lc));
-        const Path *path = lfirst(lc);
-        const Sample *sample = path->total_cost_sample;
-        const int sample_count = sample->sample_count;
-        for (int sample_idx = 0; sample_idx < sample_count; ++sample_idx) {
-            elog(LOG, "  [total cost %d] %.3f", sample_idx, sample->sample[sample_idx]);
-        }
+    ListCell *lc3;
+    foreach(lc3, rel->pathlist) {
+        Path *path = lfirst(lc3);
+        elog(LOG, "[final rel] [path %d] [pathtype %d]", foreach_current_index(lc3), path->pathtype);
+        PathHint path_hint;
+        get_path_hint(root, path, lev, &path_hint);
+        log_path_hint(&path_hint);
     }
 
-    foreach(lc, rel->partial_pathlist) {
-        elog(LOG, "[partial path %d]", foreach_current_index(lc));
-        const Path *partial_path = lfirst(lc);
-        const Sample *sample = partial_path->total_cost_sample;
-        const int sample_count = sample->sample_count;
-        for (int sample_idx = 0; sample_idx < sample_count; ++sample_idx) {
-            elog(LOG, "  [total cost %d] %.3f", sample_idx, sample->sample[sample_idx]);
-        }
+    foreach(lc3, rel->partial_pathlist) {
+        Path *path = lfirst(lc3);
+        elog(LOG, "[final rel] [partial path %d] [pathtype %d]", foreach_current_index(lc3), path->pathtype);
+        PathHint path_hint;
+        get_path_hint(root, path, lev, &path_hint);
+        log_path_hint(&path_hint);
     }
 
     root->join_rel_level = NULL;
