@@ -3300,31 +3300,31 @@ standard_join_search(PlannerInfo *root, int levels_needed, List *initial_rels) {
 
     root->join_rel_level[1] = initial_rels;
 
-    elog(LOG, "\n[lev 1]");
+    // elog(LOG, "\n[lev 1]");
     ListCell *lc0;
     foreach(lc0, root->join_rel_level[1]) {
-        elog(LOG, "\n[rel %d]", foreach_current_index(lc0));
+        // elog(LOG, "\n[rel %d]", foreach_current_index(lc0));
 
         rel = (RelOptInfo *) lfirst(lc0);
 
-        ListCell *lc1;
-        foreach(lc1, rel->pathlist) {
-            const Path *path = lfirst(lc1);
-            elog(LOG, "[lev 1] [rel %d] [path %d] [pathtype %d]",
-                 foreach_current_index(lc0), foreach_current_index(lc1), path->pathtype);
-            elog(LOG, "  [exp cost] %.3f..%.3f", path->startup_cost, path->total_cost);
-        }
-
-        foreach(lc1, rel->partial_pathlist) {
-            const Path *partial_path = lfirst(lc1);
-            elog(LOG, "[lev 1] [rel %d] [partial path %d] [pathtype %d]",
-                 foreach_current_index(lc0), foreach_current_index(lc1), partial_path->pathtype);
-            elog(LOG, "  [exp cost] %.3f..%.3f", partial_path->startup_cost, partial_path->total_cost);
-        }
+        // ListCell *lc1;
+        // foreach(lc1, rel->pathlist) {
+        //     const Path *path = lfirst(lc1);
+        //     elog(LOG, "[lev 1] [rel %d] [path %d] [pathtype %d]",
+        //          foreach_current_index(lc0), foreach_current_index(lc1), path->pathtype);
+        //     elog(LOG, "  [exp cost] %.3f..%.3f", path->startup_cost, path->total_cost);
+        // }
+        //
+        // foreach(lc1, rel->partial_pathlist) {
+        //     const Path *partial_path = lfirst(lc1);
+        //     elog(LOG, "[lev 1] [rel %d] [partial path %d] [pathtype %d]",
+        //          foreach_current_index(lc0), foreach_current_index(lc1), partial_path->pathtype);
+        //     elog(LOG, "  [exp cost] %.3f..%.3f", partial_path->startup_cost, partial_path->total_cost);
+        // }
     }
 
     for (lev = 2; lev <= levels_needed; lev++) {
-        elog(LOG, "\n[lev %d]", lev);
+        // elog(LOG, "\n[lev %d]", lev);
 
         ListCell *lc;
 
@@ -3346,28 +3346,28 @@ standard_join_search(PlannerInfo *root, int levels_needed, List *initial_rels) {
          * set_cheapest().
          */
         foreach(lc, root->join_rel_level[lev]) {
-            elog(LOG, "\n[rel %d]", foreach_current_index(lc));
+            // elog(LOG, "\n[rel %d]", foreach_current_index(lc));
 
             rel = (RelOptInfo *) lfirst(lc);
 
-            ListCell *lc1;
-            foreach(lc1, rel->pathlist) {
-                Path *path = lfirst(lc1);
-                elog(LOG, "[lev %d] [rel %d] [phase 1] [path %d] [pathtype %d]",
-                     lev, foreach_current_index(lc), foreach_current_index(lc1), path->pathtype);
-                PathHint path_hint;
-                get_path_hint(root, path, lev, &path_hint);
-                log_path_hint(&path_hint);
-            }
-
-            foreach(lc1, rel->partial_pathlist) {
-                Path *path = lfirst(lc1);
-                elog(LOG, "[lev %d] [rel %d] [phase 1] [partial path %d] [pathtype %d]",
-                     lev, foreach_current_index(lc), foreach_current_index(lc1), path->pathtype);
-                PathHint path_hint;
-                get_path_hint(root, path, lev, &path_hint);
-                log_path_hint(&path_hint);
-            }
+            // ListCell *lc1;
+            // foreach(lc1, rel->pathlist) {
+            //     Path *path = lfirst(lc1);
+            //     elog(LOG, "[lev %d] [rel %d] [phase 1] [path %d] [pathtype %d]",
+            //          lev, foreach_current_index(lc), foreach_current_index(lc1), path->pathtype);
+            //     PathHint path_hint;
+            //     get_path_hint(root, path, lev, &path_hint);
+            //     log_path_hint(&path_hint);
+            // }
+            //
+            // foreach(lc1, rel->partial_pathlist) {
+            //     Path *path = lfirst(lc1);
+            //     elog(LOG, "[lev %d] [rel %d] [phase 1] [partial path %d] [pathtype %d]",
+            //          lev, foreach_current_index(lc), foreach_current_index(lc1), path->pathtype);
+            //     PathHint path_hint;
+            //     get_path_hint(root, path, lev, &path_hint);
+            //     log_path_hint(&path_hint);
+            // }
 
             /* Try to add additional paths from additional pathlist. */
             if (mp_path_limit > 0) {
@@ -3381,24 +3381,24 @@ standard_join_search(PlannerInfo *root, int levels_needed, List *initial_rels) {
                 );
             }
 
-            ListCell *lc2;
-            foreach(lc2, rel->pathlist) {
-                Path *path = lfirst(lc2);
-                elog(LOG, "[lev %d] [rel %d] [phase 2] [path %d] [pathtype %d]",
-                     lev, foreach_current_index(lc), foreach_current_index(lc2), path->pathtype);
-                PathHint path_hint;
-                get_path_hint(root, path, lev, &path_hint);
-                log_path_hint(&path_hint);
-            }
-
-            foreach(lc2, rel->partial_pathlist) {
-                Path *path = lfirst(lc2);
-                elog(LOG, "[lev %d] [rel %d] [phase 2] [partial path %d] [pathtype %d]",
-                     lev, foreach_current_index(lc), foreach_current_index(lc2), path->pathtype);
-                PathHint path_hint;
-                get_path_hint(root, path, lev, &path_hint);
-                log_path_hint(&path_hint);
-            }
+            // ListCell *lc2;
+            // foreach(lc2, rel->pathlist) {
+            //     Path *path = lfirst(lc2);
+            //     elog(LOG, "[lev %d] [rel %d] [phase 2] [path %d] [pathtype %d]",
+            //          lev, foreach_current_index(lc), foreach_current_index(lc2), path->pathtype);
+            //     PathHint path_hint;
+            //     get_path_hint(root, path, lev, &path_hint);
+            //     log_path_hint(&path_hint);
+            // }
+            //
+            // foreach(lc2, rel->partial_pathlist) {
+            //     Path *path = lfirst(lc2);
+            //     elog(LOG, "[lev %d] [rel %d] [phase 2] [partial path %d] [pathtype %d]",
+            //          lev, foreach_current_index(lc), foreach_current_index(lc2), path->pathtype);
+            //     PathHint path_hint;
+            //     get_path_hint(root, path, lev, &path_hint);
+            //     log_path_hint(&path_hint);
+            // }
 
             /* Create paths for partitionwise joins. */
             generate_partitionwise_join_paths(root, rel);
@@ -3414,26 +3414,26 @@ standard_join_search(PlannerInfo *root, int levels_needed, List *initial_rels) {
             /* Find and save the cheapest paths for this rel */
             set_cheapest(rel);
 
-            elog(LOG, "\n[rel %d]", foreach_current_index(lc));
-
-            ListCell *lc3;
-            foreach(lc3, rel->pathlist) {
-                Path *path = lfirst(lc3);
-                elog(LOG, "[lev %d] [rel %d] [phase 3] [path %d] [pathtype %d]",
-                     lev, foreach_current_index(lc), foreach_current_index(lc3), path->pathtype);
-                PathHint path_hint;
-                get_path_hint(root, path, lev, &path_hint);
-                log_path_hint(&path_hint);
-            }
-
-            foreach(lc3, rel->partial_pathlist) {
-                Path *path = lfirst(lc3);
-                elog(LOG, "[lev %d] [rel %d] [phase 3] [partial path %d] [pathtype %d]",
-                     lev, foreach_current_index(lc), foreach_current_index(lc3), path->pathtype);
-                PathHint path_hint;
-                get_path_hint(root, path, lev, &path_hint);
-                log_path_hint(&path_hint);
-            }
+            // elog(LOG, "\n[rel %d]", foreach_current_index(lc));
+            //
+            // ListCell *lc3;
+            // foreach(lc3, rel->pathlist) {
+            //     Path *path = lfirst(lc3);
+            //     elog(LOG, "[lev %d] [rel %d] [phase 3] [path %d] [pathtype %d]",
+            //          lev, foreach_current_index(lc), foreach_current_index(lc3), path->pathtype);
+            //     PathHint path_hint;
+            //     get_path_hint(root, path, lev, &path_hint);
+            //     log_path_hint(&path_hint);
+            // }
+            //
+            // foreach(lc3, rel->partial_pathlist) {
+            //     Path *path = lfirst(lc3);
+            //     elog(LOG, "[lev %d] [rel %d] [phase 3] [partial path %d] [pathtype %d]",
+            //          lev, foreach_current_index(lc), foreach_current_index(lc3), path->pathtype);
+            //     PathHint path_hint;
+            //     get_path_hint(root, path, lev, &path_hint);
+            //     log_path_hint(&path_hint);
+            // }
 
 #ifdef OPTIMIZER_DEBUG
             debug_print_rel(root, rel);
@@ -3450,22 +3450,22 @@ standard_join_search(PlannerInfo *root, int levels_needed, List *initial_rels) {
 
     rel = (RelOptInfo *) linitial(root->join_rel_level[levels_needed]);
 
-    ListCell *lc4;
-    foreach(lc4, rel->pathlist) {
-        Path *path = lfirst(lc4);
-        elog(LOG, "[final rel] [path %d] [pathtype %d]", foreach_current_index(lc4), path->pathtype);
-        PathHint path_hint;
-        get_path_hint(root, path, lev, &path_hint);
-        log_path_hint(&path_hint);
-    }
-
-    foreach(lc4, rel->partial_pathlist) {
-        Path *path = lfirst(lc4);
-        elog(LOG, "[final rel] [partial path %d] [pathtype %d]", foreach_current_index(lc4), path->pathtype);
-        PathHint path_hint;
-        get_path_hint(root, path, lev, &path_hint);
-        log_path_hint(&path_hint);
-    }
+    // ListCell *lc4;
+    // foreach(lc4, rel->pathlist) {
+    //     Path *path = lfirst(lc4);
+    //     elog(LOG, "[final rel] [path %d] [pathtype %d]", foreach_current_index(lc4), path->pathtype);
+    //     PathHint path_hint;
+    //     get_path_hint(root, path, lev, &path_hint);
+    //     log_path_hint(&path_hint);
+    // }
+    //
+    // foreach(lc4, rel->partial_pathlist) {
+    //     Path *path = lfirst(lc4);
+    //     elog(LOG, "[final rel] [partial path %d] [pathtype %d]", foreach_current_index(lc4), path->pathtype);
+    //     PathHint path_hint;
+    //     get_path_hint(root, path, lev, &path_hint);
+    //     log_path_hint(&path_hint);
+    // }
 
     root->join_rel_level = NULL;
 
