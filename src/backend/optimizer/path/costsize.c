@@ -3091,6 +3091,7 @@ void initial_cost_nestloop(
     Path *inner_path,
     const JoinPathExtraData *extra
 ) {
+    elog(LOG, "<<initial_cost_nestloop>>::start");
     /* ------------------------------- 1) Resolve samples & loop count ------------------------------- */
     const Sample *outer_rows_samp = outer_path->rows_sample;
     const Sample *inner_rows_samp = inner_path->rows_sample;
@@ -3217,6 +3218,8 @@ void initial_cost_nestloop(
     workspace->run_cost *= invN;
     workspace->inner_run_cost *= invN;
     workspace->inner_rescan_run_cost *= invN;
+
+    elog(LOG, "<<initial_cost_nestloop>>::end");
 }
 
 /*
@@ -3232,6 +3235,7 @@ void final_cost_nestloop(
     JoinCostWorkspace *workspace,
     const JoinPathExtraData *extra
 ) {
+    elog(LOG, "<<final_cost_nestloop>>::start");
     /* ------------------------------- 1) Resolve paths & samples ------------------------------- */
     const Path *outer_path = path->jpath.outerjoinpath;
     const Path *inner_path = path->jpath.innerjoinpath;
@@ -3387,6 +3391,8 @@ void final_cost_nestloop(
     const double invN = 1.0 / (double) (sample_count > 0 ? sample_count : 1);
     path->jpath.path.startup_cost = startup_accum * invN;
     path->jpath.path.total_cost = total_accum * invN;
+
+    elog(LOG, "<<final_cost_nestloop>>::end");
 }
 
 /*
@@ -3450,6 +3456,7 @@ void initial_cost_mergejoin(
     List *innersortkeys,
     JoinPathExtraData *extra
 ) {
+    elog(LOG, "<<initial_cost_mergejoin>>::start");
     /* ----------------------------------------------------------------------
      * 0) Resolve per-path row samples and costs
      * ---------------------------------------------------------------------- */
@@ -3704,6 +3711,8 @@ void initial_cost_mergejoin(
     workspace->inner_rows = inner_rows_accum * invN;
     workspace->outer_skip_rows = outer_skip_accum * invN;
     workspace->inner_skip_rows = inner_skip_accum * invN;
+
+    elog(LOG, "<<initial_cost_mergejoin>>::end");
 }
 
 /*
@@ -3738,6 +3747,7 @@ void final_cost_mergejoin(
     JoinCostWorkspace *workspace,
     const JoinPathExtraData *extra
 ) {
+    elog(LOG, "<<final_cost_mergejoin>>::start");
     /* ------------------------------- 1) Resolve paths & row samples ------------------------------- */
     const Path *outer_path = path->jpath.outerjoinpath;
     Path *inner_path = path->jpath.innerjoinpath;
@@ -3909,6 +3919,8 @@ void final_cost_mergejoin(
     const double invN = 1.0 / (double) sample_count;
     path->jpath.path.startup_cost = startup_accum * invN;
     path->jpath.path.total_cost = total_accum * invN;
+
+    elog(LOG, "<<final_cost_mergejoin>>::end");
 }
 
 /*
@@ -4002,6 +4014,7 @@ void initial_cost_hashjoin(
     JoinPathExtraData *extra,
     bool parallel_hash
 ) {
+    elog(LOG, "<<initial_cost_hashjoin>>::start");
     /* ------------------------------------------------------------------
      * 1) Resolve samples and pick loop count
      * ------------------------------------------------------------------ */
@@ -4160,6 +4173,7 @@ void initial_cost_hashjoin(
     workspace->inner_rows_total = inner_rows_total_acc * invN;
 
     /* CPU costs for join quals etc. are left to final_cost_hashjoin (phase-2). */
+    elog(LOG, "<<initial_cost_hashjoin>>::end");
 }
 
 /*
@@ -4178,6 +4192,7 @@ void final_cost_hashjoin(
     JoinCostWorkspace *workspace,
     const JoinPathExtraData *extra
 ) {
+    elog(LOG, "<<final_cost_hashjoin>>::start");
     /* ------------------------------- 1) Resolve paths & input samples ------------------------------- */
     const Path *outer_path = path->jpath.outerjoinpath;
     const Path *inner_path = path->jpath.innerjoinpath;
@@ -4386,6 +4401,8 @@ void final_cost_hashjoin(
     /* Save representative #batches and total inner rows (rounded/mean) */
     path->num_batches = workspace->numbatches;
     path->inner_rows_total = workspace->inner_rows_total;
+
+    elog(LOG, "<<final_cost_hashjoin>>::end");
 }
 
 /*
