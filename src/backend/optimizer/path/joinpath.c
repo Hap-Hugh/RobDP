@@ -819,17 +819,17 @@ try_nestloop_path(PlannerInfo *root,
 			}
 		}
 
-		add_path(joinrel, (Path *)
-				 create_nestloop_path(root,
-									  joinrel,
-									  jointype,
-									  &workspace,
-									  extra,
-									  outer_path,
-									  inner_path,
-									  extra->restrictlist,
-									  pathkeys,
-									  required_outer));
+		add_path(root, joinrel, (Path *)
+		         create_nestloop_path(root,
+		                              joinrel,
+		                              jointype,
+		                              &workspace,
+		                              extra,
+		                              outer_path,
+		                              inner_path,
+		                              extra->restrictlist,
+		                              pathkeys,
+		                              required_outer));
 	}
 	else
 	{
@@ -907,17 +907,17 @@ try_partial_nestloop_path(PlannerInfo *root,
 	}
 
 	/* Might be good enough to be worth trying, so let's try it. */
-	add_partial_path(joinrel, (Path *)
-					 create_nestloop_path(root,
-										  joinrel,
-										  jointype,
-										  &workspace,
-										  extra,
-										  outer_path,
-										  inner_path,
-										  extra->restrictlist,
-										  pathkeys,
-										  NULL));
+	add_partial_path(root, joinrel, (Path *)
+	                 create_nestloop_path(root,
+	                                      joinrel,
+	                                      jointype,
+	                                      &workspace,
+	                                      extra,
+	                                      outer_path,
+	                                      inner_path,
+	                                      extra->restrictlist,
+	                                      pathkeys,
+	                                      NULL));
 }
 
 /*
@@ -1004,20 +1004,20 @@ try_mergejoin_path(PlannerInfo *root,
 						  workspace.startup_cost, workspace.total_cost,
 						  pathkeys, required_outer))
 	{
-		add_path(joinrel, (Path *)
-				 create_mergejoin_path(root,
-									   joinrel,
-									   jointype,
-									   &workspace,
-									   extra,
-									   outer_path,
-									   inner_path,
-									   extra->restrictlist,
-									   pathkeys,
-									   required_outer,
-									   mergeclauses,
-									   outersortkeys,
-									   innersortkeys));
+		add_path(root, joinrel, (Path *)
+		         create_mergejoin_path(root,
+		                               joinrel,
+		                               jointype,
+		                               &workspace,
+		                               extra,
+		                               outer_path,
+		                               inner_path,
+		                               extra->restrictlist,
+		                               pathkeys,
+		                               required_outer,
+		                               mergeclauses,
+		                               outersortkeys,
+		                               innersortkeys));
 	}
 	else
 	{
@@ -1080,20 +1080,20 @@ try_partial_mergejoin_path(PlannerInfo *root,
 		return;
 
 	/* Might be good enough to be worth trying, so let's try it. */
-	add_partial_path(joinrel, (Path *)
-					 create_mergejoin_path(root,
-										   joinrel,
-										   jointype,
-										   &workspace,
-										   extra,
-										   outer_path,
-										   inner_path,
-										   extra->restrictlist,
-										   pathkeys,
-										   NULL,
-										   mergeclauses,
-										   outersortkeys,
-										   innersortkeys));
+	add_partial_path(root, joinrel, (Path *)
+	                 create_mergejoin_path(root,
+	                                       joinrel,
+	                                       jointype,
+	                                       &workspace,
+	                                       extra,
+	                                       outer_path,
+	                                       inner_path,
+	                                       extra->restrictlist,
+	                                       pathkeys,
+	                                       NULL,
+	                                       mergeclauses,
+	                                       outersortkeys,
+	                                       innersortkeys));
 }
 
 /*
@@ -1149,18 +1149,18 @@ try_hashjoin_path(PlannerInfo *root,
 						  workspace.startup_cost, workspace.total_cost,
 						  NIL, required_outer))
 	{
-		add_path(joinrel, (Path *)
-				 create_hashjoin_path(root,
-									  joinrel,
-									  jointype,
-									  &workspace,
-									  extra,
-									  outer_path,
-									  inner_path,
-									  false,	/* parallel_hash */
-									  extra->restrictlist,
-									  required_outer,
-									  hashclauses));
+		add_path(root, joinrel, (Path *)
+		         create_hashjoin_path(root,
+		                              joinrel,
+		                              jointype,
+		                              &workspace,
+		                              extra,
+		                              outer_path,
+		                              inner_path,
+		                              false,	/* parallel_hash */
+		                              extra->restrictlist,
+		                              required_outer,
+		                              hashclauses));
 	}
 	else
 	{
@@ -1215,18 +1215,18 @@ try_partial_hashjoin_path(PlannerInfo *root,
 		return;
 
 	/* Might be good enough to be worth trying, so let's try it. */
-	add_partial_path(joinrel, (Path *)
-					 create_hashjoin_path(root,
-										  joinrel,
-										  jointype,
-										  &workspace,
-										  extra,
-										  outer_path,
-										  inner_path,
-										  parallel_hash,
-										  extra->restrictlist,
-										  NULL,
-										  hashclauses));
+	add_partial_path(root, joinrel, (Path *)
+	                 create_hashjoin_path(root,
+	                                      joinrel,
+	                                      jointype,
+	                                      &workspace,
+	                                      extra,
+	                                      outer_path,
+	                                      inner_path,
+	                                      parallel_hash,
+	                                      extra->restrictlist,
+	                                      NULL,
+	                                      hashclauses));
 }
 
 /*

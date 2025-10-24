@@ -38,8 +38,8 @@ extern void set_cheapest(
 );
 
 extern void add_path(
-    RelOptInfo *parent_rel,
-    Path *new_path
+    PlannerInfo *root,
+    RelOptInfo *parent_rel, Path *new_path
 );
 
 extern bool add_path_precheck(
@@ -51,8 +51,8 @@ extern bool add_path_precheck(
 );
 
 extern void add_partial_path(
-    RelOptInfo *parent_rel,
-    Path *new_path
+    PlannerInfo *root,
+    RelOptInfo *parent_rel, Path *new_path
 );
 
 extern bool add_partial_path_precheck(
