@@ -25,6 +25,8 @@
 #include "optimizer/cost.h"
 #include "optimizer/optimizer.h"
 #include "optimizer/pathnode.h"
+
+#include "optimizer/pathhint.h"
 #include "optimizer/paths.h"
 #include "optimizer/placeholder.h"
 #include "optimizer/planmain.h"
@@ -408,7 +410,7 @@ set_cheapest(RelOptInfo *parent_rel) {
  * Returns nothing, but modifies parent_rel->pathlist.
  */
 void
-add_path(RelOptInfo *parent_rel, Path *new_path) {
+add_path(PlannerInfo *root, RelOptInfo *parent_rel, Path *new_path) {
     bool accept_new = true; /* unless we find a superior old path */
     int insert_at = 0; /* where to insert new item */
     List *new_path_pathkeys;
@@ -559,9 +561,12 @@ add_path(RelOptInfo *parent_rel, Path *new_path) {
          * Remove current element from pathlist if dominated by new.
          */
         if (remove_old) {
-            parent_rel->pathlist = foreach_delete_current(parent_rel->pathlist,
-                                                          p1);
-
+            parent_rel->pathlist = foreach_delete_current(parent_rel->pathlist, p1);
+            elog(LOG, "<<add_path>>::delete_old");
+            PathHint old_path_hint;
+            get_path_hint(root, (Path *) old_path, 0, &old_path_hint);
+            log_path_hint(&old_path_hint);
+            elog(LOG, "<<add_path>>::delete_old");
             /*
              * Delete the data pointed-to by the deleted cell, if possible
              */
@@ -586,8 +591,19 @@ add_path(RelOptInfo *parent_rel, Path *new_path) {
         /* Accept the new path: insert it at proper place in pathlist */
         parent_rel->pathlist =
                 list_insert_nth(parent_rel->pathlist, insert_at, new_path);
+        elog(LOG, "<<add_path>>::add");
+        PathHint new_path_hint;
+        get_path_hint(root, (Path *) new_path, 0, &new_path_hint);
+        log_path_hint(&new_path_hint);
+        elog(LOG, "<<add_path>>::add");
     } else {
         /* Reject and recycle the new path */
+        elog(LOG, "<<add_path>>::delete_new");
+        PathHint new_path_hint;
+        get_path_hint(root, (Path *) new_path, 0, &new_path_hint);
+        log_path_hint(&new_path_hint);
+        elog(LOG, "<<add_path>>::delete_new");
+
         if (!IsA(new_path, IndexPath))
             pfree(new_path);
     }
@@ -708,7 +724,7 @@ add_path_precheck(RelOptInfo *parent_rel,
  *	  referenced by partial BitmapHeapPaths.
  */
 void
-add_partial_path(RelOptInfo *parent_rel, Path *new_path) {
+add_partial_path(PlannerInfo *root, RelOptInfo *parent_rel, Path *new_path) {
     bool accept_new = true; /* unless we find a superior old path */
     int insert_at = 0; /* where to insert new item */
     ListCell *p1;
@@ -769,6 +785,11 @@ add_partial_path(RelOptInfo *parent_rel, Path *new_path) {
         if (remove_old) {
             parent_rel->partial_pathlist =
                     foreach_delete_current(parent_rel->partial_pathlist, p1);
+            elog(LOG, "<<add_partial_path>>::delete_old");
+            PathHint old_path_hint;
+            get_path_hint(root, (Path *) old_path, 0, &old_path_hint);
+            log_path_hint(&old_path_hint);
+            elog(LOG, "<<add_partial_path>>::delete_old");
             pfree(old_path);
         } else {
             /* new belongs after this old path if it has cost >= old's */
@@ -789,7 +810,17 @@ add_partial_path(RelOptInfo *parent_rel, Path *new_path) {
         /* Accept the new path: insert it at proper place */
         parent_rel->partial_pathlist =
                 list_insert_nth(parent_rel->partial_pathlist, insert_at, new_path);
+        elog(LOG, "<<add_partial_path>>::add");
+        PathHint new_path_hint;
+        get_path_hint(root, (Path *) new_path, 0, &new_path_hint);
+        log_path_hint(&new_path_hint);
+        elog(LOG, "<<add_partial_path>>::add");
     } else {
+        elog(LOG, "<<add_partial_path>>::delete_new");
+        PathHint new_path_hint;
+        get_path_hint(root, (Path *) new_path, 0, &new_path_hint);
+        log_path_hint(&new_path_hint);
+        elog(LOG, "<<add_partial_path>>::delete_new");
         /* Reject and recycle the new path */
         pfree(new_path);
     }
