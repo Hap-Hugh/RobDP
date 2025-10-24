@@ -88,6 +88,7 @@
 #include "optimizer/cost.h"
 #include "optimizer/sample.h"
 #include "optimizer/optimizer.h"
+#include "optimizer/pathhint.h"
 #include "optimizer/pathnode.h"
 #include "optimizer/paths.h"
 #include "optimizer/placeholder.h"
@@ -3087,11 +3088,19 @@ void initial_cost_nestloop(
     PlannerInfo *root,
     JoinCostWorkspace *workspace,
     const JoinType jointype,
-    const Path *outer_path,
+    Path *outer_path,
     Path *inner_path,
     const JoinPathExtraData *extra
 ) {
     elog(LOG, "<<initial_cost_nestloop>>::start");
+    PathHint outer_path_hint;
+    get_path_hint(root, outer_path, 0, &outer_path_hint);
+    log_path_hint(&outer_path_hint);
+
+    PathHint inner_path_hint;
+    get_path_hint(root, inner_path, 0, &inner_path_hint);
+    log_path_hint(&inner_path_hint);
+
     /* ------------------------------- 1) Resolve samples & loop count ------------------------------- */
     const Sample *outer_rows_samp = outer_path->rows_sample;
     const Sample *inner_rows_samp = inner_path->rows_sample;
@@ -3392,6 +3401,14 @@ void final_cost_nestloop(
     path->jpath.path.startup_cost = startup_accum * invN;
     path->jpath.path.total_cost = total_accum * invN;
 
+    PathHint outer_path_hint;
+    get_path_hint(root, (Path *) outer_path, 0, &outer_path_hint);
+    log_path_hint(&outer_path_hint);
+
+    PathHint inner_path_hint;
+    get_path_hint(root, (Path *) inner_path, 0, &inner_path_hint);
+    log_path_hint(&inner_path_hint);
+
     elog(LOG, "<<final_cost_nestloop>>::end");
 }
 
@@ -3457,6 +3474,14 @@ void initial_cost_mergejoin(
     JoinPathExtraData *extra
 ) {
     elog(LOG, "<<initial_cost_mergejoin>>::start");
+    PathHint outer_path_hint;
+    get_path_hint(root, (Path *) outer_path, 0, &outer_path_hint);
+    log_path_hint(&outer_path_hint);
+
+    PathHint inner_path_hint;
+    get_path_hint(root, (Path *) inner_path, 0, &inner_path_hint);
+    log_path_hint(&inner_path_hint);
+
     /* ----------------------------------------------------------------------
      * 0) Resolve per-path row samples and costs
      * ---------------------------------------------------------------------- */
@@ -3920,6 +3945,14 @@ void final_cost_mergejoin(
     path->jpath.path.startup_cost = startup_accum * invN;
     path->jpath.path.total_cost = total_accum * invN;
 
+    PathHint outer_path_hint;
+    get_path_hint(root, (Path *) outer_path, 0, &outer_path_hint);
+    log_path_hint(&outer_path_hint);
+
+    PathHint inner_path_hint;
+    get_path_hint(root, (Path *) inner_path, 0, &inner_path_hint);
+    log_path_hint(&inner_path_hint);
+
     elog(LOG, "<<final_cost_mergejoin>>::end");
 }
 
@@ -4015,6 +4048,14 @@ void initial_cost_hashjoin(
     bool parallel_hash
 ) {
     elog(LOG, "<<initial_cost_hashjoin>>::start");
+    PathHint outer_path_hint;
+    get_path_hint(root, (Path *) outer_path, 0, &outer_path_hint);
+    log_path_hint(&outer_path_hint);
+
+    PathHint inner_path_hint;
+    get_path_hint(root, (Path *) inner_path, 0, &inner_path_hint);
+    log_path_hint(&inner_path_hint);
+
     /* ------------------------------------------------------------------
      * 1) Resolve samples and pick loop count
      * ------------------------------------------------------------------ */
@@ -4401,6 +4442,14 @@ void final_cost_hashjoin(
     /* Save representative #batches and total inner rows (rounded/mean) */
     path->num_batches = workspace->numbatches;
     path->inner_rows_total = workspace->inner_rows_total;
+
+    PathHint outer_path_hint;
+    get_path_hint(root, (Path *) outer_path, 0, &outer_path_hint);
+    log_path_hint(&outer_path_hint);
+
+    PathHint inner_path_hint;
+    get_path_hint(root, (Path *) inner_path, 0, &inner_path_hint);
+    log_path_hint(&inner_path_hint);
 
     elog(LOG, "<<final_cost_hashjoin>>::end");
 }

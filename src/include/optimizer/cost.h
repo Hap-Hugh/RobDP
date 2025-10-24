@@ -284,7 +284,7 @@ extern void initial_cost_nestloop(
     PlannerInfo *root,
     JoinCostWorkspace *workspace,
     JoinType jointype,
-    const Path *outer_path,
+    Path *outer_path,
     Path *inner_path,
     const JoinPathExtraData *extra
 );
