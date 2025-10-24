@@ -6738,7 +6738,7 @@ add_foreign_grouping_paths(PlannerInfo *root, RelOptInfo *input_rel,
 										  NIL); /* no fdw_private */
 
 	/* Add generated path into grouped_rel by add_path(). */
-	add_path(grouped_rel, (Path *) grouppath);
+	add_path(root, grouped_rel, (Path *) grouppath);
 }
 
 /*
