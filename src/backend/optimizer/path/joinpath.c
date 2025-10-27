@@ -2005,14 +2005,14 @@ hash_inner_and_outer(
      * Handle JOIN_UNIQUE_{OUTER,INNER} by applying create_unique_path.
      */
     ListCell *lc_outer, *lc_inner;
-    foreach(lc_outer, outerrel->partial_pathlist) {
+    foreach(lc_outer, outerrel->pathlist) {
         Path *outer_path = lfirst(lc_outer);
 
         if (PATH_PARAM_BY_REL(outer_path, innerrel)) {
             continue;
         }
 
-        foreach(lc_inner, innerrel->partial_pathlist) {
+        foreach(lc_inner, innerrel->pathlist) {
             Path *inner_path = lfirst(lc_inner);
 
             if (PATH_PARAM_BY_REL(inner_path, outerrel)) {
