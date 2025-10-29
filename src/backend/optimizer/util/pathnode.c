@@ -409,6 +409,52 @@ set_cheapest(RelOptInfo *parent_rel) {
  */
 void
 add_path(PlannerInfo *root, RelOptInfo *parent_rel, Path *new_path) {
+    if (root->pass == 2) {
+        switch (new_path->pathtype) {
+            case T_BitmapHeapScan:
+            case T_BitmapAnd:
+            case T_BitmapOr:
+                return;
+            default:
+                break;
+        }
+
+        /*
+         * Always add every path to the parent_rel's pathlist,
+         * but keep the list sorted by total_cost in ascending order.
+         *
+         * NOTE:
+         * This version still skips all dominance and duplication checks,
+         * but maintains a cost-sorted pathlist for easier debugging
+         * and predictable iteration order.
+         *
+         * Use with caution — this may still increase memory usage
+         * since no pruning occurs.
+         */
+
+        ListCell *lc;
+        int insert_at = 0;
+
+        /* Check for query cancel — planner calls this very often. */
+        CHECK_FOR_INTERRUPTS();
+
+        /* Find the position to insert based on total_cost (ascending). */
+        foreach(lc, parent_rel->pathlist) {
+            const Path *old_path = (Path *) lfirst(lc);
+
+            if (new_path->total_cost < old_path->total_cost)
+                break;
+
+            insert_at++;
+        }
+
+        /* Insert the new path at the correct position. */
+        parent_rel->pathlist = list_insert_nth(
+            parent_rel->pathlist, insert_at, new_path
+        );
+        return;
+    }
+
     bool accept_new = true; /* unless we find a superior old path */
     int insert_at = 0; /* where to insert new item */
     List *new_path_pathkeys;
@@ -709,6 +755,58 @@ add_path_precheck(RelOptInfo *parent_rel,
  */
 void
 add_partial_path(PlannerInfo *root, RelOptInfo *parent_rel, Path *new_path) {
+    if (root->pass == 2) {
+        switch (new_path->pathtype) {
+            case T_BitmapHeapScan:
+            case T_BitmapAnd:
+            case T_BitmapOr:
+                return;
+            default:
+                break;
+        }
+
+        /*
+         * Always add every partial path to the parent_rel's partial_pathlist,
+         * but keep the list sorted by total_cost in ascending order.
+         *
+         * NOTE:
+         * This version disables all dominance and duplication checks,
+         * but ensures that the path list remains ordered by cost for
+         * easier inspection and predictable iteration.
+         *
+         * This is intended for debugging, testing, or research purposes
+         * and is not suitable for production use.
+         */
+
+        ListCell *lc;
+        int insert_at = 0;
+
+        /* Check for query cancel — planner calls this very frequently. */
+        CHECK_FOR_INTERRUPTS();
+
+        /* The path we are adding should be parallel-safe. */
+        Assert(new_path->parallel_safe);
+
+        /* The relation itself must be allowed to consider parallel plans. */
+        Assert(parent_rel->consider_parallel);
+
+        /* Find the insertion position based on total_cost (ascending order). */
+        foreach(lc, parent_rel->partial_pathlist) {
+            const Path *old_path = (Path *) lfirst(lc);
+
+            if (new_path->total_cost < old_path->total_cost)
+                break;
+
+            insert_at++;
+        }
+
+        /* Insert the new partial path at the correct sorted position. */
+        parent_rel->partial_pathlist = list_insert_nth(
+            parent_rel->partial_pathlist, insert_at, new_path
+        );
+        return;
+    }
+
     bool accept_new = true; /* unless we find a superior old path */
     int insert_at = 0; /* where to insert new item */
     ListCell *p1;
