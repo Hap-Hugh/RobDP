@@ -351,7 +351,7 @@ add_paths_to_joinrel(PlannerInfo *root,
 	/*
 	 * 6. Finally, give extensions a chance to manipulate the path list.  They
 	 * could add new paths (such as CustomPaths) by calling add_path(), or
-	 * add_partial_path() if parallel aware.  They could also delete or modify
+	 * add_partial_path(root, ) if parallel aware.  They could also delete or modify
 	 * paths added by the core code.
 	 */
 	if (set_join_pathlist_hook &&
@@ -819,7 +819,7 @@ try_nestloop_path(PlannerInfo *root,
 			}
 		}
 
-		add_path(joinrel, (Path *)
+		add_path(root, joinrel, (Path *)
 				 create_nestloop_path(root,
 									  joinrel,
 									  jointype,
@@ -841,7 +841,7 @@ try_nestloop_path(PlannerInfo *root,
 /*
  * try_partial_nestloop_path
  *	  Consider a partial nestloop join path; if it appears useful, push it into
- *	  the joinrel's partial_pathlist via add_partial_path().
+ *	  the joinrel's partial_pathlist via add_partial_path(root, ).
  */
 static void
 try_partial_nestloop_path(PlannerInfo *root,
@@ -907,7 +907,7 @@ try_partial_nestloop_path(PlannerInfo *root,
 	}
 
 	/* Might be good enough to be worth trying, so let's try it. */
-	add_partial_path(joinrel, (Path *)
+	add_partial_path(root, joinrel, (Path *)
 					 create_nestloop_path(root,
 										  joinrel,
 										  jointype,
@@ -1004,7 +1004,7 @@ try_mergejoin_path(PlannerInfo *root,
 						  workspace.startup_cost, workspace.total_cost,
 						  pathkeys, required_outer))
 	{
-		add_path(joinrel, (Path *)
+		add_path(root, joinrel, (Path *)
 				 create_mergejoin_path(root,
 									   joinrel,
 									   jointype,
@@ -1029,7 +1029,7 @@ try_mergejoin_path(PlannerInfo *root,
 /*
  * try_partial_mergejoin_path
  *	  Consider a partial merge join path; if it appears useful, push it into
- *	  the joinrel's pathlist via add_partial_path().
+ *	  the joinrel's pathlist via add_partial_path(root, ).
  */
 static void
 try_partial_mergejoin_path(PlannerInfo *root,
@@ -1080,7 +1080,7 @@ try_partial_mergejoin_path(PlannerInfo *root,
 		return;
 
 	/* Might be good enough to be worth trying, so let's try it. */
-	add_partial_path(joinrel, (Path *)
+	add_partial_path(root, joinrel, (Path *)
 					 create_mergejoin_path(root,
 										   joinrel,
 										   jointype,
@@ -1149,7 +1149,7 @@ try_hashjoin_path(PlannerInfo *root,
 						  workspace.startup_cost, workspace.total_cost,
 						  NIL, required_outer))
 	{
-		add_path(joinrel, (Path *)
+		add_path(root, joinrel, (Path *)
 				 create_hashjoin_path(root,
 									  joinrel,
 									  jointype,
@@ -1172,7 +1172,7 @@ try_hashjoin_path(PlannerInfo *root,
 /*
  * try_partial_hashjoin_path
  *	  Consider a partial hashjoin join path; if it appears useful, push it into
- *	  the joinrel's partial_pathlist via add_partial_path().
+ *	  the joinrel's partial_pathlist via add_partial_path(root, root, ).
  *	  The outer side is partial.  If parallel_hash is true, then the inner path
  *	  must be partial and will be run in parallel to create one or more shared
  *	  hash tables; otherwise the inner path must be complete and a copy of it
@@ -1215,7 +1215,7 @@ try_partial_hashjoin_path(PlannerInfo *root,
 		return;
 
 	/* Might be good enough to be worth trying, so let's try it. */
-	add_partial_path(joinrel, (Path *)
+	add_partial_path(root, joinrel, (Path *)
 					 create_hashjoin_path(root,
 										  joinrel,
 										  jointype,

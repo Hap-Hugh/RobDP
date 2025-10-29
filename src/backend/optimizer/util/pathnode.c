@@ -408,7 +408,7 @@ set_cheapest(RelOptInfo *parent_rel) {
  * Returns nothing, but modifies parent_rel->pathlist.
  */
 void
-add_path(RelOptInfo *parent_rel, Path *new_path) {
+add_path(PlannerInfo *root, RelOptInfo *parent_rel, Path *new_path) {
     bool accept_new = true; /* unless we find a superior old path */
     int insert_at = 0; /* where to insert new item */
     List *new_path_pathkeys;
@@ -708,7 +708,7 @@ add_path_precheck(RelOptInfo *parent_rel,
  *	  referenced by partial BitmapHeapPaths.
  */
 void
-add_partial_path(RelOptInfo *parent_rel, Path *new_path) {
+add_partial_path(PlannerInfo *root, RelOptInfo *parent_rel, Path *new_path) {
     bool accept_new = true; /* unless we find a superior old path */
     int insert_at = 0; /* where to insert new item */
     ListCell *p1;

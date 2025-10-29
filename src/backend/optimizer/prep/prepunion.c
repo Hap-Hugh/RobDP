@@ -297,7 +297,7 @@ recurse_set_operations(Node *setOp, PlannerInfo *root,
 												 trivial_tlist,
 												 NIL, NULL);
 
-		add_path(rel, path);
+		add_path(root, rel, path);
 
 		/*
 		 * If we have a partial path for the child relation, we can use that
@@ -315,7 +315,7 @@ recurse_set_operations(Node *setOp, PlannerInfo *root,
 				create_subqueryscan_path(root, rel, partial_subpath,
 										 trivial_tlist,
 										 NIL, NULL);
-			add_partial_path(rel, partial_path);
+			add_partial_path(root, rel, partial_path);
 		}
 
 		/*
@@ -535,7 +535,7 @@ generate_recursion_path(SetOperationStmt *setOp, PlannerInfo *root,
 											   root->wt_param_id,
 											   dNumGroups);
 
-	add_path(result_rel, path);
+	add_path(root, result_rel, path);
 	postprocess_setop_rel(root, result_rel);
 	return result_rel;
 }
@@ -637,7 +637,7 @@ generate_union_paths(SetOperationStmt *op, PlannerInfo *root,
 	if (!op->all)
 		path = make_union_unique(op, path, tlist, root);
 
-	add_path(result_rel, path);
+	add_path(root, result_rel, path);
 
 	/*
 	 * Estimate number of groups.  For now we just assume the output is unique
@@ -691,7 +691,7 @@ generate_union_paths(SetOperationStmt *op, PlannerInfo *root,
 							   result_rel->reltarget, NULL, NULL);
 		if (!op->all)
 			ppath = make_union_unique(op, ppath, tlist, root);
-		add_path(result_rel, ppath);
+		add_path(root, result_rel, ppath);
 	}
 
 	/* Undo effects of possibly forcing tuple_fraction to 0 */
@@ -863,7 +863,7 @@ generate_nonunion_paths(SetOperationStmt *op, PlannerInfo *root,
 									  dNumOutputRows);
 
 	result_rel->rows = path->rows;
-	add_path(result_rel, path);
+	add_path(root, result_rel, path);
 	return result_rel;
 }
 
