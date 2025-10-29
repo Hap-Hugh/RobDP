@@ -28,6 +28,7 @@
 #include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
 #include "nodes/supportnodes.h"
+#include "optimizer/addpath.h"
 #include "optimizer/sample.h"
 #ifdef OPTIMIZER_DEBUG
 #include "nodes/print.h"
@@ -3398,6 +3399,15 @@ standard_join_search(PlannerInfo *root, int levels_needed, List *initial_rels) {
                 elog(LOG, "[lev %d] [rel %d] [phase 2] [partial path %d] [pathtype %d]",
                      lev, foreach_current_index(lc), foreach_current_index(lc2), path->pathtype);
             }
+
+            reconsider_pathlist(
+                root, lev, foreach_current_index(lc),
+                error_sample_count, 1
+            );
+            reconsider_pathlist(
+                root, lev, foreach_current_index(lc),
+                error_sample_count, 1
+            );
 
             /* Create paths for partitionwise joins. */
             generate_partitionwise_join_paths(root, rel);
