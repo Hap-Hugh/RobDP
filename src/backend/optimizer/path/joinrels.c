@@ -80,7 +80,6 @@ void
 join_search_one_level(PlannerInfo *root, int level) {
     List **joinrels = root->join_rel_level;
     ListCell *r;
-    int k;
 
     Assert(joinrels[level] == NIL);
 
@@ -156,7 +155,7 @@ join_search_one_level(PlannerInfo *root, int level) {
      * suitable join clause (or join order restriction), in order to avoid
      * unreasonable growth of planning time.
      */
-    for (k = 2;; k++) {
+    for (int k = 2;; k++) {
         int other_level = level - k;
 
         /*

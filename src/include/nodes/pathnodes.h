@@ -290,8 +290,10 @@ struct PlannerInfo
 	 * Note: we've already printed all baserel and joinrel RelOptInfos above,
 	 * so we don't dump join_rel_level or other lists of RelOptInfos.
 	 */
-	/* lists of join-relation RelOptInfos */
+	/* lists of join-relation RelOptInfos (the first pass) */
 	List	  **join_rel_level pg_node_attr(read_write_ignore);
+	/* additional lists of join-relation RelOptInfos (the second pass) */
+	List	  **join_rel_level_second pg_node_attr(read_write_ignore);
 	/* index of list being extended */
 	int			join_cur_level;
 
