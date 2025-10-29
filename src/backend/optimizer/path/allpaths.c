@@ -28,6 +28,7 @@
 #include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
 #include "nodes/supportnodes.h"
+#include "optimizer/addpath.h"
 #include "optimizer/sample.h"
 #ifdef OPTIMIZER_DEBUG
 #include "nodes/print.h"
@@ -3357,6 +3358,33 @@ standard_join_search(PlannerInfo *root, int levels_needed, List *initial_rels) {
             rel = (RelOptInfo *) lfirst(lc);
 
             ListCell *lc1;
+            foreach(lc1, rel->pathlist) {
+                elog(LOG, "[path %d]", foreach_current_index(lc1));
+                const Path *path = lfirst(lc1);
+                elog(LOG, "[path type] %d", path->pathtype);
+                const Sample *sample = path->total_cost_sample;
+                const int sample_count = sample->sample_count;
+                elog(LOG, "  [total cost avg] %.3f", path->total_cost);
+                for (int sample_idx = 0; sample_idx < sample_count; ++sample_idx) {
+                    elog(LOG, "  [total cost %d] %.3f", sample_idx, sample->sample[sample_idx]);
+                }
+            }
+
+            foreach(lc1, rel->partial_pathlist) {
+                elog(LOG, "[partial path %d]", foreach_current_index(lc1));
+                const Path *partial_path = lfirst(lc1);
+                elog(LOG, "[partial path type] %d", partial_path->pathtype);
+                const Sample *sample = partial_path->total_cost_sample;
+                const int sample_count = sample->sample_count;
+                elog(LOG, "  [total cost avg] %.3f", partial_path->total_cost);
+                for (int sample_idx = 0; sample_idx < sample_count; ++sample_idx) {
+                    elog(LOG, "  [total cost %d] %.3f", sample_idx, sample->sample[sample_idx]);
+                }
+            }
+
+            reconsider_pathlist(&rel->pathlist, error_sample_count, 1);
+            reconsider_pathlist(&rel->partial_pathlist, error_sample_count, 1);
+
             foreach(lc1, rel->pathlist) {
                 elog(LOG, "[path %d]", foreach_current_index(lc1));
                 const Path *path = lfirst(lc1);
