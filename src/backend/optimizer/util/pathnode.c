@@ -657,9 +657,9 @@ add_path(PlannerInfo *root, RelOptInfo *parent_rel, Path *new_path) {
  * so the required information has to be passed piecemeal.
  */
 bool
-add_path_precheck(RelOptInfo *parent_rel,
-                  Cost startup_cost, Cost total_cost,
-                  List *pathkeys, Relids required_outer) {
+add_path_precheck(PlannerInfo *root,
+                  RelOptInfo *parent_rel, Cost startup_cost,
+                  Cost total_cost, List *pathkeys, Relids required_outer) {
     List *new_path_pathkeys;
     bool consider_startup;
     ListCell *p1;
@@ -904,8 +904,8 @@ add_partial_path(PlannerInfo *root, RelOptInfo *parent_rel, Path *new_path) {
  * is surely a loser.
  */
 bool
-add_partial_path_precheck(RelOptInfo *parent_rel, Cost total_cost,
-                          List *pathkeys) {
+add_partial_path_precheck(PlannerInfo *root, RelOptInfo *parent_rel,
+                          Cost total_cost, List *pathkeys) {
     ListCell *p1;
 
     /*
@@ -945,8 +945,8 @@ add_partial_path_precheck(RelOptInfo *parent_rel, Cost total_cost,
      * partial path; the resulting plans, if run in parallel, will be run to
      * completion.
      */
-    if (!add_path_precheck(parent_rel, total_cost, total_cost, pathkeys,
-                           NULL))
+    if (!add_path_precheck(root, parent_rel, total_cost, total_cost,
+                           pathkeys,NULL))
         return false;
 
     return true;
