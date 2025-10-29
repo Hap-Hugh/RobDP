@@ -1041,6 +1041,7 @@ typedef struct RelOptInfo
 
 	/* ``Some'' score of the current relation */
 	Sample     *score_sample pg_node_attr(read_write_ignore);
+	Sample     *score_sample_partial pg_node_attr(read_write_ignore);
 } RelOptInfo;
 
 /*

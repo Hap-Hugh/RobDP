@@ -17,13 +17,15 @@ reconsider_pathlist(
     int lev_index,
     int rel_index,
     int sample_count,
-    int mp_path_limit
+    int mp_path_limit,
+    bool is_partial
 );
 
 void
 calc_score_from_pathlist(
     RelOptInfo *joinrel,
-    int sample_count
+    int sample_count,
+    bool is_partial
 );
 
 #endif // ADDPATH_H

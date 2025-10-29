@@ -3337,7 +3337,8 @@ standard_join_search(PlannerInfo *root, int levels_needed, List *initial_rels) {
                      lev, foreach_current_index(lc), foreach_current_index(lc1), path->pathtype);
             }
 
-            calc_score_from_pathlist(rel, error_sample_count);
+            calc_score_from_pathlist(rel, error_sample_count, false);
+            calc_score_from_pathlist(rel, error_sample_count, true);
 
             /* Create paths for partitionwise joins. */
             generate_partitionwise_join_paths(root, rel);
@@ -3404,11 +3405,11 @@ standard_join_search(PlannerInfo *root, int levels_needed, List *initial_rels) {
 
             reconsider_pathlist(
                 root, lev, foreach_current_index(lc),
-                error_sample_count, 1
+                error_sample_count, 1, false
             );
             reconsider_pathlist(
                 root, lev, foreach_current_index(lc),
-                error_sample_count, 1
+                error_sample_count, 1, true
             );
 
             /* Create paths for partitionwise joins. */
