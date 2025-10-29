@@ -660,6 +660,10 @@ bool
 add_path_precheck(PlannerInfo *root,
                   RelOptInfo *parent_rel, Cost startup_cost,
                   Cost total_cost, List *pathkeys, Relids required_outer) {
+    if (root->pass == 2) {
+        return true;
+    }
+
     List *new_path_pathkeys;
     bool consider_startup;
     ListCell *p1;
@@ -906,6 +910,10 @@ add_partial_path(PlannerInfo *root, RelOptInfo *parent_rel, Path *new_path) {
 bool
 add_partial_path_precheck(PlannerInfo *root, RelOptInfo *parent_rel,
                           Cost total_cost, List *pathkeys) {
+    if (root->pass == 2) {
+        return true;
+    }
+
     ListCell *p1;
 
     /*
