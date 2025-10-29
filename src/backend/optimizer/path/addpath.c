@@ -175,6 +175,8 @@ reconsider_pathlist(
     int mp_path_limit
 ) {
     List *candlist = ((RelOptInfo *) list_nth(root->join_rel_level[lev_index], rel_index))->pathlist;
+    Sample *score_sample = ((RelOptInfo *) list_nth(root->join_rel_level_first[lev_index], rel_index))->score_sample;
+    double *min_global = score_sample->sample;
     ListCell *lc;
 
     /* Basic sanity */
@@ -190,29 +192,6 @@ reconsider_pathlist(
      * optionally doing a deterministic reorder if desired. But let's
      * just run the full logic for simplicity.
      */
-
-    /* --------------------------------------------------------------------
-     * Phase 0: compute per-sample global minima across ALL candidate paths
-     * -------------------------------------------------------------------- */
-    double *min_global = (double *) palloc(sizeof(double) * sample_count);
-    for (int j = 0; j < sample_count; j++)
-        min_global[j] = DBL_MAX;
-
-    foreach(lc, candlist) {
-        Path *p = (Path *) lfirst(lc);
-        const Sample *ts = p->total_cost_sample;
-
-        Assert(ts != NULL);
-        Assert(ts->sample_count >= 0 && ts->sample_count <= DIST_MAX_SAMPLE);
-
-        const int effective = Min(ts->sample_count, sample_count);
-
-        for (int j = 0; j < effective; j++) {
-            const double v = ts->sample[j];
-            if (v < min_global[j])
-                min_global[j] = v;
-        }
-    }
 
     /* --------------------------------------------------------------------
      * Phase 1: build PathRank array and compute penalties vs min_global
@@ -320,8 +299,53 @@ reconsider_pathlist(
      * -------------------------------------------------------------------- */
     ((RelOptInfo *) list_nth(root->join_rel_level[lev_index], rel_index))->pathlist = candlist;
 
-    pfree(min_global);
     pfree(rank_arr);
     pfree(heap_idx);
     pfree(winners);
+}
+
+void
+calc_score_from_pathlist(
+    RelOptInfo *joinrel,
+    const int sample_count
+) {
+    /* --------------------------------------------------------------------
+     * Phase 0: compute per-sample global minima across ALL candidate paths
+     * -------------------------------------------------------------------- */
+    double *min_global = (double *) palloc(sizeof(double) * sample_count);
+    for (int j = 0; j < sample_count; j++)
+        min_global[j] = DBL_MAX;
+
+    ListCell *lc;
+    foreach(lc, joinrel->pathlist) {
+        Path *p = (Path *) lfirst(lc);
+        const Sample *ts = p->total_cost_sample;
+
+        Assert(ts != NULL);
+        Assert(ts->sample_count >= 0 && ts->sample_count <= DIST_MAX_SAMPLE);
+
+        const int effective = Min(ts->sample_count, sample_count);
+
+        /* Update global minima for each sample index */
+        for (int j = 0; j < effective; j++) {
+            const double v = ts->sample[j];
+            if (v < min_global[j])
+                min_global[j] = v;
+        }
+    }
+
+    /* --------------------------------------------------------------------
+     * Phase 1: Store the computed global minima into joinrel->score_sample
+     * -------------------------------------------------------------------- */
+    if (joinrel->score_sample == NULL)
+        joinrel->score_sample = (Sample *) palloc(sizeof(Sample));
+
+    Sample *ss = joinrel->score_sample;
+    ss->sample_count = sample_count;
+
+    for (int j = 0; j < sample_count; j++)
+        ss->sample[j] = min_global[j];
+
+    /* Free temporary memory if needed (optional in PG memory context) */
+    pfree(min_global);
 }

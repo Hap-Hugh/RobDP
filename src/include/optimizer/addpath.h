@@ -20,4 +20,10 @@ reconsider_pathlist(
     int mp_path_limit
 );
 
+void
+calc_score_from_pathlist(
+    RelOptInfo *joinrel,
+    int sample_count
+);
+
 #endif // ADDPATH_H
