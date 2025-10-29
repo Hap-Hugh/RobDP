@@ -3405,11 +3405,11 @@ standard_join_search(PlannerInfo *root, int levels_needed, List *initial_rels) {
 
             reconsider_pathlist(
                 root, lev, foreach_current_index(lc),
-                error_sample_count, 4, false
+                error_sample_count, 1, false
             );
             reconsider_pathlist(
                 root, lev, foreach_current_index(lc),
-                error_sample_count, 4, true
+                error_sample_count, 1, true
             );
 
             /* Create paths for partitionwise joins. */
