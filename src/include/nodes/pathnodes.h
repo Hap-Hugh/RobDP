@@ -1652,6 +1652,8 @@ typedef struct Path
 	Sample     *rows_sample pg_node_attr(read_write_ignore);
 	Sample     *startup_cost_sample pg_node_attr(read_write_ignore);
 	Sample     *total_cost_sample pg_node_attr(read_write_ignore);
+
+	double		score;
 } Path;
 
 /* Macro for extracting a path's parameterization relids; beware double eval */

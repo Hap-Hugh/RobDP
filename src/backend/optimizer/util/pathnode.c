@@ -1916,6 +1916,10 @@ create_gather_merge_path(PlannerInfo *root, RelOptInfo *rel, Path *subpath,
     cost_gather_merge(pathnode, root, rel, pathnode->path.param_info,
                       input_startup_cost, input_total_cost, rows);
 
+    if (root->pass == 3) {
+        pathnode->path.score = pathnode->subpath->score;
+    }
+
     return pathnode;
 }
 
@@ -1982,6 +1986,10 @@ create_gather_path(PlannerInfo *root, RelOptInfo *rel, Path *subpath,
     }
 
     cost_gather(pathnode, root, rel, pathnode->path.param_info, rows);
+
+    if (root->pass == 3) {
+        pathnode->path.score = pathnode->subpath->score;
+    }
 
     return pathnode;
 }
@@ -2686,6 +2694,10 @@ create_projection_path(PlannerInfo *root,
                                     (cpu_tuple_cost + target->cost.per_tuple) * subpath->rows;
     }
 
+    if (root->pass == 3) {
+        pathnode->path.score = pathnode->subpath->score;
+    }
+
     return pathnode;
 }
 
@@ -2895,6 +2907,10 @@ create_incremental_sort_path(PlannerInfo *root,
 
     sort->nPresortedCols = presorted_keys;
 
+    if (root->pass == 3) {
+        pathnode->path.score = subpath->score;
+    }
+
     return sort;
 }
 
@@ -2936,6 +2952,10 @@ create_sort_path(PlannerInfo *root,
               subpath->pathtarget->width,
               0.0, /* XXX comparison_cost shouldn't be 0? */
               work_mem, limit_tuples);
+
+    if (root->pass == 3) {
+        pathnode->path.score = subpath->score;
+    }
 
     return pathnode;
 }
@@ -2989,6 +3009,10 @@ create_group_path(PlannerInfo *root,
     pathnode->path.startup_cost += target->cost.startup;
     pathnode->path.total_cost += target->cost.startup +
             target->cost.per_tuple * pathnode->path.rows;
+
+    if (root->pass == 3) {
+        pathnode->path.score = subpath->score;
+    }
 
     return pathnode;
 }
@@ -3120,6 +3144,10 @@ create_agg_path(PlannerInfo *root,
     pathnode->path.startup_cost += target->cost.startup;
     pathnode->path.total_cost += target->cost.startup +
             target->cost.per_tuple * pathnode->path.rows;
+
+    if (root->pass == 3) {
+        pathnode->path.score = subpath->score;
+    }
 
     return pathnode;
 }

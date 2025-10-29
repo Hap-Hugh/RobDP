@@ -1493,6 +1493,8 @@ grouping_planner(PlannerInfo *root, double tuple_fraction)
 		 * of the query's sort clause, distinct clause, etc.
 		 */
 		current_rel = query_planner(root, standard_qp_callback, &qp_extra);
+		Path* test_path = (Path *) linitial(current_rel->pathlist);
+		elog(LOG, "[test] %.3f", test_path->score);
 
 		/*
 		 * Convert the query's result tlist into PathTarget format.
@@ -1563,6 +1565,8 @@ grouping_planner(PlannerInfo *root, double tuple_fraction)
 			scanjoin_target = grouping_target;
 			scanjoin_target_parallel_safe = grouping_target_parallel_safe;
 		}
+		test_path = (Path *) linitial(current_rel->pathlist);
+		elog(LOG, "[test] %.3f", test_path->score);
 
 		/*
 		 * If there are any SRFs in the targetlist, we must separate each of
@@ -1606,6 +1610,8 @@ grouping_planner(PlannerInfo *root, double tuple_fraction)
 			scanjoin_targets = list_make1(scanjoin_target);
 			scanjoin_targets_contain_srfs = NIL;
 		}
+		test_path = (Path *) linitial(current_rel->pathlist);
+		elog(LOG, "[test] %.3f", test_path->score);
 
 		/* Apply scan/join target. */
 		scanjoin_target_same_exprs = list_length(scanjoin_targets) == 1
@@ -1614,6 +1620,8 @@ grouping_planner(PlannerInfo *root, double tuple_fraction)
 									   scanjoin_targets_contain_srfs,
 									   scanjoin_target_parallel_safe,
 									   scanjoin_target_same_exprs);
+		test_path = (Path *) linitial(current_rel->pathlist);
+		elog(LOG, "[test] %.3f", test_path->score);
 
 		/*
 		 * Save the various upper-rel PathTargets we just computed into
@@ -1647,6 +1655,8 @@ grouping_planner(PlannerInfo *root, double tuple_fraction)
 									  grouping_targets,
 									  grouping_targets_contain_srfs);
 		}
+		test_path = (Path *) linitial(current_rel->pathlist);
+		elog(LOG, "[test] %.3f", test_path->score);
 
 		/*
 		 * If we have window functions, consider ways to implement those.  We
@@ -1700,6 +1710,8 @@ grouping_planner(PlannerInfo *root, double tuple_fraction)
 								  final_targets,
 								  final_targets_contain_srfs);
 	}
+	Path* test_path = (Path *) linitial(current_rel->pathlist);
+	elog(LOG, "[test] %.3f", test_path->score);
 
 	/*
 	 * Now we are prepared to build the final-output upperrel.
@@ -7552,6 +7564,7 @@ apply_scanjoin_target_to_paths(PlannerInfo *root,
 	foreach(lc, rel->pathlist)
 	{
 		Path	   *subpath = (Path *) lfirst(lc);
+		elog(LOG, "[subtest] %.3f", subpath->score);
 
 		/* Shouldn't have any parameterized paths anymore */
 		Assert(subpath->param_info == NULL);
@@ -7573,6 +7586,7 @@ apply_scanjoin_target_to_paths(PlannerInfo *root,
 	foreach(lc, rel->partial_pathlist)
 	{
 		Path	   *subpath = (Path *) lfirst(lc);
+		elog(LOG, "[subtest] %.3f", subpath->score);
 
 		/* Shouldn't have any parameterized paths anymore */
 		Assert(subpath->param_info == NULL);

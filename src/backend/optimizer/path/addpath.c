@@ -20,7 +20,7 @@ typedef struct ErrorProfile ErrorProfile;
 /* Per-candidate ranking info (only penalty is relevant here). */
 typedef struct PathRank {
     Path *path;
-    double max_penalty; /* vs. per-type per-sample minima */
+    double score; /* vs. per-type per-sample minima */
 } PathRank;
 
 /* ---------------- Min-heap for Path* by total_cost ASC (pointer tiebreak) --- */
@@ -76,8 +76,8 @@ static inline bool
 rank_idx_greater_by_penalty(int ia, int ib, const PathRank *arr) {
     const PathRank *a = &arr[ia];
     const PathRank *b = &arr[ib];
-    if (a->max_penalty > b->max_penalty) return true;
-    if (a->max_penalty < b->max_penalty) return false;
+    if (a->score > b->score) return true;
+    if (a->score < b->score) return false;
     /* deterministic pointer tiebreaker: greater means closer to root */
     return a->path > b->path;
 }
@@ -292,7 +292,7 @@ reconsider_pathlist(
         }
 
         rank_arr[idx].path = p;
-        rank_arr[idx].max_penalty = max_pen;
+        rank_arr[idx].score = max_pen;
         idx++;
     }
     Assert(idx == cand_count);
@@ -336,7 +336,7 @@ reconsider_pathlist(
      *
      * The heap only tells us *which* k survived, not a stable ordering.
      * We now copy those indices into an array and sort them by:
-     *     (max_penalty ASC, Path* ASC)
+     *     (score ASC, Path* ASC)
      *
      * We use insertion sort because k is typically small.
      * -------------------------------------------------------------------- */
@@ -346,13 +346,13 @@ reconsider_pathlist(
 
     for (int i = 1; i < k; i++) {
         int wi = winners[i];
-        double ppen = rank_arr[wi].max_penalty;
+        double ppen = rank_arr[wi].score;
         Path *ppth = rank_arr[wi].path;
         int j = i - 1;
 
         while (j >= 0) {
             int wj = winners[j];
-            double qpen = rank_arr[wj].max_penalty;
+            double qpen = rank_arr[wj].score;
             Path *qpth = rank_arr[wj].path;
 
             /* compare (penalty ASC, then pointer ASC) */
@@ -381,7 +381,9 @@ reconsider_pathlist(
         List *new_list = NIL;
 
         for (int i = 0; i < k; i++) {
-            Path *keep = rank_arr[winners[i]].path;
+            const PathRank rank = rank_arr[winners[i]];
+            Path *keep = rank.path;
+            keep->score = rank.score;
             new_list = lappend(new_list, keep);
         }
 

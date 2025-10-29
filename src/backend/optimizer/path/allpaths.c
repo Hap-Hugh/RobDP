@@ -53,6 +53,7 @@
 #include "rewrite/rewriteManip.h"
 #include "utils/lsyscache.h"
 
+int mp_path_limit = 1;
 
 /* Bitmask flags for pushdown_safety_info.unsafeFlags */
 #define UNSAFE_HAS_VOLATILE_FUNC		(1 << 0)
@@ -3405,11 +3406,11 @@ standard_join_search(PlannerInfo *root, int levels_needed, List *initial_rels) {
 
             reconsider_pathlist(
                 root, lev, foreach_current_index(lc),
-                error_sample_count, 1, false
+                error_sample_count, mp_path_limit, false
             );
             reconsider_pathlist(
                 root, lev, foreach_current_index(lc),
-                error_sample_count, 1, true
+                error_sample_count, mp_path_limit, true
             );
 
             /* Create paths for partitionwise joins. */
@@ -3420,8 +3421,9 @@ standard_join_search(PlannerInfo *root, int levels_needed, List *initial_rels) {
              * partial paths.  We'll do the same for the topmost scan/join rel
              * once we know the final targetlist (see grouping_planner).
              */
-            if (!bms_equal(rel->relids, root->all_query_rels))
+            if (!bms_equal(rel->relids, root->all_query_rels)) {
                 generate_useful_gather_paths(root, rel, false);
+            }
 
             /* Find and save the cheapest paths for this rel */
             set_cheapest(rel);
@@ -3431,6 +3433,7 @@ standard_join_search(PlannerInfo *root, int levels_needed, List *initial_rels) {
 #endif
         }
     }
+    root->pass = 3;
 
     /*
      * We should have a single rel at the final level.
