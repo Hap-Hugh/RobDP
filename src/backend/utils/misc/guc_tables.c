@@ -79,6 +79,7 @@
 #include "utils/guc_tables.h"
 
 #include "optimizer/kde.h"
+#include "optimizer/planner.h"
 #include "utils/memutils.h"
 #include "utils/pg_locale.h"
 #include "utils/portal.h"
@@ -4621,6 +4622,16 @@ struct config_string ConfigureNamesString[] =
 		&error_profile_path,
 		"/opt/error_profile",
 		NULL, SessionMemLoadAll, NULL
+	},
+
+	{
+		{"score_filename", PGC_USERSET, DEVELOPER_OPTIONS,
+			gettext_noop("Set the output score filename for each query."),
+			NULL
+		},
+		&score_filename,
+		"/opt/score/default.txt",
+		NULL, NULL, NULL
 	},
 
 	/* End-of-list marker */
