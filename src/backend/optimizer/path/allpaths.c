@@ -3325,19 +3325,6 @@ standard_join_search(PlannerInfo *root, int levels_needed, List *initial_rels) {
         foreach(lc, root->join_rel_level[lev]) {
             rel = (RelOptInfo *) lfirst(lc);
 
-            ListCell *lc1;
-            foreach(lc1, rel->pathlist) {
-                Path *path = lfirst(lc1);
-                elog(LOG, "[lev %d] [rel %d] [phase 1] [path %d] [pathtype %d]",
-                     lev, foreach_current_index(lc), foreach_current_index(lc1), path->pathtype);
-            }
-
-            foreach(lc1, rel->partial_pathlist) {
-                Path *path = lfirst(lc1);
-                elog(LOG, "[lev %d] [rel %d] [phase 1] [partial path %d] [pathtype %d]",
-                     lev, foreach_current_index(lc), foreach_current_index(lc1), path->pathtype);
-            }
-
             calc_score_from_pathlist(rel, error_sample_count, false);
             calc_score_from_pathlist(rel, error_sample_count, true);
 
@@ -3359,6 +3346,25 @@ standard_join_search(PlannerInfo *root, int levels_needed, List *initial_rels) {
             debug_print_rel(root, rel);
 #endif
         }
+    }
+
+    rel = (RelOptInfo *) linitial(root->join_rel_level[levels_needed]);
+
+    ListCell *lc_final;
+    foreach(lc_final, rel->pathlist) {
+        const Path *path = lfirst(lc_final);
+        elog(LOG, "[1-pass] [final rel] [path %d] [pathtype %d] "
+             "[startup cost %.3f] [total cost %.3f] [score %.3f]",
+             foreach_current_index(lc_final), path->pathtype,
+             path->startup_cost, path->total_cost, path->score);
+    }
+
+    foreach(lc_final, rel->partial_pathlist) {
+        const Path *path = lfirst(lc_final);
+        elog(LOG, "[1-pass] [final rel] [path %d] [pathtype %d] "
+             "[startup cost %.3f] [total cost %.3f] [score %.3f]",
+             foreach_current_index(lc_final), path->pathtype,
+             path->startup_cost, path->total_cost, path->score);
     }
 
     /* The second pass -- we would like to calculated penalty based on previous results. */
@@ -3390,19 +3396,6 @@ standard_join_search(PlannerInfo *root, int levels_needed, List *initial_rels) {
          */
         foreach(lc, root->join_rel_level[lev]) {
             rel = (RelOptInfo *) lfirst(lc);
-
-            ListCell *lc2;
-            foreach(lc2, rel->pathlist) {
-                Path *path = lfirst(lc2);
-                elog(LOG, "[lev %d] [rel %d] [phase 2] [path %d] [pathtype %d]",
-                     lev, foreach_current_index(lc), foreach_current_index(lc2), path->pathtype);
-            }
-
-            foreach(lc2, rel->partial_pathlist) {
-                Path *path = lfirst(lc2);
-                elog(LOG, "[lev %d] [rel %d] [phase 2] [partial path %d] [pathtype %d]",
-                     lev, foreach_current_index(lc), foreach_current_index(lc2), path->pathtype);
-            }
 
             reconsider_pathlist(
                 root, lev, foreach_current_index(lc),
@@ -3443,6 +3436,22 @@ standard_join_search(PlannerInfo *root, int levels_needed, List *initial_rels) {
     Assert(list_length(root->join_rel_level[levels_needed]) == 1);
 
     rel = (RelOptInfo *) linitial(root->join_rel_level[levels_needed]);
+
+    foreach(lc_final, rel->pathlist) {
+        const Path *path = lfirst(lc_final);
+        elog(LOG, "[2-pass] [final rel] [path %d] [pathtype %d] "
+             "[startup cost %.3f] [total cost %.3f] [score %.3f]",
+             foreach_current_index(lc_final), path->pathtype,
+             path->startup_cost, path->total_cost, path->score);
+    }
+
+    foreach(lc_final, rel->partial_pathlist) {
+        const Path *path = lfirst(lc_final);
+        elog(LOG, "[2-pass] [final rel] [path %d] [pathtype %d] "
+             "[startup cost %.3f] [total cost %.3f] [score %.3f]",
+             foreach_current_index(lc_final), path->pathtype,
+             path->startup_cost, path->total_cost, path->score);
+    }
 
     root->join_rel_level = NULL;
 
