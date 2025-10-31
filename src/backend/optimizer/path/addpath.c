@@ -251,7 +251,7 @@ add_path_by_strategy(
         for (int i = 0; i < losers_cnt; i++) {
             const PathRank rank = rank_arr[losers[i]];
             Path *drop = rank.path;
-            drop->score = -1.0;
+            /* do not overwrite keep->score */
             dropped_list = lappend(dropped_list, drop);
         }
     }
@@ -314,8 +314,9 @@ retain_path_by_strategy(
     const bool is_partial
 ) {
     /* If no candidates, nothing to retain; return immediately */
-    if (cand_list == NIL)
+    if (cand_list == NIL || retain_path_limit == 0) {
         return cand_list;
+    }
 
     /* Basic sanity checks */
     Assert(sample_count >= 1);
@@ -453,6 +454,7 @@ retain_path_by_strategy(
         for (int i = 0; i < losers_cnt; i++) {
             const PathRank rank = rank_arr[losers[i]];
             Path *drop = rank.path;
+            /* do not overwrite keep->score */
             dropped_list = lappend(dropped_list, drop);
         }
     }
