@@ -3398,13 +3398,24 @@ standard_join_search(PlannerInfo *root, int levels_needed, List *initial_rels) {
             const int rel_index = foreach_current_index(lc);
 
             List *dropped_pathlist = add_path_by_strategy(
-                root, lev, rel_index, NULL, add_path_limit,
-                error_sample_count, false
+                root, lev, rel_index, NULL,
+                add_path_limit, error_sample_count, false
             );
+            dropped_pathlist = retain_path_by_strategy(
+                root, lev, rel_index, dropped_pathlist, NULL,
+                add_path_limit, error_sample_count, false
+            );
+
+
             List *dropped_partial_pathlist = add_path_by_strategy(
-                root, lev, rel_index, NULL, add_path_limit,
-                error_sample_count, true
+                root, lev, rel_index, NULL,
+                add_path_limit, error_sample_count, true
             );
+            dropped_partial_pathlist = retain_path_by_strategy(
+                root, lev, rel_index, dropped_partial_pathlist, NULL,
+                add_path_limit, error_sample_count, true
+            );
+
 
             /* Create paths for partitionwise joins. */
             generate_partitionwise_join_paths(root, rel);

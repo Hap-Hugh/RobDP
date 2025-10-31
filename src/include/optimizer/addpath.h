@@ -17,8 +17,20 @@ add_path_by_strategy(
     const PlannerInfo *root,
     int lev_index,
     int rel_index,
-    add_path_strategy add_path_func,
+    path_score_strategy add_path_func,
     int add_path_limit,
+    int sample_count,
+    bool is_partial
+);
+
+List *
+retain_path_by_strategy(
+    const PlannerInfo *root,
+    int lev_index,
+    int rel_index,
+    List *cand_list,
+    path_score_strategy retain_path_func,
+    int retain_path_limit,
     int sample_count,
     bool is_partial
 );
