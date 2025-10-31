@@ -6,18 +6,20 @@
 #ifndef ADDPATH_H
 #define ADDPATH_H
 
+#include "pathstrategy.h"
 #include "postgres.h"
 #include "nodes/pathnodes.h"
 #include "optimizer/sample.h"
 #include "nodes/pg_list.h"
 
 List *
-reconsider_pathlist(
+add_path_by_strategy(
     const PlannerInfo *root,
     int lev_index,
     int rel_index,
+    add_path_strategy add_path_func,
+    int add_path_limit,
     int sample_count,
-    int mp_path_limit,
     bool is_partial
 );
 

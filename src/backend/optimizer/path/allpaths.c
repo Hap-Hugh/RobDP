@@ -53,7 +53,7 @@
 #include "rewrite/rewriteManip.h"
 #include "utils/lsyscache.h"
 
-int mp_path_limit = 1;
+int add_path_limit = 1;
 
 /* Bitmask flags for pushdown_safety_info.unsafeFlags */
 #define UNSAFE_HAS_VOLATILE_FUNC		(1 << 0)
@@ -3274,8 +3274,6 @@ make_rel_from_joinlist(PlannerInfo *root, List *joinlist) {
  */
 RelOptInfo *
 standard_join_search(PlannerInfo *root, int levels_needed, List *initial_rels) {
-    RelOptInfo *rel;
-
     /*
      * This function cannot be invoked recursively within any one planning
      * problem, so join_rel_level[] can't be in use already.
@@ -3323,7 +3321,7 @@ standard_join_search(PlannerInfo *root, int levels_needed, List *initial_rels) {
          * set_cheapest().
          */
         foreach(lc, root->join_rel_level[lev]) {
-            rel = (RelOptInfo *) lfirst(lc);
+            RelOptInfo *rel = lfirst(lc);
 
             calc_score_from_pathlist(rel, error_sample_count, false);
             calc_score_from_pathlist(rel, error_sample_count, true);
@@ -3349,7 +3347,7 @@ standard_join_search(PlannerInfo *root, int levels_needed, List *initial_rels) {
         }
     }
 
-    rel = (RelOptInfo *) linitial(root->join_rel_level[levels_needed]);
+    RelOptInfo *rel = linitial(root->join_rel_level[levels_needed]);
 
     ListCell *lc_final;
     foreach(lc_final, rel->pathlist) {
@@ -3397,14 +3395,15 @@ standard_join_search(PlannerInfo *root, int levels_needed, List *initial_rels) {
          */
         foreach(lc, root->join_rel_level[lev]) {
             rel = (RelOptInfo *) lfirst(lc);
+            const int rel_index = foreach_current_index(lc);
 
-            reconsider_pathlist(
-                root, lev, foreach_current_index(lc),
-                error_sample_count, mp_path_limit, false
+            List *dropped_pathlist = add_path_by_strategy(
+                root, lev, rel_index, NULL, add_path_limit,
+                error_sample_count, false
             );
-            reconsider_pathlist(
-                root, lev, foreach_current_index(lc),
-                error_sample_count, mp_path_limit, true
+            List *dropped_partial_pathlist = add_path_by_strategy(
+                root, lev, rel_index, NULL, add_path_limit,
+                error_sample_count, true
             );
 
             /* Create paths for partitionwise joins. */

@@ -6,6 +6,7 @@
 //
 
 #include "optimizer/addpath.h"
+#include "optimizer/pathstrategy.h"
 #include <float.h>
 
 /* Forward Declarations (opaque to this file) */
@@ -13,8 +14,6 @@ typedef struct Sample Sample;
 typedef struct ErrorProfileRaw ErrorProfileRaw;
 typedef struct ErrorSampleParams ErrorSampleParams;
 typedef struct ErrorProfile ErrorProfile;
-
-#define DIST_PENALTY_FACTOR 1.2
 
 /* ----------------------------------------------------------------------------
  * Helpers
@@ -80,7 +79,7 @@ rank_idx_maxheap_sift_down(int *heap, const int n, int idx, const PathRank *arr)
  * replace root then sift-down. Returns current heap size (<=k).
  */
 static int
-rank_idx_maxheap_push_topk(int *heap, int size, int k, int idx, const PathRank *arr) {
+rank_idx_maxheap_push_topk(int *heap, const int size, const int k, const int idx, const PathRank *arr) {
     if (size < k) {
         heap[size] = idx;
         rank_idx_maxheap_sift_up(heap, size, arr);
@@ -96,10 +95,10 @@ rank_idx_maxheap_push_topk(int *heap, int size, int k, int idx, const PathRank *
 }
 
 /*
- * reconsider_pathlist
+ * add_path_by_strategy
  *
  * From the current pathlist (normal or partial), retain at most
- * mp_path_limit paths by the score metric and discard the rest.
+ * add_path_limit paths by the score metric and discard the rest.
  *
  * Return value:
  *   - A List* containing all pruned paths (NOT kept), sorted by
@@ -111,17 +110,18 @@ rank_idx_maxheap_push_topk(int *heap, int size, int k, int idx, const PathRank *
  *   - Requires score_sample_final to be set beforehand.
  */
 List *
-reconsider_pathlist(
+add_path_by_strategy(
     const PlannerInfo *root,
     const int lev_index,
     const int rel_index,
+    const add_path_strategy add_path_func,
+    const int add_path_limit,
     int sample_count,
-    const int mp_path_limit,
     const bool is_partial
 ) {
     /* Basic sanity */
     Assert(sample_count >= 1);
-    Assert(mp_path_limit >= 1);
+    Assert(add_path_limit >= 1);
     Assert(sample_count <= DIST_MAX_SAMPLE);
 
     /* Fetch rels for this level/index */
@@ -171,14 +171,14 @@ reconsider_pathlist(
     int idx = 0;
     ListCell *lc;
     foreach(lc, cand_list) {
-        Path *p = lfirst(lc);
-        const Sample *ts = p->total_cost_sample;
+        Path *path = lfirst(lc);
+        const Sample *total_cost_sample = path->total_cost_sample;
 
         Assert(ts != NULL);
         Assert(ts->sample_count >= 0 &&
             ts->sample_count <= DIST_MAX_SAMPLE);
 
-        const int effective = Min(ts->sample_count, sample_count);
+        const int effective = Min(total_cost_sample->sample_count, sample_count);
         Assert(effective >= 0);
 
         double max_score;
@@ -186,18 +186,10 @@ reconsider_pathlist(
             /* Zero samples => make it lose */
             max_score = DBL_MAX;
         } else {
-            max_score = 0.0; /* start from 0 because score is non-negative */
-            for (int j = 0; j < effective; j++) {
-                const double cur_thresh = min_global[j] * DIST_PENALTY_FACTOR;
-                const double cur_sample = ts->sample[j];
-                const double cur_score = (cur_sample > cur_thresh) ? (cur_sample - min_global[j]) : 0.0;
-                if (cur_score > max_score) {
-                    max_score = cur_score;
-                }
-            }
+            max_score = add_path_func(NULL, total_cost_sample, min_global, effective);
         }
 
-        rank_arr[idx].path = p;
+        rank_arr[idx].path = path;
         rank_arr[idx].score = max_score;
         idx++;
     }
@@ -206,7 +198,7 @@ reconsider_pathlist(
     /* --------------------------------------------------------------------
      * Phase 2: select the global top-k (smallest score) with a fixed MAX-heap.
      * -------------------------------------------------------------------- */
-    const int k = Min(mp_path_limit, cand_count);
+    const int k = Min(add_path_limit, cand_count);
 
     int *heap_idx = palloc(sizeof(int) * Max(1, k));
     int hsize = 0;
@@ -346,9 +338,9 @@ calc_score_from_pathlist(
      * then take the minimum observed value for each sample index.
      */
     /* Choose which path list to inspect: partial or full */
-    List *candlist = is_partial ? joinrel->partial_pathlist : joinrel->pathlist;
+    List *cand_list = is_partial ? joinrel->partial_pathlist : joinrel->pathlist;
 
-    if (candlist == NULL) {
+    if (cand_list == NULL) {
         if (is_partial) {
             joinrel->score_sample_partial = NULL;
         } else {
@@ -362,7 +354,7 @@ calc_score_from_pathlist(
         min_global[j] = DBL_MAX;
 
     ListCell *lc;
-    foreach(lc, candlist) {
+    foreach(lc, cand_list) {
         const Path *p = (Path *) lfirst(lc);
         const Sample *ts = p->total_cost_sample;
 
@@ -389,19 +381,19 @@ calc_score_from_pathlist(
      * We allocate (or reuse if already allocated) the Sample struct,
      * set its length, and copy the values we just computed.
      */
-    Sample *ss;
+    Sample *score_sample;
     if (is_partial) {
         joinrel->score_sample_partial = (Sample *) palloc(sizeof(Sample));
-        ss = joinrel->score_sample_partial;
+        score_sample = joinrel->score_sample_partial;
     } else {
         joinrel->score_sample = (Sample *) palloc(sizeof(Sample));
-        ss = joinrel->score_sample;
+        score_sample = joinrel->score_sample;
     }
 
-    ss->sample_count = sample_count;
+    score_sample->sample_count = sample_count;
 
     for (int j = 0; j < sample_count; j++) {
-        ss->sample[j] = min_global[j];
+        score_sample->sample[j] = min_global[j];
     }
 
     /*

@@ -17,7 +17,7 @@
 #include "nodes/pathnodes.h"
 
 /* GUC Parameters */
-extern int mp_path_limit;
+extern int add_path_limit;
 
 /*
  * allpaths.c
