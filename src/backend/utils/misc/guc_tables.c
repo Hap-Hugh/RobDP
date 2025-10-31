@@ -3575,7 +3575,7 @@ struct config_int ConfigureNamesInt[] =
 			NULL
 		},
 		&add_path_strategy_id,
-		0, 0, 5,
+		0, 0, 1,
 		NULL, NULL, NULL
 	},
 
@@ -3586,7 +3586,7 @@ struct config_int ConfigureNamesInt[] =
 			NULL
 		},
 		&retain_path_strategy_id,
-		0, 0, 5,
+		0, 2, 5,
 		NULL, NULL, NULL
 	},
 
