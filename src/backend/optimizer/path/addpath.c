@@ -2,6 +2,7 @@
 // Created by Xuan Chen on 2025/10/18.
 // Modified by Xuan Chen on 2025/10/20.
 // Modified by Xuan Chen on 2025/10/29.
+// Modified by Xuan Chen on 2025/10/31.
 //
 
 #include "optimizer/addpath.h"
@@ -19,63 +20,20 @@ typedef struct ErrorProfile ErrorProfile;
  * Helpers
  * --------------------------------------------------------------------------*/
 
-/* Per-candidate ranking info (only penalty is relevant here). */
+/* Per-candidate ranking info (only score is relevant here). */
 typedef struct PathRank {
     Path *path;
     double score; /* vs. per-type per-sample minima */
 } PathRank;
 
-/* ---------------- Min-heap for Path* by total_cost ASC (pointer tiebreak) --- */
-
-static inline bool
-path_less_total_cost(const Path *a, const Path *b) {
-    if (a->total_cost < b->total_cost) return true;
-    if (a->total_cost > b->total_cost) return false;
-    /* deterministic pointer tiebreaker */
-    return a < b;
-}
-
-static void
-path_minheap_sift_down(Path **heap, int n, int idx) {
-    for (;;) {
-        int l = (idx << 1) + 1;
-        int r = l + 1;
-        int smallest = idx;
-
-        if (l < n && path_less_total_cost(heap[l], heap[smallest]))
-            smallest = l;
-        if (r < n && path_less_total_cost(heap[r], heap[smallest]))
-            smallest = r;
-        if (smallest == idx)
-            break;
-
-        Path *tmp = heap[smallest];
-        heap[smallest] = heap[idx];
-        heap[idx] = tmp;
-        idx = smallest;
-    }
-}
-
-static Path *
-path_minheap_pop(Path **heap, int *pn) {
-    int n = *pn;
-    Assert(n > 0);
-    Path *ret = heap[0];
-    heap[0] = heap[n - 1];
-    *pn = n - 1;
-    if (*pn > 0)
-        path_minheap_sift_down(heap, *pn, 0);
-    return ret;
-}
-
-/* --------- Fixed-size max-heap (size<=k) for PathRank indices by penalty ASC --
+/* --------- Fixed-size max-heap (size<=k) for PathRank indices by score ASC --
  * We keep the k *smallest* penalties, so top of heap is the *largest* among kept.
  * Comparator: greater(a,b) if a should be closer to root in a MAX-heap.
  * Ties broken by Path* pointer for determinism.
  */
 
-static inline bool
-rank_idx_greater_by_penalty(int ia, int ib, const PathRank *arr) {
+static bool
+rank_idx_greater_by_score(const int ia, const int ib, const PathRank *arr) {
     const PathRank *a = &arr[ia];
     const PathRank *b = &arr[ib];
     if (a->score > b->score) return true;
@@ -85,12 +43,12 @@ rank_idx_greater_by_penalty(int ia, int ib, const PathRank *arr) {
 }
 
 static void
-rankidx_maxheap_sift_up(int *heap, int idx, const PathRank *arr) {
+rank_idx_maxheap_sift_up(int *heap, int idx, const PathRank *arr) {
     while (idx > 0) {
-        int parent = (idx - 1) >> 1;
-        if (!rank_idx_greater_by_penalty(heap[idx], heap[parent], arr))
+        const int parent = (idx - 1) >> 1;
+        if (!rank_idx_greater_by_score(heap[idx], heap[parent], arr))
             break;
-        int tmp = heap[parent];
+        const int tmp = heap[parent];
         heap[parent] = heap[idx];
         heap[idx] = tmp;
         idx = parent;
@@ -98,86 +56,61 @@ rankidx_maxheap_sift_up(int *heap, int idx, const PathRank *arr) {
 }
 
 static void
-rankidx_maxheap_sift_down(int *heap, int n, int idx, const PathRank *arr) {
+rank_idx_maxheap_sift_down(int *heap, const int n, int idx, const PathRank *arr) {
     for (;;) {
-        int l = (idx << 1) + 1;
-        int r = l + 1;
+        const int l = (idx << 1) + 1;
+        const int r = l + 1;
         int largest = idx;
 
-        if (l < n && rank_idx_greater_by_penalty(heap[l], heap[largest], arr))
+        if (l < n && rank_idx_greater_by_score(heap[l], heap[largest], arr))
             largest = l;
-        if (r < n && rank_idx_greater_by_penalty(heap[r], heap[largest], arr))
+        if (r < n && rank_idx_greater_by_score(heap[r], heap[largest], arr))
             largest = r;
         if (largest == idx)
             break;
 
-        int tmp = heap[largest];
+        const int tmp = heap[largest];
         heap[largest] = heap[idx];
         heap[idx] = tmp;
         idx = largest;
     }
 }
 
-/* Push new index; if heap is full (size==k) and new item is better (smaller penalty),
+/* Push new index; if heap is full (size==k) and new item is better (smaller score),
  * replace root then sift-down. Returns current heap size (<=k).
  */
 static int
-rankidx_maxheap_push_topk(int *heap, int size, int k, int idx, const PathRank *arr) {
+rank_idx_maxheap_push_topk(int *heap, int size, int k, int idx, const PathRank *arr) {
     if (size < k) {
         heap[size] = idx;
-        rankidx_maxheap_sift_up(heap, size, arr);
+        rank_idx_maxheap_sift_up(heap, size, arr);
         return size + 1;
     }
-    /* if new candidate is better (smaller penalty) than current worst (root), replace */
-    if (rank_idx_greater_by_penalty(heap[0], idx, arr)) {
+    /* if new candidate is better (smaller score) than current worst (root), replace */
+    if (rank_idx_greater_by_score(heap[0], idx, arr)) {
         /* root worse than idx */
         heap[0] = idx;
-        rankidx_maxheap_sift_down(heap, k, 0, arr);
+        rank_idx_maxheap_sift_down(heap, k, 0, arr);
     }
     return size; /* unchanged */
-}
-
-/* Build a min-heap in O(n) from an unsorted array. */
-static void
-path_minheap_heapify(Path **heap, int n) {
-    if (n <= 1)
-        return;
-
-    /* last internal node is (n-2)/2 */
-    for (int i = (n - 2) >> 1; i >= 0; i--)
-        path_minheap_sift_down(heap, n, i);
 }
 
 /*
  * reconsider_pathlist
  *
  * From the current pathlist (normal or partial), retain at most
- * mp_path_limit paths based on a penalty metric, and discard the rest.
+ * mp_path_limit paths by the score metric and discard the rest.
  *
- * Penalty definition (per Path p):
- *
- *     penalty(p) = max_j { path_sample[j] - min_global[j]   if path_sample[j] > min_global[j] * 1.2
- *                          0.0                              otherwise }
- *
- * where:
- *   - path_sample[j]   = p->total_cost_sample->sample[j]
- *   - min_global[j]    = per-sample global minima previously computed
- *                        in calc_score_from_pathlist() and merged in
- *                        calc_final_score_from_pathlist()
- *
- * Steps:
- *   1. Compute penalties for all candidate paths.
- *   2. Keep the mp_path_limit paths with the *smallest* penalties
- *      (top-k selection via max-heap).
- *   3. Sort survivors deterministically by (penalty ASC, Path* ASC).
- *   4. Replace the rel’s {pathlist | partial_pathlist} with only those.
+ * Return value:
+ *   - A List* containing all pruned paths (NOT kept), sorted by
+ *     (score ASC, Path* ASC). If nothing is pruned, returns NIL.
  *
  * Notes:
- *   - Only first sample_count samples are considered per path.
- *   - Paths are *not* freed; only List cells of pruned paths are freed.
- *   - Requires that score_sample_final is set beforehand.
+ *   - The kept list is written back to the RelOptInfo in the same
+ *     deterministic order. Paths themselves are not freed.
+ *   - Requires score_sample_final to be set beforehand.
  */
-void
+List *
 reconsider_pathlist(
     const PlannerInfo *root,
     const int lev_index,
@@ -191,28 +124,24 @@ reconsider_pathlist(
     Assert(mp_path_limit >= 1);
     Assert(sample_count <= DIST_MAX_SAMPLE);
 
-    /*
-     * Grab the joinrel at this (lev_index, rel_index).
-     * Note: list_nth() returns a void*, cast to RelOptInfo*.
-     */
-    const RelOptInfo *joinrel_first = list_nth(root->join_rel_level_first[lev_index], rel_index);
-    RelOptInfo *joinrel = list_nth(root->join_rel_level[lev_index], rel_index);
+    /* Fetch rels for this level/index */
+    const RelOptInfo *joinrel_first =
+            (RelOptInfo *) list_nth(root->join_rel_level_first[lev_index], rel_index);
+    RelOptInfo *joinrel =
+            (RelOptInfo *) list_nth(root->join_rel_level[lev_index], rel_index);
 
-    /* Pick which candidate list to operate on based on is_partial */
-    List *candlist = is_partial
-                         ? joinrel->partial_pathlist
-                         : joinrel->pathlist;
+    /* Pick target candidate list */
+    List *cand_list = is_partial ? joinrel->partial_pathlist : joinrel->pathlist;
 
-    /* If there is nothing to consider, just bail out. */
-    const int cand_count = list_length(candlist);
-    if (cand_count <= 0)
-        return;
+    /* Nothing to do */
+    const int cand_count = list_length(cand_list);
+    if (cand_count <= 0) {
+        return NIL;
+    }
 
     /*
-     * Fetch finalized per-sample baseline scores.
-     *
-     * score_sample_final should already hold the global minima across
-     * partial and non-partial paths (set by calc_*_score functions).
+     * Fetch finalized per-sample baseline scores (global minima across
+     * partial + non-partial), already computed by calc_*_score functions.
      */
     Assert(joinrel_first->score_sample_final != NULL);
     const Sample *score_sample = joinrel_first->score_sample_final;
@@ -220,27 +149,28 @@ reconsider_pathlist(
     Assert(score_sample->sample_count >= 0 &&
         score_sample->sample_count <= DIST_MAX_SAMPLE);
 
-    /*
-     * We only compare up to sample_count samples, but also should not read
-     * more than score_sample->sample_count.
-     */
-    if (sample_count > score_sample->sample_count)
+    /* Clamp to available baseline length */
+    if (sample_count > score_sample->sample_count) {
         sample_count = score_sample->sample_count;
+    }
 
     const double *min_global = score_sample->sample;
 
     /* --------------------------------------------------------------------
      * Phase 1: build PathRank array and compute penalties vs min_global.
      *
-     * path penalty = max over j of (path_sample[j] - min_global[j])
-     * If a path has zero samples, we assign it a very large penalty
-     * so that it will likely lose.
+     * score(p) = max_j {
+     *     (v - min_global[j])   if v > min_global[j] * DIST_PENALTY_FACTOR
+     *     0.0                   otherwise
+     * }
+     *
+     * If a path has zero samples, assign a very large score.
      * -------------------------------------------------------------------- */
     PathRank *rank_arr = palloc(sizeof(PathRank) * cand_count);
 
     int idx = 0;
     ListCell *lc;
-    foreach(lc, candlist) {
+    foreach(lc, cand_list) {
         Path *p = lfirst(lc);
         const Sample *ts = p->total_cost_sample;
 
@@ -248,34 +178,33 @@ reconsider_pathlist(
         Assert(ts->sample_count >= 0 &&
             ts->sample_count <= DIST_MAX_SAMPLE);
 
-        /* Only compare up to the min of both sample counts */
         const int effective = Min(ts->sample_count, sample_count);
         Assert(effective >= 0);
 
-        double max_pen = -DBL_MAX;
-        for (int j = 0; j < effective; j++) {
-            const double threshold = min_global[j] * DIST_PENALTY_FACTOR;
-            const double v = ts->sample[j];
-
-            const double pen = (v > threshold) ? (v - min_global[j]) : 0.0;
-
-            if (pen > max_pen)
-                max_pen = pen;
+        double max_score;
+        if (effective == 0) {
+            /* Zero samples => make it lose */
+            max_score = DBL_MAX;
+        } else {
+            max_score = 0.0; /* start from 0 because score is non-negative */
+            for (int j = 0; j < effective; j++) {
+                const double cur_thresh = min_global[j] * DIST_PENALTY_FACTOR;
+                const double cur_sample = ts->sample[j];
+                const double cur_score = (cur_sample > cur_thresh) ? (cur_sample - min_global[j]) : 0.0;
+                if (cur_score > max_score) {
+                    max_score = cur_score;
+                }
+            }
         }
 
         rank_arr[idx].path = p;
-        rank_arr[idx].score = max_pen;
+        rank_arr[idx].score = max_score;
         idx++;
     }
     Assert(idx == cand_count);
 
     /* --------------------------------------------------------------------
-     * Phase 2: select the global top-k (smallest penalty).
-     *
-     * We keep only mp_path_limit paths. We use a fixed-size MAX-heap
-     * of indices into rank_arr. The heap root is always the *worst*
-     * (highest penalty) among the current kept set, so we can quickly
-     * evict it if we find a strictly better candidate.
+     * Phase 2: select the global top-k (smallest score) with a fixed MAX-heap.
      * -------------------------------------------------------------------- */
     const int k = Min(mp_path_limit, cand_count);
 
@@ -283,98 +212,103 @@ reconsider_pathlist(
     int hsize = 0;
 
     for (int i = 0; i < cand_count; i++) {
-        /*
-         * rankidx_maxheap_push_topk(heap_idx, hsize, k, i, rank_arr)
-         *
-         * Contract (expected):
-         *   - Inserts candidate index i into the "best k so far" structure.
-         *   - If size < k, just push.
-         *   - Else if rank_arr[i] is better than current worst, replace.
-         *   - Returns new heap size.
-         */
-        hsize = rankidx_maxheap_push_topk(
-            heap_idx, hsize, k, i, rank_arr
-        );
+        hsize = rank_idx_maxheap_push_topk(heap_idx, hsize, k, i, rank_arr);
     }
 
-    /*
-     * hsize should now be k (unless cand_count < k, in which case hsize
-     * == cand_count). We Assert that for sanity.
-     */
+    /* hsize should be k unless cand_count < k */
     Assert(hsize == k);
 
     /* --------------------------------------------------------------------
-     * Phase 3: determinize output order.
-     *
-     * The heap only tells us *which* k survived, not a stable ordering.
-     * We now copy those indices into an array and sort them by:
-     *     (score ASC, Path* ASC)
-     *
-     * We use insertion sort because k is typically small.
+     * Phase 3: determinize output order for winners (kept).
      * -------------------------------------------------------------------- */
     int *winners = palloc(sizeof(int) * k);
-    for (int i = 0; i < k; i++)
+    for (int i = 0; i < k; i++) {
         winners[i] = heap_idx[i];
+    }
 
+    /* insertion sort by (score ASC, Path* ASC) */
     for (int i = 1; i < k; i++) {
-        const int wi = winners[i];
-        const double ppen = rank_arr[wi].score;
-        const Path *ppth = rank_arr[wi].path;
+        const int winner_i = winners[i];
+        const double score_i = rank_arr[winner_i].score;
+        const Path *path_i = rank_arr[winner_i].path;
         int j = i - 1;
 
         while (j >= 0) {
-            const int wj = winners[j];
-            const double qpen = rank_arr[wj].score;
-            const Path *qpth = rank_arr[wj].path;
+            const int winner_j = winners[j];
+            const double score_j = rank_arr[winner_j].score;
+            const Path *path_j = rank_arr[winner_j].path;
 
-            /* compare (penalty ASC, then pointer ASC) */
-            if (ppen < qpen ||
-                (ppen == qpen && ppth < qpth)) {
+            if (score_i < score_j || (score_i == score_j && path_i < path_j)) {
                 winners[j + 1] = winners[j];
                 j--;
             } else {
                 break;
             }
         }
-        winners[j + 1] = wi;
+        winners[j + 1] = winner_i;
     }
 
-    /* --------------------------------------------------------------------
-     * Phase 4: Rebuild the candidate list to contain ONLY the winners,
-     *          in deterministic order.
-     *
-     * We create a brand-new List, append in sorted order,
-     * and free the old List nodes.
-     *
-     * IMPORTANT:
-     *   We do NOT free the Path objects themselves.
-     * -------------------------------------------------------------------- */
-    {
-        List *new_list = NIL;
-
+    /* Also compute losers (pruned) indices */
+    const int losers_cnt = cand_count - k;
+    int *losers = palloc(sizeof(int) * losers_cnt);
+    if (losers_cnt > 0) {
+        bool *selected = palloc0(sizeof(bool) * cand_count);
         for (int i = 0; i < k; i++) {
-            const PathRank rank = rank_arr[winners[i]];
-            Path *keep = rank.path;
-            keep->score = rank.score;
-            new_list = lappend(new_list, keep);
+            selected[winners[i]] = true;
         }
 
-        list_free(candlist);
-        candlist = new_list;
+        int writer = 0;
+        for (int i = 0; i < cand_count; i++) {
+            if (!selected[i]) {
+                losers[writer++] = i;
+            }
+        }
+        Assert(m == losers_cnt);
+
+        pfree(selected);
     }
 
     /* --------------------------------------------------------------------
-     * Phase 5: Write back the new trimmed list into the RelOptInfo,
-     *          and free temporaries.
+     * Phase 4: rebuild lists: kept (write back) and dropped (return).
      * -------------------------------------------------------------------- */
-    if (is_partial)
-        joinrel->partial_pathlist = candlist;
-    else
-        joinrel->pathlist = candlist;
+    List *kept_list = NIL;
+    for (int i = 0; i < k; i++) {
+        const PathRank rank = rank_arr[winners[i]];
+        Path *keep = rank.path;
+        /* optional: expose computed score on Path for later stages */
+        keep->score = rank.score;
+        kept_list = lappend(kept_list, keep);
+    }
 
+    List *dropped_list = NIL;
+    if (losers_cnt > 0) {
+        for (int i = 0; i < losers_cnt; i++) {
+            const PathRank rank = rank_arr[losers[i]];
+            Path *drop = rank.path;
+            drop->score = 0.0;
+            dropped_list = lappend(dropped_list, drop);
+        }
+    }
+
+    /* Free the old list cells; Paths are kept alive. */
+    list_free(cand_list);
+
+    /* Write back survivors */
+    if (is_partial) {
+        joinrel->partial_pathlist = kept_list;
+    } else {
+        joinrel->pathlist = kept_list;
+    }
+
+    /* --------------------------------------------------------------------
+     * Phase 5: free temporaries and return pruned paths.
+     * -------------------------------------------------------------------- */
     pfree(rank_arr);
     pfree(heap_idx);
     pfree(winners);
+    pfree(losers);
+
+    return dropped_list;
 }
 
 /*
@@ -507,8 +441,9 @@ calc_final_score_from_pathlist(
     const Sample *score_sample_partial = joinrel->score_sample_partial;
 
     /* Must have at least normal paths' score */
-    if (score_sample == NULL)
+    if (score_sample == NULL) {
         elog(ERROR, "score_sample is NULL in calc_final_score_from_pathlist");
+    }
 
     /* No partial path scores: final = deep copy of normal */
     if (score_sample_partial == NULL) {
@@ -516,8 +451,9 @@ calc_final_score_from_pathlist(
         Sample *final = palloc(sizeof(Sample));
         final->sample_count = count;
 
-        for (int j = 0; j < count; j++)
+        for (int j = 0; j < count; j++) {
             final->sample[j] = score_sample->sample[j];
+        }
 
         joinrel->score_sample_final = final;
         return;

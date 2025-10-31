@@ -11,7 +11,7 @@
 #include "optimizer/sample.h"
 #include "nodes/pg_list.h"
 
-void
+List *
 reconsider_pathlist(
     const PlannerInfo *root,
     int lev_index,
