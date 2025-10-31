@@ -179,3 +179,13 @@ calc_expected_startup_cost(
 
     return expected_startup_cost / (double) effective;
 }
+
+/* Global strategy array */
+path_score_strategy path_score_strategies[6] = {
+    calc_worst_penalty,
+    calc_expected_penalty,
+    calc_worst_total_cost,
+    calc_expected_total_cost,
+    calc_worst_startup_cost,
+    calc_expected_startup_cost
+};

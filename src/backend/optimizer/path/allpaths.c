@@ -54,6 +54,9 @@
 #include "utils/lsyscache.h"
 
 int add_path_limit = 1;
+int retain_path_limit = 1;
+int add_path_strategy_id = 0;
+int retain_path_strategy_id = 0;
 
 /* Bitmask flags for pushdown_safety_info.unsafeFlags */
 #define UNSAFE_HAS_VOLATILE_FUNC		(1 << 0)
@@ -3373,6 +3376,22 @@ standard_join_search(PlannerInfo *root, int levels_needed, List *initial_rels) {
     root->join_rel_list = NIL;
     root->join_rel_hash = NULL;
 
+    /*
+     * Pick scoring strategy for the "add path" phase.
+     * This strategy ranks newly generated candidate paths before admitting them
+     * into the main pathlist.
+     */
+    const path_score_strategy add_path_score_func =
+            path_score_strategies[add_path_strategy_id];
+
+    /*
+     * Pick scoring strategy for the "retain path" phase.
+     * This strategy ranks previously dropped paths to decide whether any
+     * should be re-inserted into the pathlist.
+     */
+    const path_score_strategy retain_path_score_func =
+            path_score_strategies[retain_path_strategy_id];
+
     for (int lev = 2; lev <= levels_needed; lev++) {
         ListCell *lc;
 
@@ -3397,25 +3416,60 @@ standard_join_search(PlannerInfo *root, int levels_needed, List *initial_rels) {
             rel = (RelOptInfo *) lfirst(lc);
             const int rel_index = foreach_current_index(lc);
 
+            /* --------------------------------------------------------------------
+             * Phase 1 (normal paths):
+             *   1. add_path_by_strategy(): pick top-K promising paths and append them
+             *      into rel->pathlist (based on `add_path_score_func`).
+             *   2. retain_path_by_strategy(): from paths we just *dropped*, try to
+             *      re-admit the next best subset (based on `retain_path_score_func`).
+             *   3. After path selection, sort final pathlist by total_cost ASC to
+             *      favor low-cost plans during subsequent DP join enumeration.
+             * -------------------------------------------------------------------- */
             List *dropped_pathlist = add_path_by_strategy(
-                root, lev, rel_index, NULL,
-                add_path_limit, error_sample_count, false
+                root, lev, rel_index,
+                add_path_score_func, /* penalty metric: add phase */
+                add_path_limit,
+                error_sample_count,
+                false /* is_partial = false */
             );
+
             dropped_pathlist = retain_path_by_strategy(
-                root, lev, rel_index, dropped_pathlist, NULL,
-                add_path_limit, error_sample_count, false
+                root, lev, rel_index,
+                dropped_pathlist,
+                retain_path_score_func, /* same metric: retain phase */
+                retain_path_limit,
+                error_sample_count,
+                false /* normal pathlist */
             );
 
+            /* Sort selected normal paths by total cost (ascending) */
+            rel->pathlist = sort_pathlist_by_total_cost(rel->pathlist);
 
+
+            /* --------------------------------------------------------------------
+             * Phase 2 (partial paths):
+             *   Same logic as above, but operating on partial_pathlist.
+             *   Partial paths are usable only for parallel planning.
+             * -------------------------------------------------------------------- */
             List *dropped_partial_pathlist = add_path_by_strategy(
-                root, lev, rel_index, NULL,
-                add_path_limit, error_sample_count, true
-            );
-            dropped_partial_pathlist = retain_path_by_strategy(
-                root, lev, rel_index, dropped_partial_pathlist, NULL,
-                add_path_limit, error_sample_count, true
+                root, lev, rel_index,
+                add_path_score_func, /* penalty metric: add partial paths */
+                add_path_limit,
+                error_sample_count,
+                true /* is_partial = true */
             );
 
+            dropped_partial_pathlist = retain_path_by_strategy(
+                root, lev, rel_index,
+                dropped_partial_pathlist,
+                retain_path_score_func, /* same metric: retain phase */
+                retain_path_limit,
+                error_sample_count,
+                true /* partial pathlist */
+            );
+
+            /* Sort selected partial paths by total cost as well */
+            rel->partial_pathlist = sort_pathlist_by_total_cost(rel->partial_pathlist);
 
             /* Create paths for partitionwise joins. */
             generate_partitionwise_join_paths(root, rel);

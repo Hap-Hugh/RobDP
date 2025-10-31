@@ -640,3 +640,59 @@ calc_final_score_from_pathlist(
 
     joinrel->score_sample_final = final;
 }
+
+/*
+ * sort_pathlist_by_total_cost
+ *
+ * Sort a Path list by total_cost in ascending order.
+ *
+ * Since pathlists are typically small (often < 50 elements),
+ * an insertion sort is used instead of list_qsort().
+ * Insertion sort has lower overhead for tiny lists and preserves
+ * stability (keeps original order on ties).
+ *
+ * Returns a new List with the same Path* pointers in sorted order.
+ */
+List *
+sort_pathlist_by_total_cost(List *pathlist) {
+    if (pathlist == NIL) {
+        return NIL;
+    }
+
+    const int n = list_length(pathlist);
+    if (n <= 1) {
+        return pathlist;
+    }
+
+    /* Copy to array for O(n^2) insertion sort */
+    Path **arr = palloc(sizeof(Path *) * n);
+
+    int i = 0;
+    ListCell *lc;
+    foreach(lc, pathlist) {
+        arr[i++] = (Path *) lfirst(lc);
+    }
+
+    /* Insertion sort by total_cost ASC */
+    for (int j = 1; j < n; j++) {
+        Path *key = arr[j];
+        const double key_cost = key->total_cost;
+        int k = j - 1;
+
+        while (k >= 0 && arr[k]->total_cost > key_cost) {
+            arr[k + 1] = arr[k];
+            k--;
+        }
+        arr[k + 1] = key;
+    }
+
+    /* Rebuild list in sorted order */
+    List *new_list = NIL;
+    for (int j = 0; j < n; j++)
+        new_list = lappend(new_list, arr[j]);
+
+    pfree(arr);
+    list_free(pathlist); /* free only list cells, not Path objects */
+
+    return new_list;
+}

@@ -3550,12 +3550,43 @@ struct config_int ConfigureNamesInt[] =
 
 	{
 		{"add_path_limit", PGC_USERSET, DEVELOPER_OPTIONS,
-			gettext_noop("Sets the maximum number of additional paths from a join relation's "
-				"additional pathlist, based on minimum score."),
+			gettext_noop("Sets the maximum number of paths that can be added, based on a given strategy."),
 			NULL
 		},
 		&add_path_limit,
 		1, 1, 16,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"retain_path_limit", PGC_USERSET, DEVELOPER_OPTIONS,
+			gettext_noop("Sets the maximum number of paths that can be retained, based on a given strategy."),
+			NULL
+		},
+		&retain_path_limit,
+		1, 0, 16,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"add_path_strategy_id", PGC_USERSET, DEVELOPER_OPTIONS,
+			gettext_noop("Selects the scoring strategy used to evaluate candidate paths "
+				"before adding them to the pathlist."),
+			NULL
+		},
+		&add_path_strategy_id,
+		0, 0, 5,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"retain_path_strategy_id", PGC_USERSET, DEVELOPER_OPTIONS,
+			gettext_noop("Selects the scoring strategy used to evaluate previously rejected paths "
+				"for possible reinsertion into the pathlist."),
+			NULL
+		},
+		&retain_path_strategy_id,
+		0, 0, 5,
 		NULL, NULL, NULL
 	},
 

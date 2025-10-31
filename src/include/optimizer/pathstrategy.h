@@ -58,4 +58,12 @@ double calc_expected_startup_cost(
     int effective
 );
 
+/*
+ * Global array of scoring strategies.
+ * Indexed [0..5].
+ *
+ * Caller can use: path_score_strategies[i](...)
+ */
+extern path_score_strategy path_score_strategies[6];
+
 #endif // PATHSTRATEGY_H

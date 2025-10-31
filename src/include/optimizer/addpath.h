@@ -47,4 +47,9 @@ calc_final_score_from_pathlist(
     RelOptInfo *joinrel
 );
 
+List *
+sort_pathlist_by_total_cost(
+    List *pathlist
+);
+
 #endif // ADDPATH_H
