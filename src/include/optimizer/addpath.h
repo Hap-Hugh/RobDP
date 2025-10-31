@@ -13,7 +13,7 @@
 
 void
 reconsider_pathlist(
-    PlannerInfo *root,
+    const PlannerInfo *root,
     int lev_index,
     int rel_index,
     int sample_count,

@@ -13,6 +13,8 @@ typedef struct ErrorProfileRaw ErrorProfileRaw;
 typedef struct ErrorSampleParams ErrorSampleParams;
 typedef struct ErrorProfile ErrorProfile;
 
+#define DIST_PENALTY_FACTOR 1.2
+
 /* ----------------------------------------------------------------------------
  * Helpers
  * --------------------------------------------------------------------------*/
@@ -149,60 +151,41 @@ path_minheap_heapify(Path **heap, int n) {
 /*
  * reconsider_pathlist
  *
- * Replace *pathlist_ptr (either normal or partial) with at most
- * mp_path_limit paths chosen from the current list.
+ * From the current pathlist (normal or partial), retain at most
+ * mp_path_limit paths based on a penalty metric, and discard the rest.
  *
- * We score/rank each Path by its "penalty":
+ * Penalty definition (per Path p):
  *
- *   penalty(p) = max_j ( sample_p[j] - min_global[j] )
+ *     penalty(p) = max_j { path_sample[j] - min_global[j]   if path_sample[j] > min_global[j] * 1.2
+ *                          0.0                              otherwise }
  *
  * where:
- *   - sample_p[j]        is p->total_cost_sample->sample[j]
- *   - min_global[j]      is the global minimum cost at sample j
- *                         that was previously computed and stored in
- *                         joinrel->score_sample_final
+ *   - path_sample[j]   = p->total_cost_sample->sample[j]
+ *   - min_global[j]    = per-sample global minima previously computed
+ *                        in calc_score_from_pathlist() and merged in
+ *                        calc_final_score_from_pathlist()
  *
- * Only the first sample_count samples are considered.
- *
- * Then:
- *   - We keep the mp_path_limit paths with the SMALLEST penalties.
- *   - For determinism, the final list is sorted by
- *          (penalty ASC, Path* ASC)
- *
- * Finally:
- *   - We rebuild the RelOptInfo's {pathlist | partial_pathlist} in
- *     that deterministic order, and discard the others.
+ * Steps:
+ *   1. Compute penalties for all candidate paths.
+ *   2. Keep the mp_path_limit paths with the *smallest* penalties
+ *      (top-k selection via max-heap).
+ *   3. Sort survivors deterministically by (penalty ASC, Path* ASC).
+ *   4. Replace the rel’s {pathlist | partial_pathlist} with only those.
  *
  * Notes:
- *   - We do NOT free the Path nodes themselves, only the List cell
- *     structure that held the losing ones.
- *   - We assume rankidx_maxheap_push_topk() exists and implements a
- *     fixed-size max-heap for "best k so far".
+ *   - Only first sample_count samples are considered per path.
+ *   - Paths are *not* freed; only List cells of pruned paths are freed.
+ *   - Requires that score_sample_final is set beforehand.
  */
 void
 reconsider_pathlist(
-    PlannerInfo *root,
-    int lev_index,
-    int rel_index,
+    const PlannerInfo *root,
+    const int lev_index,
+    const int rel_index,
     int sample_count,
-    int mp_path_limit,
-    bool is_partial
+    const int mp_path_limit,
+    const bool is_partial
 ) {
-    RelOptInfo *joinrel;
-    RelOptInfo *joinrel_first;
-    List *candlist;
-    Sample *score_sample;
-    double *min_global;
-    ListCell *lc;
-
-    PathRank *rank_arr;
-    int cand_count;
-    int idx;
-    int k;
-    int *heap_idx;
-    int hsize;
-    int *winners;
-
     /* Basic sanity */
     Assert(sample_count >= 1);
     Assert(mp_path_limit >= 1);
@@ -212,16 +195,16 @@ reconsider_pathlist(
      * Grab the joinrel at this (lev_index, rel_index).
      * Note: list_nth() returns a void*, cast to RelOptInfo*.
      */
-    joinrel_first = (RelOptInfo *) list_nth(root->join_rel_level_first[lev_index], rel_index);
-    joinrel = (RelOptInfo *) list_nth(root->join_rel_level[lev_index], rel_index);
+    const RelOptInfo *joinrel_first = list_nth(root->join_rel_level_first[lev_index], rel_index);
+    RelOptInfo *joinrel = list_nth(root->join_rel_level[lev_index], rel_index);
 
     /* Pick which candidate list to operate on based on is_partial */
-    candlist = is_partial
-                   ? joinrel->partial_pathlist
-                   : joinrel->pathlist;
+    List *candlist = is_partial
+                         ? joinrel->partial_pathlist
+                         : joinrel->pathlist;
 
     /* If there is nothing to consider, just bail out. */
-    cand_count = list_length(candlist);
+    const int cand_count = list_length(candlist);
     if (cand_count <= 0)
         return;
 
@@ -232,7 +215,7 @@ reconsider_pathlist(
      * partial and non-partial paths (set by calc_*_score functions).
      */
     Assert(joinrel_first->score_sample_final != NULL);
-    score_sample = joinrel_first->score_sample_final;
+    const Sample *score_sample = joinrel_first->score_sample_final;
 
     Assert(score_sample->sample_count >= 0 &&
         score_sample->sample_count <= DIST_MAX_SAMPLE);
@@ -244,7 +227,7 @@ reconsider_pathlist(
     if (sample_count > score_sample->sample_count)
         sample_count = score_sample->sample_count;
 
-    min_global = score_sample->sample;
+    const double *min_global = score_sample->sample;
 
     /* --------------------------------------------------------------------
      * Phase 1: build PathRank array and compute penalties vs min_global.
@@ -253,33 +236,31 @@ reconsider_pathlist(
      * If a path has zero samples, we assign it a very large penalty
      * so that it will likely lose.
      * -------------------------------------------------------------------- */
-    rank_arr = (PathRank *) palloc(sizeof(PathRank) * cand_count);
+    PathRank *rank_arr = palloc(sizeof(PathRank) * cand_count);
 
-    idx = 0;
+    int idx = 0;
+    ListCell *lc;
     foreach(lc, candlist) {
-        Path *p = (Path *) lfirst(lc);
+        Path *p = lfirst(lc);
         const Sample *ts = p->total_cost_sample;
-        int effective;
-        double max_pen;
 
         Assert(ts != NULL);
         Assert(ts->sample_count >= 0 &&
             ts->sample_count <= DIST_MAX_SAMPLE);
 
         /* Only compare up to the min of both sample counts */
-        effective = Min(ts->sample_count, sample_count);
+        const int effective = Min(ts->sample_count, sample_count);
+        Assert(effective >= 0);
 
-        if (effective <= 0) {
-            /* No samples? Penalize heavily. */
-            max_pen = DBL_MAX;
-        } else {
-            max_pen = -DBL_MAX;
+        double max_pen = -DBL_MAX;
+        for (int j = 0; j < effective; j++) {
+            const double threshold = min_global[j] * DIST_PENALTY_FACTOR;
+            const double v = ts->sample[j];
 
-            for (int j = 0; j < effective; j++) {
-                const double pen = ts->sample[j] - min_global[j];
-                if (pen > max_pen)
-                    max_pen = pen;
-            }
+            const double pen = (v > threshold) ? (v - min_global[j]) : 0.0;
+
+            if (pen > max_pen)
+                max_pen = pen;
         }
 
         rank_arr[idx].path = p;
@@ -296,10 +277,10 @@ reconsider_pathlist(
      * (highest penalty) among the current kept set, so we can quickly
      * evict it if we find a strictly better candidate.
      * -------------------------------------------------------------------- */
-    k = Min(mp_path_limit, cand_count);
+    const int k = Min(mp_path_limit, cand_count);
 
-    heap_idx = (int *) palloc(sizeof(int) * Max(1, k));
-    hsize = 0;
+    int *heap_idx = palloc(sizeof(int) * Max(1, k));
+    int hsize = 0;
 
     for (int i = 0; i < cand_count; i++) {
         /*
@@ -331,20 +312,20 @@ reconsider_pathlist(
      *
      * We use insertion sort because k is typically small.
      * -------------------------------------------------------------------- */
-    winners = (int *) palloc(sizeof(int) * k);
+    int *winners = palloc(sizeof(int) * k);
     for (int i = 0; i < k; i++)
         winners[i] = heap_idx[i];
 
     for (int i = 1; i < k; i++) {
-        int wi = winners[i];
-        double ppen = rank_arr[wi].score;
-        Path *ppth = rank_arr[wi].path;
+        const int wi = winners[i];
+        const double ppen = rank_arr[wi].score;
+        const Path *ppth = rank_arr[wi].path;
         int j = i - 1;
 
         while (j >= 0) {
-            int wj = winners[j];
-            double qpen = rank_arr[wj].score;
-            Path *qpth = rank_arr[wj].path;
+            const int wj = winners[j];
+            const double qpen = rank_arr[wj].score;
+            const Path *qpth = rank_arr[wj].path;
 
             /* compare (penalty ASC, then pointer ASC) */
             if (ppen < qpen ||
@@ -419,7 +400,7 @@ void
 calc_score_from_pathlist(
     RelOptInfo *joinrel,
     const int sample_count,
-    bool is_partial
+    const bool is_partial
 ) {
     /* Sanity check */
     Assert(sample_count >= 0 && sample_count <= DIST_MAX_SAMPLE);
@@ -531,8 +512,8 @@ calc_final_score_from_pathlist(
 
     /* No partial path scores: final = deep copy of normal */
     if (score_sample_partial == NULL) {
-        int count = score_sample->sample_count;
-        Sample *final = (Sample *) palloc(sizeof(Sample));
+        const int count = score_sample->sample_count;
+        Sample *final = palloc(sizeof(Sample));
         final->sample_count = count;
 
         for (int j = 0; j < count; j++)
@@ -552,7 +533,7 @@ calc_final_score_from_pathlist(
 
     /* Combine by per-sample minimum */
     const int count = score_sample->sample_count;
-    Sample *final = (Sample *) palloc(sizeof(Sample));
+    Sample *final = palloc(sizeof(Sample));
     final->sample_count = count;
 
     for (int j = 0; j < count; j++) {
