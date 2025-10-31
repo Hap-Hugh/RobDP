@@ -160,7 +160,7 @@ path_minheap_heapify(Path **heap, int n) {
  *   - sample_p[j]        is p->total_cost_sample->sample[j]
  *   - min_global[j]      is the global minimum cost at sample j
  *                         that was previously computed and stored in
- *                         joinrel->score_sample (or score_sample_partial)
+ *                         joinrel->score_sample_final
  *
  * Only the first sample_count samples are considered.
  *
@@ -226,22 +226,13 @@ reconsider_pathlist(
         return;
 
     /*
-     * Fetch the global minima ("baseline") for scoring.
+     * Fetch finalized per-sample baseline scores.
      *
-     * NOTE: The global minima for partial paths and non-partial
-     *       paths may differ, because they could have been computed
-     *       separately (score_sample_partial vs score_sample).
-     *
-     * We assume that calc_score_from_pathlist() was already called
-     * to populate these.
+     * score_sample_final should already hold the global minima across
+     * partial and non-partial paths (set by calc_*_score functions).
      */
-    if (is_partial) {
-        Assert(joinrel_first->score_sample_partial != NULL);
-        score_sample = joinrel_first->score_sample_partial;
-    } else {
-        Assert(joinrel_first->score_sample != NULL);
-        score_sample = joinrel_first->score_sample;
-    }
+    Assert(joinrel_first->score_sample_final != NULL);
+    score_sample = joinrel_first->score_sample_final;
 
     Assert(score_sample->sample_count >= 0 &&
         score_sample->sample_count <= DIST_MAX_SAMPLE);
@@ -430,11 +421,6 @@ calc_score_from_pathlist(
     const int sample_count,
     bool is_partial
 ) {
-    List *candlist;
-    ListCell *lc;
-    double *min_global;
-    Sample *ss;
-
     /* Sanity check */
     Assert(sample_count >= 0 && sample_count <= DIST_MAX_SAMPLE);
 
@@ -444,30 +430,39 @@ calc_score_from_pathlist(
      * Initialize an array of length sample_count to DBL_MAX,
      * then take the minimum observed value for each sample index.
      */
-    min_global = (double *) palloc(sizeof(double) * sample_count);
+    /* Choose which path list to inspect: partial or full */
+    List *candlist = is_partial ? joinrel->partial_pathlist : joinrel->pathlist;
+
+    if (candlist == NULL) {
+        if (is_partial) {
+            joinrel->score_sample_partial = NULL;
+        } else {
+            joinrel->score_sample = NULL;
+        }
+        return;
+    }
+
+    double *min_global = palloc(sizeof(double) * sample_count);
     for (int j = 0; j < sample_count; j++)
         min_global[j] = DBL_MAX;
 
-    /* Choose which path list to inspect: partial or full */
-    candlist = is_partial ? joinrel->partial_pathlist : joinrel->pathlist;
-
+    ListCell *lc;
     foreach(lc, candlist) {
-        Path *p = (Path *) lfirst(lc);
+        const Path *p = (Path *) lfirst(lc);
         const Sample *ts = p->total_cost_sample;
-        int effective;
 
         Assert(ts != NULL);
-        Assert(ts->sample_count >= 0 &&
-            ts->sample_count <= DIST_MAX_SAMPLE);
+        Assert(ts->sample_count >= 0 && ts->sample_count <= DIST_MAX_SAMPLE);
 
         /* Only compare up to the smaller of ts->sample_count and sample_count */
-        effective = Min(ts->sample_count, sample_count);
+        const int effective = Min(ts->sample_count, sample_count);
 
         for (int j = 0; j < effective; j++) {
             const double v = ts->sample[j];
 
-            if (v < min_global[j])
+            if (v < min_global[j]) {
                 min_global[j] = v;
+            }
         }
     }
 
@@ -479,20 +474,20 @@ calc_score_from_pathlist(
      * We allocate (or reuse if already allocated) the Sample struct,
      * set its length, and copy the values we just computed.
      */
+    Sample *ss;
     if (is_partial) {
-        if (joinrel->score_sample_partial == NULL)
-            joinrel->score_sample_partial = (Sample *) palloc(sizeof(Sample));
+        joinrel->score_sample_partial = (Sample *) palloc(sizeof(Sample));
         ss = joinrel->score_sample_partial;
     } else {
-        if (joinrel->score_sample == NULL)
-            joinrel->score_sample = (Sample *) palloc(sizeof(Sample));
+        joinrel->score_sample = (Sample *) palloc(sizeof(Sample));
         ss = joinrel->score_sample;
     }
 
     ss->sample_count = sample_count;
 
-    for (int j = 0; j < sample_count; j++)
+    for (int j = 0; j < sample_count; j++) {
         ss->sample[j] = min_global[j];
+    }
 
     /*
      * Cleanup:
@@ -501,4 +496,70 @@ calc_score_from_pathlist(
      * is short-lived, but it's good hygiene.
      */
     pfree(min_global);
+}
+
+/*
+ * calc_final_score_from_pathlist
+ *
+ * Combine per-sample cost scores from:
+ *   - joinrel->score_sample          (normal paths)
+ *   - joinrel->score_sample_partial  (partial paths), if any
+ *
+ * If no partial score exists, simply use score_sample as the final result.
+ * Otherwise, for each sample index j, take the minimum of:
+ *   score_sample->sample[j]
+ *   score_sample_partial->sample[j]
+ *
+ * Preconditions:
+ *   - score_sample != NULL
+ *   - If score_sample_partial exists, both sample arrays must have
+ *     the same positive sample_count.
+ *
+ * Output:
+ *   - joinrel->score_sample_final
+ */
+void
+calc_final_score_from_pathlist(
+    RelOptInfo *joinrel
+) {
+    const Sample *score_sample = joinrel->score_sample;
+    const Sample *score_sample_partial = joinrel->score_sample_partial;
+
+    /* Must have at least normal paths' score */
+    if (score_sample == NULL)
+        elog(ERROR, "score_sample is NULL in calc_final_score_from_pathlist");
+
+    /* No partial path scores: final = deep copy of normal */
+    if (score_sample_partial == NULL) {
+        int count = score_sample->sample_count;
+        Sample *final = (Sample *) palloc(sizeof(Sample));
+        final->sample_count = count;
+
+        for (int j = 0; j < count; j++)
+            final->sample[j] = score_sample->sample[j];
+
+        joinrel->score_sample_final = final;
+        return;
+    }
+
+    /* Sanity checks for partial scores */
+    if (score_sample->sample_count <= 0 ||
+        score_sample_partial->sample_count <= 0 ||
+        score_sample->sample_count != score_sample_partial->sample_count) {
+        elog(ERROR, "inconsistent sample_count: normal=%d partial=%d",
+             score_sample->sample_count, score_sample_partial->sample_count);
+    }
+
+    /* Combine by per-sample minimum */
+    const int count = score_sample->sample_count;
+    Sample *final = (Sample *) palloc(sizeof(Sample));
+    final->sample_count = count;
+
+    for (int j = 0; j < count; j++) {
+        const double v1 = score_sample->sample[j];
+        const double v2 = score_sample_partial->sample[j];
+        final->sample[j] = (v1 < v2) ? v1 : v2;
+    }
+
+    joinrel->score_sample_final = final;
 }

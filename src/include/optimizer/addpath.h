@@ -28,4 +28,9 @@ calc_score_from_pathlist(
     bool is_partial
 );
 
+void
+calc_final_score_from_pathlist(
+    RelOptInfo *joinrel
+);
+
 #endif // ADDPATH_H

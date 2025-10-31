@@ -7192,7 +7192,6 @@ apply_scanjoin_target_to_paths(PlannerInfo *root,
      */
     foreach(lc, rel->pathlist) {
         Path *subpath = (Path *) lfirst(lc);
-        elog(LOG, "[subtest] %.3f", subpath->score);
 
         /* Shouldn't have any parameterized paths anymore */
         Assert(subpath->param_info == NULL);
@@ -7209,10 +7208,14 @@ apply_scanjoin_target_to_paths(PlannerInfo *root,
         }
     }
 
+    foreach(lc, rel->pathlist) {
+        const Path *subpath = lfirst(lc);
+        elog(LOG, "[subtest] %.3f", subpath->score);
+    }
+
     /* Likewise adjust the targets for any partial paths. */
     foreach(lc, rel->partial_pathlist) {
         Path *subpath = (Path *) lfirst(lc);
-        elog(LOG, "[subtest] %.3f", subpath->score);
 
         /* Shouldn't have any parameterized paths anymore */
         Assert(subpath->param_info == NULL);
@@ -7227,6 +7230,11 @@ apply_scanjoin_target_to_paths(PlannerInfo *root,
                                                       scanjoin_target);
             lfirst(lc) = newpath;
         }
+    }
+
+    foreach(lc, rel->partial_pathlist) {
+        const Path *subpath = lfirst(lc);
+        elog(LOG, "[subtest] %.3f", subpath->score);
     }
 
     /*

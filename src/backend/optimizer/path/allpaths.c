@@ -3327,6 +3327,7 @@ standard_join_search(PlannerInfo *root, int levels_needed, List *initial_rels) {
 
             calc_score_from_pathlist(rel, error_sample_count, false);
             calc_score_from_pathlist(rel, error_sample_count, true);
+            calc_final_score_from_pathlist(rel);
 
             /* Create paths for partitionwise joins. */
             generate_partitionwise_join_paths(root, rel);
@@ -3361,7 +3362,7 @@ standard_join_search(PlannerInfo *root, int levels_needed, List *initial_rels) {
 
     foreach(lc_final, rel->partial_pathlist) {
         const Path *path = lfirst(lc_final);
-        elog(LOG, "[1-pass] [final rel] [path %d] [pathtype %d] "
+        elog(LOG, "[1-pass] [final rel] [partial path %d] [pathtype %d] "
              "[startup cost %.3f] [total cost %.3f] [score %.3f]",
              foreach_current_index(lc_final), path->pathtype,
              path->startup_cost, path->total_cost, path->score);
@@ -3447,7 +3448,7 @@ standard_join_search(PlannerInfo *root, int levels_needed, List *initial_rels) {
 
     foreach(lc_final, rel->partial_pathlist) {
         const Path *path = lfirst(lc_final);
-        elog(LOG, "[2-pass] [final rel] [path %d] [pathtype %d] "
+        elog(LOG, "[2-pass] [final rel] [partial path %d] [pathtype %d] "
              "[startup cost %.3f] [total cost %.3f] [score %.3f]",
              foreach_current_index(lc_final), path->pathtype,
              path->startup_cost, path->total_cost, path->score);
