@@ -167,25 +167,31 @@ add_path_by_strategy(
     ListCell *lc;
     foreach(lc, cand_list) {
         Path *path = lfirst(lc);
+        const Sample *startup_cost_sample = path->startup_cost_sample;
         const Sample *total_cost_sample = path->total_cost_sample;
+
+        Assert(startup_cost_sample != NULL);
+        Assert(startup_cost_sample->sample_count >= 0 &&
+            startup_cost_sample->sample_count <= DIST_MAX_SAMPLE);
 
         Assert(total_cost_sample != NULL);
         Assert(total_cost_sample->sample_count >= 0 &&
             total_cost_sample->sample_count <= DIST_MAX_SAMPLE);
 
-        const int effective = Min(total_cost_sample->sample_count, sample_count);
+        int effective = Min(startup_cost_sample->sample_count, total_cost_sample->sample_count);
+        effective = Min(effective, sample_count);
         Assert(effective >= 0);
 
-        double max_score;
+        double score_val;
         if (effective == 0) {
-            /* Zero samples => make it lose */
-            max_score = DBL_MAX;
+            /* No samples => automatically worst */
+            score_val = DBL_MAX;
         } else {
-            max_score = add_path_func(NULL, total_cost_sample, min_global, effective);
+            score_val = add_path_func(startup_cost_sample, total_cost_sample, min_global, effective);
         }
 
         rank_arr[idx].path = path;
-        rank_arr[idx].score = max_score;
+        rank_arr[idx].score = score_val;
         idx++;
     }
     Assert(idx == cand_count);
@@ -362,13 +368,19 @@ retain_path_by_strategy(
     ListCell *lc;
     foreach(lc, cand_list) {
         Path *path = lfirst(lc);
+        const Sample *startup_cost_sample = path->startup_cost_sample;
         const Sample *total_cost_sample = path->total_cost_sample;
+
+        Assert(startup_cost_sample != NULL);
+        Assert(startup_cost_sample->sample_count >= 0 &&
+            startup_cost_sample->sample_count <= DIST_MAX_SAMPLE);
 
         Assert(total_cost_sample != NULL);
         Assert(total_cost_sample->sample_count >= 0 &&
             total_cost_sample->sample_count <= DIST_MAX_SAMPLE);
 
-        const int effective = Min(total_cost_sample->sample_count, sample_count);
+        int effective = Min(startup_cost_sample->sample_count, total_cost_sample->sample_count);
+        effective = Min(effective, sample_count);
         Assert(effective >= 0);
 
         double score_val;
@@ -376,8 +388,7 @@ retain_path_by_strategy(
             /* No samples => automatically worst */
             score_val = DBL_MAX;
         } else {
-            /* Startup sample not used yet => NULL */
-            score_val = retain_path_func(NULL, total_cost_sample, min_global, effective);
+            score_val = retain_path_func(startup_cost_sample, total_cost_sample, min_global, effective);
         }
 
         rank_arr[idx].path = path;
