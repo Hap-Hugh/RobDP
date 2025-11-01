@@ -3276,7 +3276,7 @@ make_rel_from_joinlist(PlannerInfo *root, List *joinlist) {
  * original states of those data structures.  See geqo_eval() for an example.
  */
 RelOptInfo *
-standard_join_search(PlannerInfo *root, int levels_needed, List *initial_rels) {
+standard_join_search(PlannerInfo *root, const int levels_needed, List *initial_rels) {
     /*
      * This function cannot be invoked recursively within any one planning
      * problem, so join_rel_level[] can't be in use already.
@@ -3294,66 +3294,87 @@ standard_join_search(PlannerInfo *root, int levels_needed, List *initial_rels) {
      * set root->join_rel_level[1] to represent all the single-jointree-item
      * relations.
      */
-    List **join_rel_level_first = (List **) palloc0((levels_needed + 1) * sizeof(List *));
-    List **join_rel_level_second = (List **) palloc0((levels_needed + 1) * sizeof(List *));
-    join_rel_level_first[1] = initial_rels;
-    join_rel_level_second[1] = initial_rels;
+    List *saved_join_rel_levels = NIL;
 
     /* The first pass -- we would like to find out the minimum expected total cost vector. */
     root->pass = 1;
-    root->join_rel_level = join_rel_level_first;
+    root->join_rel_level = NULL;
+    root->join_rel_level_first = NULL;
 
-    for (int lev = 2; lev <= levels_needed; lev++) {
-        ListCell *lc;
+    Assert(error_sample_count >= 1);
 
-        /*
-         * Determine all possible pairs of relations to be joined at this
-         * level, and build paths for making each one from every available
-         * pair of lower-level relations.
-         */
-        join_search_one_level(root, lev);
+    for (int round = 0; round < error_sample_count; ++round) {
+        /* Each round samples a different cost-estimation scenario */
+        root->round = round;
 
-        /*
-         * Run generate_partitionwise_join_paths() and
-         * generate_useful_gather_paths() for each just-processed joinrel.  We
-         * could not do this earlier because both regular and partial paths
-         * can get added to a particular joinrel at multiple times within
-         * join_search_one_level.
-         *
-         * After that, we're done creating paths for the joinrel, so run
-         * set_cheapest().
-         */
-        foreach(lc, root->join_rel_level[lev]) {
-            RelOptInfo *rel = lfirst(lc);
+        /* Allocate per-round join_rel storage (indexed by join level) */
+        root->join_rel_level = palloc0((levels_needed + 1) * sizeof(List *));
+        root->join_rel_level[1] = initial_rels;
+        root->join_rel_list = NIL;
+        root->join_rel_hash = NULL;
 
-            calc_score_from_pathlist(rel, error_sample_count, false);
-            calc_score_from_pathlist(rel, error_sample_count, true);
-            calc_final_score_from_pathlist(rel);
+        /* Record this round's join_rel state for later envelope reduction */
+        saved_join_rel_levels = lappend(saved_join_rel_levels, root->join_rel_level);
 
-            /* Create paths for partitionwise joins. */
-            generate_partitionwise_join_paths(root, rel);
+        for (int lev = 2; lev <= levels_needed; ++lev) {
+            ListCell *lc;
 
             /*
-             * Except for the topmost scan/join rel, consider gathering
-             * partial paths.  We'll do the same for the topmost scan/join rel
-             * once we know the final targetlist (see grouping_planner).
+             * Enumerate join rels at this level and build paths for them.
+             * (Classic dynamic-programming join search)
              */
-            if (!bms_equal(rel->relids, root->all_query_rels))
-                generate_useful_gather_paths(root, rel, false);
+            join_search_one_level(root, lev);
 
-            /* Find and save the cheapest paths for this rel */
-            set_cheapest(rel);
+            /*
+             * Now add partitionwise paths, gather paths, and pick cheapest
+             * paths for each joinrel at this level.
+             */
+            foreach(lc, root->join_rel_level[lev]) {
+                RelOptInfo *rel = lfirst(lc);
+
+                /* Compute per-round cost samples for this rel */
+                calc_score_from_pathlist(rel, error_sample_count, false);
+                calc_score_from_pathlist(rel, error_sample_count, true);
+                calc_final_score_from_pathlist(rel);
+
+                /* Add partition-wise join paths (if applicable) */
+                generate_partitionwise_join_paths(root, rel);
+
+                /*
+                 * Add gather paths for partial plans except for the final joinrel.
+                 * (final handling happens later in grouping_planner)
+                 */
+                if (!bms_equal(rel->relids, root->all_query_rels)) {
+                    generate_useful_gather_paths(root, rel, false);
+                }
+
+                /* Select the cheapest paths now that all are built */
+                set_cheapest(rel);
 
 #ifdef OPTIMIZER_DEBUG
-            debug_print_rel(root, rel);
+                debug_print_rel(root, rel);
 #endif
+            }
         }
     }
 
-    RelOptInfo *rel = linitial(root->join_rel_level[levels_needed]);
+
+    /* Ensure we have exactly `round` saved snapshots before reduction */
+    Assert(round == list_length(saved_join_rel_levels));
+    /*
+     * Compute the minimum-envelope across all saved join_rel snapshots.
+     * The first snapshot is updated in-place and returned.
+     */
+    List **min_envelope = calc_minimum_envelope(
+        saved_join_rel_levels,
+        error_sample_count,
+        levels_needed
+    );
+
+    RelOptInfo *final_rel = linitial(root->join_rel_level[levels_needed]);
 
     ListCell *lc_final;
-    foreach(lc_final, rel->pathlist) {
+    foreach(lc_final, final_rel->pathlist) {
         const Path *path = lfirst(lc_final);
         elog(LOG, "[1-pass] [final rel] [path %d] [pathtype %d] "
              "[startup cost %.3f] [total cost %.3f] [score %.3f]",
@@ -3361,7 +3382,7 @@ standard_join_search(PlannerInfo *root, int levels_needed, List *initial_rels) {
              path->startup_cost, path->total_cost, path->score);
     }
 
-    foreach(lc_final, rel->partial_pathlist) {
+    foreach(lc_final, final_rel->partial_pathlist) {
         const Path *path = lfirst(lc_final);
         elog(LOG, "[1-pass] [final rel] [partial path %d] [pathtype %d] "
              "[startup cost %.3f] [total cost %.3f] [score %.3f]",
@@ -3371,8 +3392,10 @@ standard_join_search(PlannerInfo *root, int levels_needed, List *initial_rels) {
 
     /* The second pass -- we would like to calculated penalty based on previous results. */
     root->pass = 2;
-    root->join_rel_level = join_rel_level_second;
-    root->join_rel_level_first = join_rel_level_first;
+    root->round = -1;
+    root->join_rel_level = palloc0((levels_needed + 1) * sizeof(List *));
+    root->join_rel_level_first = min_envelope;
+    root->join_rel_level[1] = initial_rels;
     root->join_rel_list = NIL;
     root->join_rel_hash = NULL;
 
@@ -3413,7 +3436,7 @@ standard_join_search(PlannerInfo *root, int levels_needed, List *initial_rels) {
          * set_cheapest().
          */
         foreach(lc, root->join_rel_level[lev]) {
-            rel = (RelOptInfo *) lfirst(lc);
+            RelOptInfo *rel = lfirst(lc);
             const int rel_index = foreach_current_index(lc);
 
             /* --------------------------------------------------------------------
@@ -3491,18 +3514,18 @@ standard_join_search(PlannerInfo *root, int levels_needed, List *initial_rels) {
 #endif
         }
     }
-    root->pass = 3;
 
     /*
      * We should have a single rel at the final level.
      */
-    if (root->join_rel_level[levels_needed] == NIL)
+    if (root->join_rel_level[levels_needed] == NIL) {
         elog(ERROR, "failed to build any %d-way joins", levels_needed);
+    }
     Assert(list_length(root->join_rel_level[levels_needed]) == 1);
 
-    rel = (RelOptInfo *) linitial(root->join_rel_level[levels_needed]);
+    final_rel = (RelOptInfo *) linitial(root->join_rel_level[levels_needed]);
 
-    foreach(lc_final, rel->pathlist) {
+    foreach(lc_final, final_rel->pathlist) {
         const Path *path = lfirst(lc_final);
         elog(LOG, "[2-pass] [final rel] [path %d] [pathtype %d] "
              "[startup cost %.3f] [total cost %.3f] [score %.3f]",
@@ -3510,7 +3533,7 @@ standard_join_search(PlannerInfo *root, int levels_needed, List *initial_rels) {
              path->startup_cost, path->total_cost, path->score);
     }
 
-    foreach(lc_final, rel->partial_pathlist) {
+    foreach(lc_final, final_rel->partial_pathlist) {
         const Path *path = lfirst(lc_final);
         elog(LOG, "[2-pass] [final rel] [partial path %d] [pathtype %d] "
              "[startup cost %.3f] [total cost %.3f] [score %.3f]",
@@ -3518,9 +3541,10 @@ standard_join_search(PlannerInfo *root, int levels_needed, List *initial_rels) {
              path->startup_cost, path->total_cost, path->score);
     }
 
+    root->pass = 3;
     root->join_rel_level = NULL;
 
-    return rel;
+    return final_rel;
 }
 
 /*****************************************************************************

@@ -531,8 +531,9 @@ calc_score_from_pathlist(
     }
 
     double *min_global = palloc(sizeof(double) * sample_count);
-    for (int j = 0; j < sample_count; j++)
+    for (int j = 0; j < sample_count; j++) {
         min_global[j] = DBL_MAX;
+    }
 
     ListCell *lc;
     foreach(lc, cand_list) {
@@ -655,6 +656,81 @@ calc_final_score_from_pathlist(
 }
 
 /*
+ * calc_minimum_envelope
+ *
+ * Given a List of snapshots of join_rel levels (each element is a List**,
+ * indexed by level), compute the elementwise minimum across snapshots of
+ * the samples stored in RelOptInfo->score_sample_final->sample.
+ *
+ * The first snapshot in saved_join_rel_levels is used as the initial
+ * envelope and is updated in-place; the function returns that same pointer.
+ *
+ * Assumptions:
+ * - saved_join_rel_levels is non-NIL; each element is a List** with at
+ *   least levels_needed+1 entries.
+ * - For every level in [2, levels_needed], corresponding per-level lists
+ *   have the same order and intended 1:1 correspondence.
+ * - rel->score_sample_final is non-NULL and has sample_count elements;
+ *   all snapshots agree on sample_count.
+ *
+ * Complexity:
+ *   O(M * L * N * S), where M = number of snapshots,
+ *   L = number of levels processed, N = rels per level,
+ *   S = sample_count.
+ *
+ * Note:
+ * - Because the result is written back into the first snapshot (min_envelope),
+ *   callers that need to preserve it must copy beforehand.
+ * - The loop iterates over the first snapshot too; this is harmless since
+ *   min(x, x) == x.
+ */
+List **
+calc_minimum_envelope(
+    List *saved_join_rel_levels,
+    const int sample_count,
+    const int levels_needed
+) {
+    ListCell *lc, *lc1, *lc2;
+    /* Use the first snapshot as the initial (and final) envelope; updated in-place. */
+    List **min_envelope = linitial(saved_join_rel_levels);
+
+    /* Iterate over every saved snapshot of per-level join_rel lists. */
+    foreach(lc, saved_join_rel_levels) {
+        List **cur_saved_join_rel_level = lfirst(lc);
+
+        /* By convention, levels 0/1 are base rels; start from level 2. */
+        for (int lev = 2; lev <= levels_needed; ++lev) {
+            /*
+             * Pairwise walk the lists at the same level in the current snapshot
+             * and in the running minimum envelope. Assumes identical ordering.
+             * If lengths differ, forboth stops at the shorter list.
+             */
+            forboth(lc1, cur_saved_join_rel_level[lev], lc2, min_envelope[lev]) {
+                const RelOptInfo *cur_rel = lfirst(lc1);
+                const RelOptInfo *min_rel = lfirst(lc2);
+
+                const Sample *cur_rel_sample = cur_rel->score_sample_final;
+                Sample *min_rel_sample = min_rel->score_sample_final;
+
+                /* All samples must agree on the number of points. */
+                Assert(cur_rel_sample->sample_count == sample_count);
+                Assert(min_rel_sample->sample_count == sample_count);
+
+                const double *cur_sample_raw = cur_rel_sample->sample;
+                double *min_sample_raw = min_rel_sample->sample;
+
+                /* Elementwise minimum: write back into the envelope. */
+                for (int i = 0; i < sample_count; ++i) {
+                    min_sample_raw[i] = Min(cur_sample_raw[i], min_sample_raw[i]);
+                }
+            }
+        }
+    }
+    /* Return the first snapshot pointer, now containing the minimum envelope. */
+    return min_envelope;
+}
+
+/*
  * sort_pathlist_by_total_cost
  *
  * Sort a Path list by total_cost in ascending order.
@@ -701,8 +777,9 @@ sort_pathlist_by_total_cost(List *pathlist) {
 
     /* Rebuild list in sorted order */
     List *new_list = NIL;
-    for (int j = 0; j < n; j++)
+    for (int j = 0; j < n; j++) {
         new_list = lappend(new_list, arr[j]);
+    }
 
     pfree(arr);
     list_free(pathlist); /* free only list cells, not Path objects */
