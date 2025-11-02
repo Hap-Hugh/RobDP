@@ -585,6 +585,18 @@ static void cost_rescan(
     }
 }
 
+static double get_path_rows_sample(
+    const Path *path,
+    const int round
+) {
+    if ((IsA(path, SeqScan) || IsA(path, IndexScan)) &&
+        path->rows_sample->sample_count != 1) {
+        Assert(outer_path->rows_sample->sample_count == error_sample_count);
+        return path->rows_sample->sample[round];
+    }
+    return path->rows;
+}
+
 void initial_cost_nestloop_1p(
     PlannerInfo *root,
     JoinCostWorkspace *workspace,
@@ -595,19 +607,12 @@ void initial_cost_nestloop_1p(
 ) {
     Cost startup_cost = 0;
     Cost run_cost = 0;
-    double outer_path_rows;
     /*
      * Use per-round sampled row estimates for base scan paths (Seq/Index).
      * In single-sample mode (sample_count == 1) or non-scan paths,
      * fall back to the planner's deterministic row estimate.
      */
-    if ((IsA(outer_path, SeqScan) || IsA(outer_path, IndexScan)) &&
-        outer_path->rows_sample->sample_count != 1) {
-        Assert(outer_path->rows_sample->sample_count == error_sample_count);
-        outer_path_rows = outer_path->rows_sample->sample[root->round];
-    } else {
-        outer_path_rows = outer_path->rows;
-    }
+    const double outer_path_rows = get_path_rows_sample(outer_path, root->round);
 
     Cost inner_rescan_start_cost;
     Cost inner_rescan_total_cost;
@@ -672,31 +677,17 @@ void final_cost_nestloop_1p(
 ) {
     Path *outer_path = path->jpath.outerjoinpath;
     Path *inner_path = path->jpath.innerjoinpath;
-    double outer_path_rows;
-    double inner_path_rows;
     /*
      * Use per-round sampled row estimates for base scan paths (Seq/Index).
      * In single-sample mode (sample_count == 1) or non-scan paths,
      * fall back to the planner's deterministic row estimate.
      */
-    if ((IsA(outer_path, SeqScan) || IsA(outer_path, IndexScan)) &&
-        outer_path->rows_sample->sample_count != 1) {
-        Assert(outer_path->rows_sample->sample_count == error_sample_count);
-        outer_path_rows = outer_path->rows_sample->sample[root->round];
-    } else {
-        outer_path_rows = outer_path->rows;
-    }
+    double outer_path_rows = get_path_rows_sample(outer_path, root->round);
     /*
      * Same logic for inner path. Use sampled rows only for scan paths
      * when running in multi-sample mode.
      */
-    if ((IsA(inner_path, SeqScan) || IsA(inner_path, IndexScan)) &&
-        inner_path->rows_sample->sample_count != 1) {
-        Assert(inner_path->rows_sample->sample_count == error_sample_count);
-        inner_path_rows = inner_path->rows_sample->sample[root->round];
-    } else {
-        inner_path_rows = inner_path->rows;
-    }
+    double inner_path_rows = get_path_rows_sample(inner_path, root->round);
 
     Cost startup_cost = workspace->startup_cost;
     Cost run_cost = workspace->run_cost;
@@ -871,31 +862,17 @@ void initial_cost_mergejoin_1p(
 ) {
     Cost startup_cost = 0;
     Cost run_cost = 0;
-    double outer_path_rows;
-    double inner_path_rows;
     /*
      * Use per-round sampled row estimates for base scan paths (Seq/Index).
      * In single-sample mode (sample_count == 1) or non-scan paths,
      * fall back to the planner's deterministic row estimate.
      */
-    if ((IsA(outer_path, SeqScan) || IsA(outer_path, IndexScan)) &&
-        outer_path->rows_sample->sample_count != 1) {
-        Assert(outer_path->rows_sample->sample_count == error_sample_count);
-        outer_path_rows = outer_path->rows_sample->sample[root->round];
-    } else {
-        outer_path_rows = outer_path->rows;
-    }
+    double outer_path_rows = get_path_rows_sample(outer_path, root->round);
     /*
      * Same logic for inner path. Use sampled rows only for scan paths
      * when running in multi-sample mode.
      */
-    if ((IsA(inner_path, SeqScan) || IsA(inner_path, IndexScan)) &&
-        inner_path->rows_sample->sample_count != 1) {
-        Assert(inner_path->rows_sample->sample_count == error_sample_count);
-        inner_path_rows = inner_path->rows_sample->sample[root->round];
-    } else {
-        inner_path_rows = inner_path->rows;
-    }
+    double inner_path_rows = get_path_rows_sample(inner_path, root->round);
 
     Cost inner_run_cost;
     double outer_rows,
@@ -1084,19 +1061,12 @@ void final_cost_mergejoin_1p(
 ) {
     Path *outer_path = path->jpath.outerjoinpath;
     Path *inner_path = path->jpath.innerjoinpath;
-    double inner_path_rows;
     /*
      * Use per-round sampled row estimates for base scan paths (Seq/Index).
      * In single-sample mode (sample_count == 1) or non-scan paths,
      * fall back to the planner's deterministic row estimate.
      */
-    if ((IsA(inner_path, SeqScan) || IsA(inner_path, IndexScan)) &&
-        inner_path->rows_sample->sample_count != 1) {
-        Assert(inner_path->rows_sample->sample_count == error_sample_count);
-        inner_path_rows = inner_path->rows_sample->sample[root->round];
-    } else {
-        inner_path_rows = inner_path->rows;
-    }
+    double inner_path_rows = get_path_rows_sample(inner_path, root->round);
 
     List *mergeclauses = path->path_mergeclauses;
     List *innersortkeys = path->innersortkeys;
@@ -1346,31 +1316,17 @@ void initial_cost_hashjoin_1p(
 ) {
     Cost startup_cost = 0;
     Cost run_cost = 0;
-    double outer_path_rows;
-    double inner_path_rows;
     /*
      * Use per-round sampled row estimates for base scan paths (Seq/Index).
      * In single-sample mode (sample_count == 1) or non-scan paths,
      * fall back to the planner's deterministic row estimate.
      */
-    if ((IsA(outer_path, SeqScan) || IsA(outer_path, IndexScan)) &&
-        outer_path->rows_sample->sample_count != 1) {
-        Assert(outer_path->rows_sample->sample_count == error_sample_count);
-        outer_path_rows = outer_path->rows_sample->sample[root->round];
-    } else {
-        outer_path_rows = outer_path->rows;
-    }
+    const double outer_path_rows = get_path_rows_sample(outer_path, root->round);
     /*
      * Same logic for inner path. Use sampled rows only for scan paths
      * when running in multi-sample mode.
      */
-    if ((IsA(inner_path, SeqScan) || IsA(inner_path, IndexScan)) &&
-        inner_path->rows_sample->sample_count != 1) {
-        Assert(inner_path->rows_sample->sample_count == error_sample_count);
-        inner_path_rows = inner_path->rows_sample->sample[root->round];
-    } else {
-        inner_path_rows = inner_path->rows;
-    }
+    const double inner_path_rows = get_path_rows_sample(inner_path, root->round);
 
     double inner_path_rows_total = inner_path_rows;
     int num_hashclauses = list_length(hashclauses);
@@ -1466,31 +1422,17 @@ void final_cost_hashjoin_1p(
 ) {
     Path *outer_path = path->jpath.outerjoinpath;
     Path *inner_path = path->jpath.innerjoinpath;
-    double outer_path_rows;
-    double inner_path_rows;
     /*
      * Use per-round sampled row estimates for base scan paths (Seq/Index).
      * In single-sample mode (sample_count == 1) or non-scan paths,
      * fall back to the planner's deterministic row estimate.
      */
-    if ((IsA(outer_path, SeqScan) || IsA(outer_path, IndexScan)) &&
-        outer_path->rows_sample->sample_count != 1) {
-        Assert(outer_path->rows_sample->sample_count == error_sample_count);
-        outer_path_rows = outer_path->rows_sample->sample[root->round];
-    } else {
-        outer_path_rows = outer_path->rows;
-    }
+    const double outer_path_rows = get_path_rows_sample(outer_path, root->round);
     /*
      * Same logic for inner path. Use sampled rows only for scan paths
      * when running in multi-sample mode.
      */
-    if ((IsA(inner_path, SeqScan) || IsA(inner_path, IndexScan)) &&
-        inner_path->rows_sample->sample_count != 1) {
-        Assert(inner_path->rows_sample->sample_count == error_sample_count);
-        inner_path_rows = inner_path->rows_sample->sample[root->round];
-    } else {
-        inner_path_rows = inner_path->rows;
-    }
+    const double inner_path_rows = get_path_rows_sample(inner_path, root->round);
 
     double inner_path_rows_total = workspace->inner_rows_total;
     List *hashclauses = path->path_hashclauses;
