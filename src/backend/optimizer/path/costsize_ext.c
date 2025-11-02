@@ -585,17 +585,64 @@ static void cost_rescan(
     }
 }
 
-static double get_path_rows_sample(
+/*
+ * Return per-round sampled row estimate for base scan paths.
+ * For non-scan paths or single-sample mode, fall back to deterministic estimate.
+ */
+static double get_path_rows(
+    const Path *path,
+    const int round
+) {
+    /* Only apply sampling for base scans in multi-sample mode */
+    if ((IsA(path, SeqScan) || IsA(path, IndexScan)) &&
+        path->rows_sample->sample_count != 1) {
+        /* Sanity checks: expect multi-sample and valid round index */
+        Assert(path->rows_sample->sample_count == error_sample_count);
+        Assert(round >= 0 && round < error_sample_count);
+
+        /* Use the sample for this round */
+        return path->rows_sample->sample[round];
+    }
+    /* Default deterministic estimate */
+    return path->rows;
+}
+
+/*
+ * Return per-round sampled startup cost for base scan paths,
+ * or fall back to deterministic startup cost in single-sample mode.
+ */
+static double get_path_startup_cost(
     const Path *path,
     const int round
 ) {
     if ((IsA(path, SeqScan) || IsA(path, IndexScan)) &&
-        path->rows_sample->sample_count != 1) {
-        Assert(outer_path->rows_sample->sample_count == error_sample_count);
-        return path->rows_sample->sample[round];
+        path->startup_cost_sample->sample_count != 1) {
+        Assert(path->startup_cost_sample->sample_count == error_sample_count);
+        Assert(round >= 0 && round < error_sample_count);
+
+        return path->startup_cost_sample->sample[round];
     }
-    return path->rows;
+    return path->startup_cost;
 }
+
+/*
+ * Return per-round sampled total cost for base scan paths,
+ * or fall back to deterministic total cost in single-sample mode.
+ */
+static double get_path_total_cost(
+    const Path *path,
+    const int round
+) {
+    if ((IsA(path, SeqScan) || IsA(path, IndexScan)) &&
+        path->total_cost_sample->sample_count != 1) {
+        Assert(path->total_cost_sample->sample_count == error_sample_count);
+        Assert(round >= 0 && round < error_sample_count);
+
+        return path->total_cost_sample->sample[round];
+    }
+    return path->total_cost;
+}
+
 
 void initial_cost_nestloop_1p(
     PlannerInfo *root,
@@ -612,7 +659,13 @@ void initial_cost_nestloop_1p(
      * In single-sample mode (sample_count == 1) or non-scan paths,
      * fall back to the planner's deterministic row estimate.
      */
-    const double outer_path_rows = get_path_rows_sample(outer_path, root->round);
+    const double outer_path_rows = get_path_rows(outer_path, root->round);
+
+    /* Use per-round sampled costs for base scans; otherwise deterministic costs */
+    const Cost outer_startup_cost = get_path_startup_cost(outer_path, root->round);
+    const Cost outer_total_cost = get_path_total_cost(outer_path, root->round);
+    const Cost inner_startup_cost = get_path_startup_cost(inner_path, root->round);
+    const Cost inner_total_cost = get_path_total_cost(inner_path, root->round);
 
     Cost inner_rescan_start_cost;
     Cost inner_rescan_total_cost;
@@ -632,12 +685,12 @@ void initial_cost_nestloop_1p(
      * their sum.  We'll also pay the inner path's rescan startup cost
      * multiple times.
      */
-    startup_cost += outer_path->startup_cost + inner_path->startup_cost;
-    run_cost += outer_path->total_cost - outer_path->startup_cost;
+    startup_cost += outer_startup_cost + inner_startup_cost;
+    run_cost += outer_total_cost - outer_startup_cost;
     if (outer_path_rows > 1)
         run_cost += (outer_path_rows - 1) * inner_rescan_start_cost;
 
-    inner_run_cost = inner_path->total_cost - inner_path->startup_cost;
+    inner_run_cost = inner_total_cost - inner_startup_cost;
     inner_rescan_run_cost = inner_rescan_total_cost - inner_rescan_start_cost;
 
     if (jointype == JOIN_SEMI || jointype == JOIN_ANTI ||
@@ -682,12 +735,12 @@ void final_cost_nestloop_1p(
      * In single-sample mode (sample_count == 1) or non-scan paths,
      * fall back to the planner's deterministic row estimate.
      */
-    double outer_path_rows = get_path_rows_sample(outer_path, root->round);
+    double outer_path_rows = get_path_rows(outer_path, root->round);
     /*
      * Same logic for inner path. Use sampled rows only for scan paths
      * when running in multi-sample mode.
      */
-    double inner_path_rows = get_path_rows_sample(inner_path, root->round);
+    double inner_path_rows = get_path_rows(inner_path, root->round);
 
     Cost startup_cost = workspace->startup_cost;
     Cost run_cost = workspace->run_cost;
@@ -867,12 +920,18 @@ void initial_cost_mergejoin_1p(
      * In single-sample mode (sample_count == 1) or non-scan paths,
      * fall back to the planner's deterministic row estimate.
      */
-    double outer_path_rows = get_path_rows_sample(outer_path, root->round);
+    double outer_path_rows = get_path_rows(outer_path, root->round);
     /*
      * Same logic for inner path. Use sampled rows only for scan paths
      * when running in multi-sample mode.
      */
-    double inner_path_rows = get_path_rows_sample(inner_path, root->round);
+    double inner_path_rows = get_path_rows(inner_path, root->round);
+
+    /* Use per-round sampled costs for base scans; otherwise deterministic costs */
+    const Cost outer_startup_cost = get_path_startup_cost(outer_path, root->round);
+    const Cost outer_total_cost = get_path_total_cost(outer_path, root->round);
+    const Cost inner_startup_cost = get_path_startup_cost(inner_path, root->round);
+    const Cost inner_total_cost = get_path_total_cost(inner_path, root->round);
 
     Cost inner_run_cost;
     double outer_rows,
@@ -988,7 +1047,7 @@ void initial_cost_mergejoin_1p(
         cost_sort(&sort_path,
                   root,
                   outersortkeys,
-                  outer_path->total_cost,
+                  outer_total_cost,
                   outer_path_rows,
                   outer_path->pathtarget->width,
                   0.0,
@@ -1000,11 +1059,9 @@ void initial_cost_mergejoin_1p(
         run_cost += (sort_path.total_cost - sort_path.startup_cost)
                 * (outerendsel - outerstartsel);
     } else {
-        startup_cost += outer_path->startup_cost;
-        startup_cost += (outer_path->total_cost - outer_path->startup_cost)
-                * outerstartsel;
-        run_cost += (outer_path->total_cost - outer_path->startup_cost)
-                * (outerendsel - outerstartsel);
+        startup_cost += outer_startup_cost;
+        startup_cost += (outer_total_cost - outer_startup_cost) * outerstartsel;
+        run_cost += (outer_total_cost - outer_startup_cost) * (outerendsel - outerstartsel);
     }
 
     if (innersortkeys) {
@@ -1012,7 +1069,7 @@ void initial_cost_mergejoin_1p(
         cost_sort(&sort_path,
                   root,
                   innersortkeys,
-                  inner_path->total_cost,
+                  inner_total_cost,
                   inner_path_rows,
                   inner_path->pathtarget->width,
                   0.0,
@@ -1024,11 +1081,9 @@ void initial_cost_mergejoin_1p(
         inner_run_cost = (sort_path.total_cost - sort_path.startup_cost)
                          * (innerendsel - innerstartsel);
     } else {
-        startup_cost += inner_path->startup_cost;
-        startup_cost += (inner_path->total_cost - inner_path->startup_cost)
-                * innerstartsel;
-        inner_run_cost = (inner_path->total_cost - inner_path->startup_cost)
-                         * (innerendsel - innerstartsel);
+        startup_cost += inner_startup_cost;
+        startup_cost += (inner_total_cost - inner_startup_cost) * innerstartsel;
+        inner_run_cost = (inner_total_cost - inner_startup_cost) * (innerendsel - innerstartsel);
     }
 
     /*
@@ -1066,7 +1121,7 @@ void final_cost_mergejoin_1p(
      * In single-sample mode (sample_count == 1) or non-scan paths,
      * fall back to the planner's deterministic row estimate.
      */
-    double inner_path_rows = get_path_rows_sample(inner_path, root->round);
+    double inner_path_rows = get_path_rows(inner_path, root->round);
 
     List *mergeclauses = path->path_mergeclauses;
     List *innersortkeys = path->innersortkeys;
@@ -1316,17 +1371,24 @@ void initial_cost_hashjoin_1p(
 ) {
     Cost startup_cost = 0;
     Cost run_cost = 0;
+
+    /* Use per-round sampled costs for base scans; otherwise deterministic costs */
+    const Cost outer_startup_cost = get_path_startup_cost(outer_path, root->round);
+    const Cost outer_total_cost = get_path_total_cost(outer_path, root->round);
+    // const Cost inner_startup_cost = get_path_startup_cost(inner_path, root->round);
+    const Cost inner_total_cost = get_path_total_cost(inner_path, root->round);
+
     /*
      * Use per-round sampled row estimates for base scan paths (Seq/Index).
      * In single-sample mode (sample_count == 1) or non-scan paths,
      * fall back to the planner's deterministic row estimate.
      */
-    const double outer_path_rows = get_path_rows_sample(outer_path, root->round);
+    const double outer_path_rows = get_path_rows(outer_path, root->round);
     /*
      * Same logic for inner path. Use sampled rows only for scan paths
      * when running in multi-sample mode.
      */
-    const double inner_path_rows = get_path_rows_sample(inner_path, root->round);
+    const double inner_path_rows = get_path_rows(inner_path, root->round);
 
     double inner_path_rows_total = inner_path_rows;
     int num_hashclauses = list_length(hashclauses);
@@ -1336,9 +1398,9 @@ void initial_cost_hashjoin_1p(
     size_t space_allowed; /* unused */
 
     /* cost of source data */
-    startup_cost += outer_path->startup_cost;
-    run_cost += outer_path->total_cost - outer_path->startup_cost;
-    startup_cost += inner_path->total_cost;
+    startup_cost += outer_startup_cost;
+    run_cost += outer_total_cost - outer_startup_cost;
+    startup_cost += inner_total_cost;
 
     /*
      * Cost of computing hash function: must do it once per input tuple. We
@@ -1427,12 +1489,12 @@ void final_cost_hashjoin_1p(
      * In single-sample mode (sample_count == 1) or non-scan paths,
      * fall back to the planner's deterministic row estimate.
      */
-    const double outer_path_rows = get_path_rows_sample(outer_path, root->round);
+    const double outer_path_rows = get_path_rows(outer_path, root->round);
     /*
      * Same logic for inner path. Use sampled rows only for scan paths
      * when running in multi-sample mode.
      */
-    const double inner_path_rows = get_path_rows_sample(inner_path, root->round);
+    const double inner_path_rows = get_path_rows(inner_path, root->round);
 
     double inner_path_rows_total = workspace->inner_rows_total;
     List *hashclauses = path->path_hashclauses;
@@ -2132,8 +2194,8 @@ void initial_cost_mergejoin_2p(
             cost_sort(&sort_path,
                       root,
                       outersortkeys,
-                      outer_total_cost_i, /* input total cost (your signature) */
-                      outer_path_rows, /* input rows for this sample       */
+                      outer_total_cost_i, /* input total cost */
+                      outer_path_rows, /* input rows for this sample */
                       outer_path->pathtarget->width,
                       0.0,
                       work_mem,
@@ -2163,8 +2225,8 @@ void initial_cost_mergejoin_2p(
             cost_sort(&sort_path,
                       root,
                       innersortkeys,
-                      inner_total_cost_i, /* input total cost (your signature) */
-                      inner_path_rows, /* input rows for this sample        */
+                      inner_total_cost_i, /* input total cost */
+                      inner_path_rows, /* input rows for this sample */
                       inner_path->pathtarget->width,
                       0.0,
                       work_mem,
@@ -2488,7 +2550,7 @@ void initial_cost_hashjoin_2p(
         /* 4.2) Fetch per-sample input costs for both sides */
         const Cost outer_startup_i = GET_COST(outer_startup_samp, i, outer_path->startup_cost, outer_startup_is_const);
         const Cost outer_total_i = GET_COST(outer_total_samp, i, outer_path->total_cost, outer_total_is_const);
-        const Cost inner_startup_i = GET_COST(inner_startup_samp, i, inner_path->startup_cost, inner_startup_is_const);
+        // const Cost inner_startup_i = GET_COST(inner_startup_samp, i, inner_path->startup_cost, inner_startup_is_const);
         const Cost inner_total_i = GET_COST(inner_total_samp, i, inner_path->total_cost, inner_total_is_const);
 
         /* 4.3) Source data costs (lower bound): outer contributes startup+run; inner contributes total as startup */
