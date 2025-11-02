@@ -3778,8 +3778,6 @@ void set_joinrel_size_estimates(
                 Assert(rel->rows_sample->sample_count == error_sample_count);
                 rel->rows = rel->rows_sample->sample[root->round];
             }
-            // FIXME: no need to do that; we just want to expose potential issues.
-            rel->rows_sample = NULL;
         }
     }
 }
