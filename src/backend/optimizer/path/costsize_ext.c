@@ -754,10 +754,12 @@ void final_cost_nestloop_1p(
     if (inner_path_rows <= 0)
         inner_path_rows = 1;
     /* Mark the path with the correct row estimate */
-    if (path->jpath.path.param_info)
+    if (path->jpath.path.param_info) {
         path->jpath.path.rows = path->jpath.path.param_info->ppi_rows;
-    else
+    } else {
         path->jpath.path.rows = path->jpath.path.parent->rows;
+    }
+    path->jpath.path.rows_sample = NULL;
 
     /* For partial paths, scale row estimate. */
     if (path->jpath.path.parallel_workers > 0) {
@@ -1146,10 +1148,12 @@ void final_cost_mergejoin_1p(
         inner_path_rows = 1;
 
     /* Mark the path with the correct row estimate */
-    if (path->jpath.path.param_info)
+    if (path->jpath.path.param_info) {
         path->jpath.path.rows = path->jpath.path.param_info->ppi_rows;
-    else
+    } else {
         path->jpath.path.rows = path->jpath.path.parent->rows;
+    }
+    path->jpath.path.rows_sample = NULL;
 
     /* For partial paths, scale row estimate. */
     if (path->jpath.path.parallel_workers > 0) {
@@ -1512,10 +1516,12 @@ void final_cost_hashjoin_1p(
     ListCell *hcl;
 
     /* Mark the path with the correct row estimate */
-    if (path->jpath.path.param_info)
+    if (path->jpath.path.param_info) {
         path->jpath.path.rows = path->jpath.path.param_info->ppi_rows;
-    else
+    } else {
         path->jpath.path.rows = path->jpath.path.parent->rows;
+    }
+    path->jpath.path.rows_sample = NULL;
 
     /* For partial paths, scale row estimate. */
     if (path->jpath.path.parallel_workers > 0) {
