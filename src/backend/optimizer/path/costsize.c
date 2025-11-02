@@ -3770,6 +3770,17 @@ void set_joinrel_size_estimates(
         set_joinrel_rows_sample(
             root, rel, outer_rel, inner_rel, restrictlist, sel_est
         );
+
+        if (root->pass == 1) {
+            /* Overwrite: we only need rows at a particular sample point. */
+            Assert(rel->rows_sample != NULL);
+            if (rel->rows_sample->sample_count != 1) {
+                Assert(rel->rows_sample->sample_count == error_sample_count);
+                rel->rows = rel->rows_sample->sample[root->round];
+            }
+            // FIXME: no need to do that; we just want to expose potential issues.
+            rel->rows_sample = NULL;
+        }
     }
 }
 
