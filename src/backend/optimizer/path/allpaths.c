@@ -3333,9 +3333,7 @@ standard_join_search(PlannerInfo *root, const int levels_needed, List *initial_r
                 RelOptInfo *rel = lfirst(lc);
 
                 /* Compute per-round cost samples for this rel */
-                calc_score_from_pathlist(rel, error_sample_count, false);
-                calc_score_from_pathlist(rel, error_sample_count, true);
-                calc_final_score_from_pathlist(rel);
+                calc_score_from_pathlist(rel);
 
                 /* Add partition-wise join paths (if applicable) */
                 generate_partitionwise_join_paths(root, rel);
@@ -3357,7 +3355,6 @@ standard_join_search(PlannerInfo *root, const int levels_needed, List *initial_r
             }
         }
     }
-
 
     /* Ensure we have exactly `round` saved snapshots before reduction */
     Assert(round == list_length(saved_join_rel_levels));

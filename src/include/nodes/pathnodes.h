@@ -1043,9 +1043,9 @@ typedef struct RelOptInfo
 	Sample     *rows_sample pg_node_attr(read_write_ignore);
 
 	/* ``Some'' score of the current relation */
-	Sample     *score_sample pg_node_attr(read_write_ignore);
-	Sample     *score_sample_partial pg_node_attr(read_write_ignore);
-	Sample     *score_sample_final pg_node_attr(read_write_ignore);
+	double		min_score pg_node_attr(read_write_ignore);
+	double		partial_min_score pg_node_attr(read_write_ignore);
+	Sample     *min_score_sample pg_node_attr(read_write_ignore);
 } RelOptInfo;
 
 /*

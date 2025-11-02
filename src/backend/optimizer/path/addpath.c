@@ -3,6 +3,7 @@
 // Modified by Xuan Chen on 2025/10/20.
 // Modified by Xuan Chen on 2025/10/29.
 // Modified by Xuan Chen on 2025/10/31.
+// Modified by Xuan Chen on 2025/11/1.
 //
 
 #include "optimizer/addpath.h"
@@ -144,7 +145,7 @@ add_path_by_strategy(
      * partial + non-partial), already computed by calc_*_score functions.
      */
     Assert(joinrel_first->score_sample_final != NULL);
-    const Sample *score_sample = joinrel_first->score_sample_final;
+    const Sample *score_sample = joinrel_first->min_score_sample;
 
     Assert(score_sample->sample_count >= 0 &&
         score_sample->sample_count <= DIST_MAX_SAMPLE);
@@ -346,7 +347,7 @@ retain_path_by_strategy(
      * (this is needed for scoring).
      */
     Assert(joinrel_first->score_sample_final != NULL);
-    const Sample *score_sample = joinrel_first->score_sample_final;
+    const Sample *score_sample = joinrel_first->min_score_sample;
 
     Assert(score_sample->sample_count >= 0 &&
         score_sample->sample_count <= DIST_MAX_SAMPLE);
@@ -487,202 +488,63 @@ retain_path_by_strategy(
 /*
  * calc_score_from_pathlist
  *
- * For each sample index j (0 <= j < sample_count), compute the minimum
- * total_cost_sample[j] across all candidate paths in either:
+ * Compute the minimum total_cost for this joinrel over its candidate paths.
+ * Two values are produced:
  *
- *   - joinrel->pathlist            (if is_partial == false)
- *   - joinrel->partial_pathlist    (if is_partial == true)
+ *   joinrel->min_score          = min(path->total_cost) over pathlist
+ *   joinrel->partial_min_score  = min(path->total_cost) over partial_pathlist
  *
- * Then store that per-sample minimum vector into:
+ * This captures the best (cheapest) deterministic plan choice seen so far
+ * for both regular and partial paths.  No per-sample cost vectors are used
+ * here; per-round sampling is handled elsewhere.
  *
- *   - joinrel->score_sample        (if is_partial == false)
- *   - joinrel->score_sample_partial(if is_partial == true)
- *
- * Assumptions:
- *   - Every Path in the chosen candidate list has total_cost_sample != NULL.
- *   - total_cost_sample->sample_count <= DIST_MAX_SAMPLE.
- *   - sample_count is bounded by DIST_MAX_SAMPLE as well.
+ * Notes:
+ * - Either list may be empty, in which case the corresponding minimum
+ *   remains DBL_MAX.
+ * - Caller ensures that 'round' and 'sample_count' are valid for the
+ *   surrounding sampling framework; this routine uses total_cost only.
  */
 void
 calc_score_from_pathlist(
-    RelOptInfo *joinrel,
-    const int sample_count,
-    const bool is_partial
-) {
-    /* Sanity check */
-    Assert(sample_count >= 0 && sample_count <= DIST_MAX_SAMPLE);
-
-    /*
-     * Phase 0:
-     * Compute per-sample global minima across ALL candidate paths.
-     * Initialize an array of length sample_count to DBL_MAX,
-     * then take the minimum observed value for each sample index.
-     */
-    /* Choose which path list to inspect: partial or full */
-    List *cand_list = is_partial ? joinrel->partial_pathlist : joinrel->pathlist;
-
-    if (cand_list == NULL) {
-        if (is_partial) {
-            joinrel->score_sample_partial = NULL;
-        } else {
-            joinrel->score_sample = NULL;
-        }
-        return;
-    }
-
-    double *min_global = palloc(sizeof(double) * sample_count);
-    for (int j = 0; j < sample_count; j++) {
-        min_global[j] = DBL_MAX;
-    }
-
-    ListCell *lc;
-    foreach(lc, cand_list) {
-        const Path *p = (Path *) lfirst(lc);
-        const Sample *ts = p->total_cost_sample;
-
-        Assert(ts != NULL);
-        Assert(ts->sample_count >= 0 && ts->sample_count <= DIST_MAX_SAMPLE);
-
-        /* Only compare up to the smaller of ts->sample_count and sample_count */
-        const int effective = Min(ts->sample_count, sample_count);
-
-        for (int j = 0; j < effective; j++) {
-            const double v = ts->sample[j];
-
-            if (v < min_global[j]) {
-                min_global[j] = v;
-            }
-        }
-    }
-
-    /*
-     * Phase 1:
-     * Materialize the result into the appropriate score_sample field
-     * on the joinrel.
-     *
-     * We allocate (or reuse if already allocated) the Sample struct,
-     * set its length, and copy the values we just computed.
-     */
-    Sample *score_sample;
-    if (is_partial) {
-        joinrel->score_sample_partial = (Sample *) palloc(sizeof(Sample));
-        score_sample = joinrel->score_sample_partial;
-    } else {
-        joinrel->score_sample = (Sample *) palloc(sizeof(Sample));
-        score_sample = joinrel->score_sample;
-    }
-
-    score_sample->sample_count = sample_count;
-
-    for (int j = 0; j < sample_count; j++) {
-        score_sample->sample[j] = min_global[j];
-    }
-
-    /*
-     * Cleanup:
-     * min_global was just a scratch buffer in the current memory context.
-     * pfree() is not strictly required in planner code if the context
-     * is short-lived, but it's good hygiene.
-     */
-    pfree(min_global);
-}
-
-/*
- * calc_final_score_from_pathlist
- *
- * Combine per-sample cost scores from:
- *   - joinrel->score_sample          (normal paths)
- *   - joinrel->score_sample_partial  (partial paths), if any
- *
- * If no partial score exists, simply use score_sample as the final result.
- * Otherwise, for each sample index j, take the minimum of:
- *   score_sample->sample[j]
- *   score_sample_partial->sample[j]
- *
- * Preconditions:
- *   - score_sample != NULL
- *   - If score_sample_partial exists, both sample arrays must have
- *     the same positive sample_count.
- *
- * Output:
- *   - joinrel->score_sample_final
- */
-void
-calc_final_score_from_pathlist(
     RelOptInfo *joinrel
 ) {
-    const Sample *score_sample = joinrel->score_sample;
-    const Sample *score_sample_partial = joinrel->score_sample_partial;
+    Assert(sample_count >= 0 && sample_count <= DIST_MAX_SAMPLE);
+    ListCell *lc;
 
-    /* Must have at least normal paths' score */
-    if (score_sample == NULL) {
-        elog(ERROR, "score_sample is NULL in calc_final_score_from_pathlist");
+    double min_score = DBL_MAX;
+    foreach(lc, joinrel->pathlist) {
+        const Path *path = (Path *) lfirst(lc);
+        min_score = Min(path->total_cost, min_score);
     }
+    joinrel->min_score = min_score;
 
-    /* No partial path scores: final = deep copy of normal */
-    if (score_sample_partial == NULL) {
-        const int count = score_sample->sample_count;
-        Sample *final = palloc(sizeof(Sample));
-        final->sample_count = count;
-
-        for (int j = 0; j < count; j++) {
-            final->sample[j] = score_sample->sample[j];
-        }
-
-        joinrel->score_sample_final = final;
-        return;
+    double partial_min_score = DBL_MAX;
+    foreach(lc, joinrel->partial_pathlist) {
+        const Path *partial_path = (Path *) lfirst(lc);
+        partial_min_score = Min(partial_path->total_cost, partial_min_score);
     }
-
-    /* Sanity checks for partial scores */
-    if (score_sample->sample_count <= 0 ||
-        score_sample_partial->sample_count <= 0 ||
-        score_sample->sample_count != score_sample_partial->sample_count) {
-        elog(ERROR, "inconsistent sample_count: normal=%d partial=%d",
-             score_sample->sample_count, score_sample_partial->sample_count);
-    }
-
-    /* Combine by per-sample minimum */
-    const int count = score_sample->sample_count;
-    Sample *final = palloc(sizeof(Sample));
-    final->sample_count = count;
-
-    for (int j = 0; j < count; j++) {
-        const double v1 = score_sample->sample[j];
-        const double v2 = score_sample_partial->sample[j];
-        final->sample[j] = (v1 < v2) ? v1 : v2;
-    }
-
-    joinrel->score_sample_final = final;
+    joinrel->partial_min_score = partial_min_score;
 }
 
 /*
  * calc_minimum_envelope
  *
- * Given a List of snapshots of join_rel levels (each element is a List**,
- * indexed by level), compute the elementwise minimum across snapshots of
- * the samples stored in RelOptInfo->score_sample_final->sample.
+ * Accumulate per-round scalar scores for each joinrel into the first snapshot.
+ * Each element of saved_join_rel_levels is a List** holding per-level joinrels
+ * for one sampling round. We walk levels [2..levels_needed] in lockstep and, for
+ * each joinrel, store this round's scalar score into min_rel->min_score_sample.
  *
- * The first snapshot in saved_join_rel_levels is used as the initial
- * envelope and is updated in-place; the function returns that same pointer.
- *
- * Assumptions:
- * - saved_join_rel_levels is non-NIL; each element is a List** with at
- *   least levels_needed+1 entries.
- * - For every level in [2, levels_needed], corresponding per-level lists
- *   have the same order and intended 1:1 correspondence.
- * - rel->score_sample_final is non-NULL and has sample_count elements;
- *   all snapshots agree on sample_count.
- *
- * Complexity:
- *   O(M * L * N * S), where M = number of snapshots,
- *   L = number of levels processed, N = rels per level,
- *   S = sample_count.
- *
- * Note:
- * - Because the result is written back into the first snapshot (min_envelope),
- *   callers that need to preserve it must copy beforehand.
- * - The loop iterates over the first snapshot too; this is harmless since
- *   min(x, x) == x.
+ * Notes/Assumptions:
+ * - The first snapshot acts as the accumulator (updated in-place and returned).
+ * - Sample storage uses an embedded fixed-size array inside `Sample`
+ *   (e.g., double sample[DIST_MAX_SAMPLE];), so no extra allocation is needed
+ *   for the array itself; we only palloc the `Sample` header once at round 0.
+ * - List orders match across rounds so `forboth` walks 1:1; if lengths differ,
+ *   `forboth` stops at the shorter list.
+ * - This routine records the per-round scalar value:
+ *        Min(cur_rel->min_score, cur_rel->partial_min_score)
+ *   into the sample slot for `round`. Any later elementwise-min over rounds
+ *   (i.e., a true "minimum envelope") is expected to be performed elsewhere.
  */
 List **
 calc_minimum_envelope(
@@ -691,11 +553,13 @@ calc_minimum_envelope(
     const int levels_needed
 ) {
     ListCell *lc, *lc1, *lc2;
+
     /* Use the first snapshot as the initial (and final) envelope; updated in-place. */
     List **min_envelope = linitial(saved_join_rel_levels);
 
     /* Iterate over every saved snapshot of per-level join_rel lists. */
     foreach(lc, saved_join_rel_levels) {
+        const int round = foreach_current_index(lc);
         List **cur_saved_join_rel_level = lfirst(lc);
 
         /* By convention, levels 0/1 are base rels; start from level 2. */
@@ -707,26 +571,27 @@ calc_minimum_envelope(
              */
             forboth(lc1, cur_saved_join_rel_level[lev], lc2, min_envelope[lev]) {
                 const RelOptInfo *cur_rel = lfirst(lc1);
-                const RelOptInfo *min_rel = lfirst(lc2);
-
-                const Sample *cur_rel_sample = cur_rel->score_sample_final;
-                Sample *min_rel_sample = min_rel->score_sample_final;
-
-                /* All samples must agree on the number of points. */
-                Assert(cur_rel_sample->sample_count == sample_count);
-                Assert(min_rel_sample->sample_count == sample_count);
-
-                const double *cur_sample_raw = cur_rel_sample->sample;
-                double *min_sample_raw = min_rel_sample->sample;
-
-                /* Elementwise minimum: write back into the envelope. */
-                for (int i = 0; i < sample_count; ++i) {
-                    min_sample_raw[i] = Min(cur_sample_raw[i], min_sample_raw[i]);
+                RelOptInfo *min_rel = lfirst(lc2);
+                if (round == 0) {
+                    /*
+                     * Allocate the Sample header once; the underlying
+                     * `sample[]` is an embedded fixed-size array in `Sample`,
+                     * so no separate allocation is required here.
+                     * Caller ensures sample_count <= array capacity.
+                     */
+                    min_rel->min_score_sample = palloc(sizeof(Sample));
+                    min_rel->min_score_sample->sample_count = sample_count;
                 }
+                /* Current round's scalar score for this joinrel */
+                const double cur_rel_score = Min(
+                    cur_rel->min_score, cur_rel->partial_min_score
+                );
+                /* Store into the embedded sample array at index = round */
+                min_rel->min_score_sample->sample[round] = cur_rel_score;
             }
         }
     }
-    /* Return the first snapshot pointer, now containing the minimum envelope. */
+    /* Return the first snapshot pointer, now populated with per-round scores. */
     return min_envelope;
 }
 

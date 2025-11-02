@@ -37,9 +37,7 @@ retain_path_by_strategy(
 
 void
 calc_score_from_pathlist(
-    RelOptInfo *joinrel,
-    int sample_count,
-    bool is_partial
+    RelOptInfo *joinrel
 );
 
 void
