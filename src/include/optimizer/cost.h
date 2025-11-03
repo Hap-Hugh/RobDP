@@ -81,8 +81,8 @@ extern double index_pages_fetched(
 extern void cost_seqscan(
     Path *path,
     PlannerInfo *root,
-    RelOptInfo *baserel,
-    ParamPathInfo *param_info
+    const RelOptInfo *baserel,
+    const ParamPathInfo *param_info
 );
 
 extern void cost_samplescan(
@@ -387,8 +387,8 @@ extern void set_baserel_size_estimates(
 
 extern double get_parameterized_baserel_size(
     PlannerInfo *root,
-    RelOptInfo *rel,
-    List *param_clauses
+    const RelOptInfo *rel,
+    const List *param_clauses
 );
 
 extern double get_parameterized_joinrel_size(

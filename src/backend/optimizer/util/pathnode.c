@@ -4317,7 +4317,6 @@ do { \
         new_ppi = makeNode(ParamPathInfo);
         new_ppi->ppi_req_outer = bms_copy(required_outer);
         new_ppi->ppi_rows = old_ppi->ppi_rows;
-        new_ppi->ppi_rows_sample = old_ppi->ppi_rows_sample;
         new_ppi->ppi_clauses = old_ppi->ppi_clauses;
         ADJUST_CHILD_ATTRS(new_ppi->ppi_clauses);
         new_ppi->ppi_serials = bms_copy(old_ppi->ppi_serials);

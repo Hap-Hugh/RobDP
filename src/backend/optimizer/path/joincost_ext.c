@@ -48,9 +48,7 @@ double get_parallel_divisor(
      * parallel plan.
      */
     if (parallel_leader_participation) {
-        double leader_contribution;
-
-        leader_contribution = 1.0 - (0.3 * path->parallel_workers);
+        const double leader_contribution = 1.0 - (0.3 * path->parallel_workers);
         if (leader_contribution > 0)
             parallel_divisor += leader_contribution;
     }
@@ -1834,7 +1832,7 @@ void final_cost_nestloop_2p(
     /* Mark rows (scalar) per PG semantics: param_info or parent->rows */
     if (path->jpath.path.param_info) {
         path->jpath.path.rows = path->jpath.path.param_info->ppi_rows;
-        path->jpath.path.rows_sample = duplicate_sample(path->jpath.path.param_info->ppi_rows_sample);
+        path->jpath.path.rows_sample = make_sample_by_single_value(path->jpath.path.param_info->ppi_rows);
     } else {
         path->jpath.path.rows = path->jpath.path.parent->rows;
         path->jpath.path.rows_sample = duplicate_sample(path->jpath.path.parent->rows_sample);
@@ -2263,7 +2261,7 @@ void final_cost_mergejoin_2p(
     /* ------------------------------- 2) Set scalar output rows (+ optional rows_sample) ------------------------------- */
     if (path->jpath.path.param_info) {
         path->jpath.path.rows = path->jpath.path.param_info->ppi_rows;
-        path->jpath.path.rows_sample = duplicate_sample(path->jpath.path.param_info->ppi_rows_sample);
+        path->jpath.path.rows_sample = make_sample_by_single_value(path->jpath.path.param_info->ppi_rows);
     } else {
         path->jpath.path.rows = path->jpath.path.parent->rows;
         path->jpath.path.rows_sample = duplicate_sample(path->jpath.path.parent->rows_sample);
@@ -2613,7 +2611,7 @@ void final_cost_hashjoin_2p(
     /* Mark rows (scalar) per PG semantics: param_info or parent->rows; also copy rows_sample */
     if (path->jpath.path.param_info) {
         path->jpath.path.rows = path->jpath.path.param_info->ppi_rows;
-        path->jpath.path.rows_sample = duplicate_sample(path->jpath.path.param_info->ppi_rows_sample);
+        path->jpath.path.rows_sample = make_sample_by_single_value(path->jpath.path.param_info->ppi_rows);
     } else {
         path->jpath.path.rows = path->jpath.path.parent->rows;
         path->jpath.path.rows_sample = duplicate_sample(path->jpath.path.parent->rows_sample);

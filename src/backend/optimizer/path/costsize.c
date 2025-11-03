@@ -158,22 +158,8 @@ typedef struct {
     QualCost total;
 } cost_qual_eval_context;
 
-void log_join_rows_and_cost_sample(
-    const JoinPath *jpath
-);
-
-static List *extract_nonindex_conditions(
-    List *qual_clauses, List *indexclauses
-);
-
 static bool cost_qual_eval_walker(
     Node *node, cost_qual_eval_context *context
-);
-
-static void get_restriction_qual_cost(
-    PlannerInfo *root, RelOptInfo *baserel,
-    ParamPathInfo *param_info,
-    QualCost *qpqual_cost
 );
 
 static double calc_joinrel_size_estimate(
@@ -257,136 +243,15 @@ long clamp_cardinality_to_long(Cardinality x) {
  */
 void cost_seqscan(
     Path *path, PlannerInfo *root,
-    RelOptInfo *baserel, ParamPathInfo *param_info
+    const RelOptInfo *baserel, const ParamPathInfo *param_info
 ) {
-    /* ----------------------------------------------------------------------
-     * 0) Preconditions & invariants
-     * ----------------------------------------------------------------------
-     * This costing function applies only to base relations.
-     */
-    Assert(baserel->relid > 0);
-    Assert(baserel->rtekind == RTE_RELATION);
-
-    /* ----------------------------------------------------------------------
-     * 1) Resolve base estimates and (optionally) sample distributions
-     * ----------------------------------------------------------------------
-     * Set the point estimate for rows (original behavior), and attempt
-     * to obtain a per-sample distribution if available. We never mutate
-     * the input distribution in-place.
-     */
-    if (param_info) {
-        path->rows = param_info->ppi_rows;
-        path->rows_sample = duplicate_sample(param_info->ppi_rows_sample); /* may return NULL */
+    if (!enable_rows_dist || root->pass == 1) {
+        cost_seqscan_1p(path, root, baserel, param_info);
+    } else if (root->pass == 2) {
+        cost_seqscan_2p(path, root, baserel, param_info);
     } else {
-        path->rows = baserel->rows;
-        path->rows_sample = duplicate_sample(baserel->rows_sample); /* may return NULL */
+        elog(ERROR, "bad pass number");
     }
-
-    /* ----------------------------------------------------------------------
-     * 2) Allocate per-sample outputs and initialize accumulators
-     * ----------------------------------------------------------------------
-     * We compute startup/total costs per sample, then average for the
-     * scalar fields to remain backward-compatible with callers that
-     * only read the scalar costs. We also average per-worker rows.
-     */
-    const int sample_count = path->rows_sample->sample_count;
-    Assert(sample_count > 0);
-
-    path->startup_cost_sample = initialize_sample(sample_count);
-    path->total_cost_sample = initialize_sample(sample_count);
-
-    double rows_accum = 0.0; /* per-worker rows average accumulator */
-    Cost startup_accum = 0.0; /* startup cost average accumulator     */
-    Cost total_accum = 0.0; /* total cost average accumulator       */
-
-    /* ----------------------------------------------------------------------
-     * 3) Precompute terms that do not vary across samples
-     * ----------------------------------------------------------------------
-     * This reduces overhead and avoids subtle inconsistencies.
-     */
-    Cost startup_cost_bias = 0;
-    if (!enable_seqscan)
-        startup_cost_bias += disable_cost;
-
-    double spc_seq_page_cost;
-    get_tablespace_page_costs(baserel->reltablespace, NULL, &spc_seq_page_cost);
-    const Cost disk_run_cost = spc_seq_page_cost * baserel->pages;
-
-    QualCost qpqual_cost;
-    get_restriction_qual_cost(root, baserel, param_info, &qpqual_cost);
-    const Cost cpu_per_tuple = cpu_tuple_cost + qpqual_cost.per_tuple;
-
-    const Cost tlist_startup = path->pathtarget->cost.startup;
-    const Cost tlist_per_tuple = path->pathtarget->cost.per_tuple;
-
-    const bool use_parallel = (path->parallel_workers > 0);
-    const double parallel_divisor = use_parallel ? get_parallel_divisor(path) : 1.0;
-
-    /* ----------------------------------------------------------------------
-     * 4) Per-sample evaluation
-     * ----------------------------------------------------------------------
-     * For each sample row estimate:
-     *  - compute startup cost (constant across samples except for the tlist)
-     *  - compute CPU cost split into scan (per tuple scanned) and
-     *    tlist (per output row)
-     *  - adjust CPU cost and effective per-worker rows under parallelism
-     *  - record per-sample totals and accumulate means for scalar outputs
-     */
-    for (int i = 0; i < sample_count; ++i) {
-        const double sample_rows_global = path->rows_sample->sample[i];
-
-        /* 4.1) Startup cost for this sample (no sample-specific addends here). */
-        Cost startup_cost = 0;
-        startup_cost += startup_cost_bias;
-        startup_cost += qpqual_cost.startup;
-        startup_cost += tlist_startup;
-
-        /* 4.2) CPU run cost: scan all tuples + tlist per *output* row. */
-        Cost cpu_run_cost = cpu_per_tuple * baserel->tuples;
-
-        /* 4.3) Parallel adjustment: divide CPU by workers; rows become per-worker. */
-        double worker_rows = sample_rows_global;
-        if (use_parallel) {
-            cpu_run_cost /= parallel_divisor;
-            worker_rows = clamp_row_est(sample_rows_global / parallel_divisor);
-        }
-
-        /* 4.4) Add tlist per-output-row cost based on worker_rows. */
-        cpu_run_cost += tlist_per_tuple * worker_rows;
-
-        /* 4.5) Total cost for this sample. Disk cost is not amortized. */
-        const Cost total_cost = startup_cost + cpu_run_cost + disk_run_cost;
-
-        /* 4.6) Record per-sample results and update accumulators. */
-        path->rows_sample->sample[i] = worker_rows;
-        path->startup_cost_sample->sample[i] = startup_cost;
-        path->total_cost_sample->sample[i] = total_cost;
-
-        rows_accum += worker_rows; /* average per-worker rows across samples */
-        startup_accum += startup_cost;
-        total_accum += total_cost;
-    }
-
-    /* ----------------------------------------------------------------------
-     * 5) Finalize scalar outputs by averaging across samples
-     * ----------------------------------------------------------------------
-     * Keep the classic semantics:
-     *  - path->rows is per-worker row estimate under parallelism
-     *  - startup_cost/total_cost are the mean of the sample costs
-     */
-    const double invN = 1.0 / (double) sample_count;
-    path->rows = rows_accum * invN;
-    path->startup_cost = startup_accum * invN;
-    path->total_cost = total_accum * invN;
-
-    /* ----------------------------------------------------------------------
-     * 6) Notes on memory ownership
-     * ----------------------------------------------------------------------
-     * The helper routines duplicate_sample()/initialize_sample() are assumed
-     * to allocate in the Planner context so that the samples live as long as
-     * the Path. Callers owning shorter-lived contexts must refcount/move if
-     * needed.
-     */
 }
 
 /*
@@ -480,7 +345,7 @@ void cost_gather(
         path->path.rows_sample = make_sample_by_single_value(*rows);
     } else if (param_info) {
         path->path.rows = param_info->ppi_rows;
-        path->path.rows_sample = duplicate_sample(param_info->ppi_rows_sample);
+        path->path.rows_sample = make_sample_by_single_value(param_info->ppi_rows);
     } else {
         path->path.rows = rel->rows;
         path->path.rows_sample = duplicate_sample(rel->rows_sample);
@@ -594,7 +459,7 @@ void cost_gather_merge(
         path->path.rows_sample = make_sample_by_single_value(*rows);
     } else if (param_info) {
         path->path.rows = param_info->ppi_rows;
-        path->path.rows_sample = duplicate_sample(param_info->ppi_rows_sample);
+        path->path.rows_sample = make_sample_by_single_value(param_info->ppi_rows);
     } else {
         path->path.rows = rel->rows;
         path->path.rows_sample = duplicate_sample(rel->rows_sample);
@@ -703,300 +568,13 @@ void cost_index(
     IndexPath *path, PlannerInfo *root,
     const double loop_count, const bool partial_path
 ) {
-    /* ----------------------------------------------------------------------
-     * 0) Preconditions & basic objects
-     * ----------------------------------------------------------------------
-     * Applies only to base relations; fetch key structs early.
-     */
-    IndexOptInfo *index = path->indexinfo;
-    RelOptInfo *baserel = index->rel;
-    bool indexonly = (path->path.pathtype == T_IndexOnlyScan);
-
-    Assert(IsA(baserel, RelOptInfo) && IsA(index, IndexOptInfo));
-    Assert(baserel->relid > 0);
-    Assert(baserel->rtekind == RTE_RELATION);
-
-    /* ----------------------------------------------------------------------
-     * 1) Resolve row estimates and qpquals; clone (don't mutate) samples
-     * ----------------------------------------------------------------------
-     * Use param_info (if any) for rows; qpquals are "non-index" quals.
-     */
-    List *qpquals;
-    if (path->path.param_info) {
-        path->path.rows = path->path.param_info->ppi_rows;
-        path->path.rows_sample =
-                duplicate_sample(path->path.param_info->ppi_rows_sample); /* may be NULL */
-
-        qpquals = list_concat(
-            extract_nonindex_conditions(path->indexinfo->indrestrictinfo,
-                                        path->indexclauses),
-            extract_nonindex_conditions(path->path.param_info->ppi_clauses,
-                                        path->indexclauses));
+    if (!enable_rows_dist || root->pass == 1) {
+        cost_index_1p(path, root, loop_count, partial_path);
+    } else if (root->pass == 2) {
+        cost_index_2p(path, root, loop_count, partial_path);
     } else {
-        path->path.rows = baserel->rows;
-        path->path.rows_sample = duplicate_sample(baserel->rows_sample); /* may be NULL */
-
-        qpquals = extract_nonindex_conditions(path->indexinfo->indrestrictinfo,
-                                              path->indexclauses);
+        elog(ERROR, "bad pass number");
     }
-
-    /* ----------------------------------------------------------------------
-     * 2) Allocate per-sample outputs; set accumulators for scalar means
-     * ----------------------------------------------------------------------
-     * We will keep per-sample startup/total costs and average into scalars.
-     */
-    const int sample_count = path->path.rows_sample->sample_count;
-    Assert(sample_count > 0);
-
-    path->path.startup_cost_sample = initialize_sample(sample_count);
-    path->path.total_cost_sample = initialize_sample(sample_count);
-
-    double rows_accum = 0.0; /* per-worker rows */
-    Cost startup_accum = 0.0;
-    Cost total_accum = 0.0;
-
-    /* ----------------------------------------------------------------------
-     * 3) Precompute sample-invariant terms (I/O, quals, AM costs, etc.)
-     * ----------------------------------------------------------------------
-     * Avoid recomputing inside the loop; prevents subtle inconsistencies.
-     */
-    amcostestimate_function amcostestimate =
-            (amcostestimate_function) index->amcostestimate;
-
-    Cost indexStartupCost;
-    Cost indexTotalCost;
-    Selectivity indexSelectivity;
-    double indexCorrelation;
-    double index_pages; /* double in API */
-
-    amcostestimate(
-        root, path, loop_count,
-        &indexStartupCost, &indexTotalCost,
-        &indexSelectivity, &indexCorrelation,
-        &index_pages
-    );
-
-    /* Save for bitmap planning (as in upstream). */
-    path->indextotalcost = indexTotalCost;
-    path->indexselectivity = indexSelectivity;
-
-    /* Costs for touching the index itself. */
-    const Cost run_cost_index = indexTotalCost - indexStartupCost;
-    Cost startup_bias = 0;
-    if (!enable_indexscan)
-        startup_bias += disable_cost;
-
-    /* Fetch tablespace page costs (heap I/O). */
-    double spc_seq_page_cost, spc_random_page_cost;
-    get_tablespace_page_costs(
-        baserel->reltablespace,
-        &spc_random_page_cost,
-        &spc_seq_page_cost
-    );
-
-    /* Estimate heap tuples fetched (selectivity * table tuples). */
-    const double tuples_fetched =
-            clamp_row_est(indexSelectivity * baserel->tuples);
-
-    /* Compute heap page I/O costs per original logic (independent of samples). */
-    Cost max_IO_cost, min_IO_cost;
-    double pages_fetched, rand_heap_pages;
-
-    if (loop_count > 1) {
-        pages_fetched = index_pages_fetched(
-            tuples_fetched * loop_count,
-            baserel->pages,
-            (double) index->pages,
-            root
-        );
-        if (indexonly)
-            pages_fetched = ceil(pages_fetched * (1.0 - baserel->allvisfrac));
-
-        rand_heap_pages = pages_fetched;
-        max_IO_cost = (pages_fetched * spc_random_page_cost) / loop_count;
-
-        pages_fetched = ceil(indexSelectivity * (double) baserel->pages);
-        pages_fetched = index_pages_fetched(
-            pages_fetched * loop_count,
-            baserel->pages,
-            (double) index->pages,
-            root
-        );
-        if (indexonly)
-            pages_fetched = ceil(pages_fetched * (1.0 - baserel->allvisfrac));
-
-        min_IO_cost = (pages_fetched * spc_random_page_cost) / loop_count;
-    } else {
-        pages_fetched = index_pages_fetched(
-            tuples_fetched,
-            baserel->pages,
-            (double) index->pages,
-            root
-        );
-        if (indexonly)
-            pages_fetched = ceil(pages_fetched * (1.0 - baserel->allvisfrac));
-
-        rand_heap_pages = pages_fetched;
-        max_IO_cost = pages_fetched * spc_random_page_cost;
-
-        pages_fetched = ceil(indexSelectivity * (double) baserel->pages);
-        if (indexonly)
-            pages_fetched = ceil(pages_fetched * (1.0 - baserel->allvisfrac));
-
-        if (pages_fetched > 0) {
-            min_IO_cost = spc_random_page_cost;
-            if (pages_fetched > 1)
-                min_IO_cost += (pages_fetched - 1) * spc_seq_page_cost;
-        } else
-            min_IO_cost = 0;
-    }
-
-    /* Optionally determine parallel workers (upstream semantics). */
-    if (partial_path) {
-        if (indexonly)
-            rand_heap_pages = -1;
-
-        path->path.parallel_workers = compute_parallel_worker(
-            baserel,
-            rand_heap_pages,
-            index_pages,
-            max_parallel_workers_per_gather
-        );
-
-        if (path->path.parallel_workers <= 0)
-            return;
-
-        path->path.parallel_aware = true;
-    }
-
-    /* Interpolate I/O cost based on correlation. */
-    const double csquared = indexCorrelation * indexCorrelation;
-    const Cost heap_io_cost = max_IO_cost + csquared * (min_IO_cost - max_IO_cost);
-
-    /* Qual eval costs (sample-invariant). */
-    QualCost qpqual_cost;
-    cost_qual_eval(&qpqual_cost, qpquals, root);
-
-    const Cost tlist_startup = path->path.pathtarget->cost.startup;
-    const Cost tlist_per_tuple = path->path.pathtarget->cost.per_tuple;
-    const Cost cpu_per_tuple = cpu_tuple_cost + qpqual_cost.per_tuple;
-
-    const bool use_parallel = (path->path.parallel_workers > 0);
-    const double parallel_divisor = use_parallel ? get_parallel_divisor(&path->path) : 1.0;
-
-    /* Base startup cost (no sample dependence). */
-    const Cost startup_base =
-            startup_bias + indexStartupCost + qpqual_cost.startup + tlist_startup;
-
-    /* Base run cost parts independent of samples. */
-    const Cost run_cost_base = run_cost_index + heap_io_cost;
-
-    /* ----------------------------------------------------------------------
-     * 4) Per-sample evaluation (do NOT mutate input samples)
-     * ----------------------------------------------------------------------
-     * For each sample row estimate:
-     *  - compute per-sample CPU run cost (tlist per output row)
-     *  - apply parallel divisor to CPU & rows (not to heap I/O)
-     *  - record sample startup/total; accumulate means for scalars
-     */
-    for (int i = 0; i < sample_count; ++i) {
-        const double sample_rows_global = path->path.rows_sample->sample[i];
-
-        /* 5.1) Per-sample startup cost: identical across samples here. */
-        const Cost startup_cost = startup_base;
-
-        /* 5.2) CPU run cost = scan-all-tuples + tlist per output row. */
-        Cost cpu_run_cost = cpu_per_tuple * tuples_fetched;
-        double worker_rows = sample_rows_global;
-
-        if (use_parallel) {
-            cpu_run_cost /= parallel_divisor;
-            worker_rows = clamp_row_est(sample_rows_global / parallel_divisor);
-        }
-
-        cpu_run_cost += tlist_per_tuple * worker_rows;
-
-        /* 5.3) Total run cost = base (index + heap I/O) + per-sample CPU. */
-        const Cost run_cost = run_cost_base + cpu_run_cost;
-        const Cost total_cost = startup_cost + run_cost;
-
-        /* 5.4) Record per-sample outputs and update accumulators. */
-        path->path.rows_sample->sample[i] = worker_rows;
-        path->path.startup_cost_sample->sample[i] = startup_cost;
-        path->path.total_cost_sample->sample[i] = total_cost;
-
-        rows_accum += worker_rows; /* per-worker rows mean */
-        startup_accum += startup_cost;
-        total_accum += total_cost;
-    }
-
-    /* ----------------------------------------------------------------------
-     * 5) Finalize scalar outputs by averaging across samples
-     * ----------------------------------------------------------------------
-     * Keep classic semantics (rows are per-worker under parallelism).
-     */
-    const double invN = 1.0 / (double) sample_count;
-    path->path.rows = rows_accum * invN;
-    path->path.startup_cost = startup_accum * invN;
-    path->path.total_cost = total_accum * invN;
-
-    /* ----------------------------------------------------------------------
-     * 6) Notes
-     * ----------------------------------------------------------------------
-     * - We do not amortize heap I/O under parallelism (same as upstream).
-     * - Helpers duplicate_sample()/initialize_sample() are assumed to
-     *   allocate in the Planner context so samples live as long as the Path.
-     */
-}
-
-void log_join_rows_and_cost_sample(
-    const JoinPath *jpath
-) {
-    const Sample *rows_sample = jpath->path.rows_sample;
-    const int rows_sample_count = rows_sample->sample_count;
-    for (int sample_idx = 0; sample_idx < rows_sample_count; ++sample_idx) {
-        elog(DEBUG1, "rows_sample[%d] %.3f", sample_idx, rows_sample->sample[sample_idx]);
-    }
-
-    const Sample *total_cost_sample = jpath->path.total_cost_sample;
-    const int total_cost_sample_count = total_cost_sample->sample_count;
-    for (int sample_idx = 0; sample_idx < total_cost_sample_count; ++sample_idx) {
-        elog(DEBUG1, "total_cost_sample[%d] %.3f", sample_idx, total_cost_sample->sample[sample_idx]);
-    }
-}
-
-/*
- * extract_nonindex_conditions
- *
- * Given a list of quals to be enforced in an indexscan, extract the ones that
- * will have to be applied as qpquals (ie, the index machinery won't handle
- * them).  Here we detect only whether a qual clause is directly redundant
- * with some indexclause.  If the index path is chosen for use, createplan.c
- * will try a bit harder to get rid of redundant qual conditions; specifically
- * it will see if quals can be proven to be implied by the indexquals.  But
- * it does not seem worth the cycles to try to factor that in at this stage,
- * since we're only trying to estimate qual eval costs.  Otherwise this must
- * match the logic in create_indexscan_plan().
- *
- * qual_clauses, and the result, are lists of RestrictInfos.
- * indexclauses is a list of IndexClauses.
- */
-static List *
-extract_nonindex_conditions(List *qual_clauses, List *indexclauses) {
-    List *result = NIL;
-    ListCell *lc;
-
-    foreach(lc, qual_clauses) {
-        RestrictInfo *rinfo = lfirst_node(RestrictInfo, lc);
-
-        if (rinfo->pseudoconstant)
-            continue; /* we may drop pseudoconstants here */
-        if (is_redundant_with_indexclauses(rinfo, indexclauses))
-            continue; /* dup or derived from same EquivalenceClass */
-        /* ... skip the predicate proof attempt createplan.c will try ... */
-        result = lappend(result, rinfo);
-    }
-    return result;
 }
 
 /*
@@ -1884,13 +1462,10 @@ void cost_resultscan(
     Assert(baserel->rtekind == RTE_RESULT);
 
     /* Mark the path with the correct row estimate */
-    if (param_info) {
+    if (param_info)
         path->rows = param_info->ppi_rows;
-        path->rows_sample = duplicate_sample(param_info->ppi_rows_sample);
-    } else {
+    else
         path->rows = baserel->rows;
-        path->rows_sample = duplicate_sample(baserel->rows_sample);
-    }
 
     /* We charge qual cost plus cpu_tuple_cost */
     get_restriction_qual_cost(root, baserel, param_info, &qpqual_cost);
@@ -1901,8 +1476,6 @@ void cost_resultscan(
 
     path->startup_cost = startup_cost;
     path->total_cost = startup_cost + run_cost;
-
-    // TODO: Do we need cost sampling for result scan?
 }
 
 /*
@@ -2912,7 +2485,7 @@ void initial_cost_nestloop(
     Path *inner_path,
     const JoinPathExtraData *extra
 ) {
-    if (root->pass == 1) {
+    if (!enable_rows_dist || root->pass == 1) {
         initial_cost_nestloop_1p(
             root, workspace, jointype, outer_path, inner_path, extra
         );
@@ -2938,7 +2511,7 @@ void final_cost_nestloop(
     JoinCostWorkspace *workspace,
     const JoinPathExtraData *extra
 ) {
-    if (root->pass == 1) {
+    if (!enable_rows_dist || root->pass == 1) {
         final_cost_nestloop_1p(root, path, workspace, extra);
     } else if (root->pass == 2) {
         final_cost_nestloop_2p(root, path, workspace, extra);
@@ -3008,7 +2581,7 @@ void initial_cost_mergejoin(
     List *innersortkeys,
     JoinPathExtraData *extra
 ) {
-    if (root->pass == 1) {
+    if (!enable_rows_dist || root->pass == 1) {
         initial_cost_mergejoin_1p(
             root, workspace, jointype, mergeclauses,
             outer_path, inner_path, outersortkeys, innersortkeys, extra
@@ -3055,7 +2628,7 @@ void final_cost_mergejoin(
     JoinCostWorkspace *workspace,
     const JoinPathExtraData *extra
 ) {
-    if (root->pass == 1) {
+    if (!enable_rows_dist || root->pass == 1) {
         final_cost_mergejoin_1p(root, path, workspace, extra);
     } else if (root->pass == 2) {
         final_cost_mergejoin_2p(root, path, workspace, extra);
@@ -3100,7 +2673,7 @@ void initial_cost_hashjoin(
     JoinPathExtraData *extra,
     bool parallel_hash
 ) {
-    if (root->pass == 1) {
+    if (!enable_rows_dist || root->pass == 1) {
         initial_cost_hashjoin_1p(
             root, workspace, jointype, hashclauses,
             outer_path, inner_path, extra, parallel_hash
@@ -3131,7 +2704,7 @@ void final_cost_hashjoin(
     JoinCostWorkspace *workspace,
     const JoinPathExtraData *extra
 ) {
-    if (root->pass == 1) {
+    if (!enable_rows_dist || root->pass == 1) {
         final_cost_hashjoin_1p(root, path, workspace, extra);
     } else if (root->pass == 2) {
         final_cost_hashjoin_2p(root, path, workspace, extra);
@@ -3495,34 +3068,6 @@ static bool cost_qual_eval_walker(Node *node, cost_qual_eval_context *context) {
 }
 
 /*
- * get_restriction_qual_cost
- *	  Compute evaluation costs of a baserel's restriction quals, plus any
- *	  movable join quals that have been pushed down to the scan.
- *	  Results are returned into *qpqual_cost.
- *
- * This is a convenience subroutine that works for seqscans and other cases
- * where all the given quals will be evaluated the hard way.  It's not useful
- * for cost_index(), for example, where the index machinery takes care of
- * some of the quals.  We assume baserestrictcost was previously set by
- * set_baserel_size_estimates().
- */
-static void get_restriction_qual_cost(
-    PlannerInfo *root, RelOptInfo *baserel,
-    ParamPathInfo *param_info,
-    QualCost *qpqual_cost
-) {
-    if (param_info) {
-        /* Include costs of pushed-down clauses */
-        cost_qual_eval(qpqual_cost, param_info->ppi_clauses, root);
-
-        qpqual_cost->startup += baserel->baserestrictcost.startup;
-        qpqual_cost->per_tuple += baserel->baserestrictcost.per_tuple;
-    } else
-        *qpqual_cost = baserel->baserestrictcost;
-}
-
-
-/*
  * compute_semi_anti_join_factors
  *	  Estimate how much of the inner input a SEMI, ANTI, or inner_unique join
  *	  can be expected to scan.
@@ -3658,22 +3203,19 @@ void compute_semi_anti_join_factors(
  *	width: the estimated average output tuple width in bytes.
  *	baserestrictcost: estimated cost of evaluating baserestrictinfo clauses.
  */
-void set_baserel_size_estimates(PlannerInfo *root, RelOptInfo *rel) {
-    double nrows, est_sel;
-
+void set_baserel_size_estimates(
+    PlannerInfo *root,
+    RelOptInfo *rel
+) {
     /* Should only be applied to base relations */
     Assert(rel->relid > 0);
 
-    est_sel = clauselist_selectivity(
+    const double est_sel = clauselist_selectivity(
         root, rel->baserestrictinfo, 0, JOIN_INNER, NULL
     );
-
-    nrows = rel->tuples * est_sel;
-
+    const double nrows = rel->tuples * est_sel;
     rel->rows = clamp_row_est(nrows);
-
     cost_qual_eval(&rel->baserestrictcost, rel->baserestrictinfo, root);
-
     set_rel_width(root, rel);
 
     if (enable_rows_dist) {
@@ -3690,29 +3232,26 @@ void set_baserel_size_estimates(PlannerInfo *root, RelOptInfo *rel) {
  * set_baserel_size_estimates must have been applied already.
  */
 double get_parameterized_baserel_size(
-    PlannerInfo *root, RelOptInfo *rel,
-    List *param_clauses
+    PlannerInfo *root,
+    const RelOptInfo *rel,
+    const List *param_clauses
 ) {
-    List *allclauses;
-    double nrows;
-
     /*
      * Estimate the number of rows returned by the parameterized scan, knowing
      * that it will apply all the extra join clauses as well as the rel's own
      * restriction clauses.  Note that we force the clauses to be treated as
      * non-join clauses during selectivity estimation.
      */
-    allclauses = list_concat_copy(param_clauses, rel->baserestrictinfo);
-    nrows = rel->tuples *
-            clauselist_selectivity(root,
-                                   allclauses,
-                                   rel->relid, /* do not use 0! */
-                                   JOIN_INNER,
-                                   NULL);
+    List *allclauses = list_concat_copy(param_clauses, rel->baserestrictinfo);
+    const Selectivity est_sel = clauselist_selectivity(
+        root, allclauses, rel->relid, JOIN_INNER, NULL
+    );
+    double nrows = rel->tuples * est_sel;
     nrows = clamp_row_est(nrows);
     /* For safety, make sure result is not more than the base estimate */
-    if (nrows > rel->rows)
+    if (nrows > rel->rows) {
         nrows = rel->rows;
+    }
     return nrows;
 }
 

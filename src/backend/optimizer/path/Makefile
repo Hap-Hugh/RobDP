@@ -16,7 +16,8 @@ OBJS = \
 	allpaths.o \
 	clausesel.o \
 	costsize.o \
-	costsize_ext.o \
+	cost_ext.o \
+	joincost_ext.o \
 	equivclass.o \
 	indxpath.o \
 	joinpath.o \

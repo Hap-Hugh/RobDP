@@ -7,11 +7,52 @@
 
 #include "nodes/pathnodes.h"
 
+/* ==== ==== ==== ==== ==== ==== SCAN COST ==== ==== ==== ==== ==== ==== */
+
+extern void get_restriction_qual_cost(
+    PlannerInfo *root,
+    const RelOptInfo *baserel,
+    const ParamPathInfo *param_info,
+    QualCost *qpqual_cost
+);
+
+extern void cost_seqscan_1p(
+    Path *path,
+    PlannerInfo *root,
+    const RelOptInfo *baserel,
+    const ParamPathInfo *param_info
+);
+
+extern void cost_seqscan_2p(
+    Path *path,
+    PlannerInfo *root,
+    const RelOptInfo *baserel,
+    const ParamPathInfo *param_info
+);
+
+extern void cost_index_1p(
+    IndexPath *path,
+    PlannerInfo *root,
+    double loop_count,
+    bool partial_path
+);
+
+extern void cost_index_2p(
+    IndexPath *path,
+    PlannerInfo *root,
+    double loop_count,
+    bool partial_path
+);
+
+/* ==== ==== ==== ==== ==== ==== JOIN COST ==== ==== ==== ==== ==== ==== */
+
 #define GET_ROW(s, i, scalar, is_const) \
-( ((s) == NULL || (s)->sample_count <= 0) ? (scalar) : ((is_const) ? (s)->sample[0] : (s)->sample[(i)]) )
+( ((s) == NULL || (s)->sample_count <= 0) \
+? (scalar) : ((is_const) ? (s)->sample[0] : (s)->sample[(i)]) )
 
 #define GET_COST(s, i, scalar, is_const) \
-( ((s) == NULL || (s)->sample_count <= 0) ? (scalar) : ((is_const) ? (s)->sample[0] : (s)->sample[(i)]) )
+( ((s) == NULL || (s)->sample_count <= 0) \
+? (scalar) : ((is_const) ? (s)->sample[0] : (s)->sample[(i)]) )
 
 
 extern double get_parallel_divisor(
