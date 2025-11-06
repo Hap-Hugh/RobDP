@@ -126,7 +126,7 @@ add_path_by_strategy(
     Assert(sample_count <= DIST_MAX_SAMPLE);
 
     /* Fetch rels for this level/index */
-    const RelOptInfo *joinrel_first =
+    const RelOptInfo *joinrel_min =
             (RelOptInfo *) list_nth(root->min_envelope[lev_index], rel_index);
     RelOptInfo *joinrel =
             (RelOptInfo *) list_nth(root->join_rel_level[lev_index], rel_index);
@@ -144,8 +144,8 @@ add_path_by_strategy(
      * Fetch finalized per-sample baseline scores (global minima across
      * partial + non-partial), already computed by calc_*_score functions.
      */
-    Assert(joinrel_first->score_sample_final != NULL);
-    const Sample *score_sample = joinrel_first->min_score_sample;
+    Assert(joinrel_min->score_sample_final != NULL);
+    const Sample *score_sample = joinrel_min->min_score_sample;
 
     Assert(score_sample->sample_count >= 0 &&
         score_sample->sample_count <= DIST_MAX_SAMPLE);
@@ -302,7 +302,7 @@ add_path_by_strategy(
  *   - `retain_path_func` computes a per-path score. Lower score = better.
  *
  * Preconditions:
- *   - score_sample_final was already computed for joinrel_first.
+ *   - score_sample_final was already computed for joinrel_min.
  *   - sample_count <= DIST_MAX_SAMPLE.
  *
  * Postconditions:
@@ -332,7 +332,7 @@ retain_path_by_strategy(
     Assert(cand_list != NULL);
 
     /* Fetch RelOptInfo for reading baseline and writing survivors */
-    const RelOptInfo *min_envelope =
+    const RelOptInfo *joinrel_min =
             (RelOptInfo *) list_nth(root->min_envelope[lev_index], rel_index);
     RelOptInfo *joinrel =
             (RelOptInfo *) list_nth(root->join_rel_level[lev_index], rel_index);
@@ -347,7 +347,7 @@ retain_path_by_strategy(
      * (this is needed for scoring).
      */
     Assert(min_envelope->score_sample_final != NULL);
-    const Sample *score_sample = min_envelope->min_score_sample;
+    const Sample *score_sample = joinrel_min->min_score_sample;
 
     Assert(score_sample->sample_count >= 0 &&
         score_sample->sample_count <= DIST_MAX_SAMPLE);
@@ -486,7 +486,7 @@ retain_path_by_strategy(
 }
 
 /*
- * calc_score_from_pathlist
+ * calc_min_score_from_pathlist
  *
  * Compute the minimum total_cost for this joinrel over its candidate paths.
  * Two values are produced:
@@ -505,25 +505,30 @@ retain_path_by_strategy(
  *   surrounding sampling framework; this routine uses total_cost only.
  */
 void
-calc_score_from_pathlist(
+calc_min_score_from_pathlist(
     RelOptInfo *joinrel
 ) {
-    Assert(sample_count >= 0 && sample_count <= DIST_MAX_SAMPLE);
     ListCell *lc;
+    const int sample_count = error_sample_count;
+    joinrel->min_score_sample = initialize_sample(sample_count);
 
-    double min_score = DBL_MAX;
-    foreach(lc, joinrel->pathlist) {
-        const Path *path = (Path *) lfirst(lc);
-        min_score = Min(path->total_cost, min_score);
-    }
-    joinrel->min_score = min_score;
+    for (int round = 0; round < sample_count; ++round) {
+        double min_score = DBL_MAX;
+        foreach(lc, joinrel->pathlist_mat[round]) {
+            const Path *path = (Path *) lfirst(lc);
+            min_score = Min(path->total_cost, min_score);
+        }
+        joinrel->min_score = min_score;
 
-    double partial_min_score = DBL_MAX;
-    foreach(lc, joinrel->partial_pathlist) {
-        const Path *partial_path = (Path *) lfirst(lc);
-        partial_min_score = Min(partial_path->total_cost, partial_min_score);
+        double partial_min_score = DBL_MAX;
+        foreach(lc, joinrel->partial_pathlist_mat[round]) {
+            const Path *partial_path = (Path *) lfirst(lc);
+            partial_min_score = Min(partial_path->total_cost, partial_min_score);
+        }
+        joinrel->partial_min_score = partial_min_score;
+
+        joinrel->min_score_sample->sample[round] = Min(min_score, partial_min_score);
     }
-    joinrel->partial_min_score = partial_min_score;
 }
 
 /*

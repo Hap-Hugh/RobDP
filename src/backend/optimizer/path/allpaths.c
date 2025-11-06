@@ -41,6 +41,7 @@
 #include "optimizer/optimizer.h"
 #include "optimizer/pathnode.h"
 #include "optimizer/paths.h"
+#include "optimizer/pathcxt.h"
 #include "optimizer/plancat.h"
 #include "optimizer/planner.h"
 #include "optimizer/restrictinfo.h"
@@ -205,6 +206,83 @@ static void recurse_push_qual(Node *setOp, Query *topquery,
 static void remove_unused_subquery_outputs(Query *subquery, RelOptInfo *rel,
                                            Bitmapset *extra_used_attrs);
 
+static void
+print_rels_paths(const PlannerInfo *root, const char *label) {
+    elog(LOG, "=== %s: simple_rel_array_size=%d ===",
+         label, root->simple_rel_array_size);
+
+    for (int i = 1; i < root->simple_rel_array_size; i++) {
+        RelOptInfo *rel = root->simple_rel_array[i];
+        if (!rel)
+            continue;
+
+        if (rel->reloptkind != RELOPT_BASEREL &&
+            rel->reloptkind != RELOPT_OTHER_MEMBER_REL)
+            continue;
+
+        elog(LOG, "[Rel %d] rows=%.2f pages=%.0u paths=%d",
+             i, rel->rows, rel->pages, list_length(rel->pathlist));
+
+        int idx = 0;
+        for (ListCell *lc = list_head(rel->pathlist); lc; lc = lnext(rel->pathlist, lc)) {
+            Path *path = (Path *) lfirst(lc);
+            bool parameterized = (path->param_info != NULL);
+            int nkeys = list_length(path->pathkeys);
+
+            elog(LOG,
+                 "  Path#%d rows=%.2f cost=%.2f..%.2f parallel=%s pathkeys=%d%s",
+                 idx++,
+                 path->rows,
+                 path->startup_cost,
+                 path->total_cost,
+                 path->parallel_aware ? "yes" : "no",
+                 nkeys,
+                 parameterized ? " (parameterized)" : "");
+
+            if (IsA(path, IndexPath)) {
+                IndexPath *ip = (IndexPath *) path;
+                elog(LOG, "      index: %s",
+                     ip->indexinfo && ip->indexinfo->indexoid
+                     ? get_rel_name(ip->indexinfo->indexoid)
+                     : "(unknown)");
+            }
+        }
+
+        /* === NEW: also print all pathlists inside pathlist_mat (array of List*) === */
+        for (int s = 0; s < error_sample_count; s++) {
+            List *plist = rel->pathlist_mat[s]; /* each entry points to a pathlist */
+            if (!plist)
+                continue;
+
+            elog(LOG, "  [pathlist_mat #%d] paths=%d", s, list_length(plist));
+
+            idx = 0;
+            for (ListCell *lc2 = list_head(plist); lc2; lc2 = lnext(plist, lc2)) {
+                Path *path = (Path *) lfirst(lc2);
+                bool parameterized = (path->param_info != NULL);
+                int nkeys = list_length(path->pathkeys);
+
+                elog(LOG,
+                     "    Path#%d rows=%.2f cost=%.2f..%.2f parallel=%s pathkeys=%d%s",
+                     idx++,
+                     path->rows,
+                     path->startup_cost,
+                     path->total_cost,
+                     path->parallel_aware ? "yes" : "no",
+                     nkeys,
+                     parameterized ? " (parameterized)" : "");
+
+                if (IsA(path, IndexPath)) {
+                    IndexPath *ip = (IndexPath *) path;
+                    elog(LOG, "        index: %s",
+                         ip->indexinfo && ip->indexinfo->indexoid
+                         ? get_rel_name(ip->indexinfo->indexoid)
+                         : "(unknown)");
+                }
+            }
+        }
+    }
+}
 
 /*
  * make_one_rel
@@ -258,8 +336,10 @@ make_one_rel(PlannerInfo *root, List *joinlist) {
      */
     root->pass = 1;
     set_base_rel_pathlists(root);
+    print_rels_paths(root, "pass-1");
     root->pass = 2;
     set_base_rel_pathlists(root);
+    print_rels_paths(root, "pass-2");
 
     /*
      * Generate access paths for the entire join tree.
@@ -356,58 +436,6 @@ set_base_rel_sizes(PlannerInfo *root) {
     }
 }
 
-static void init_baserel_path_context_1p(
-    PlannerInfo *root,
-    RelOptInfo *rel,
-    const int round
-) {
-    Assert(root->pass == 1);
-    Assert(round > 0 && round <= error_sample_count);
-
-    root->round = round;
-
-    rel->pathlist = rel->pathlist_mat[round];
-    rel->partial_pathlist = rel->partial_pathlist_mat[round];
-    rel->cheapest_startup_path = rel->cheapest_startup_path_mat[round];
-    rel->cheapest_total_path = rel->cheapest_total_path_mat[round];
-    rel->cheapest_unique_path = rel->cheapest_unique_path_mat[round];
-    rel->cheapest_parameterized_paths = rel->cheapest_parameterized_paths_mat[round];
-}
-
-static void finalize_baserel_path_context_1p(
-    PlannerInfo *root,
-    RelOptInfo *rel,
-    const int round
-) {
-    Assert(root->pass == 1);
-    Assert(round > 0 && round <= error_sample_count);
-
-    root->round = round;
-
-    rel->pathlist_mat[round] = rel->pathlist;
-    rel->partial_pathlist_mat[round] = rel->partial_pathlist;
-    rel->cheapest_startup_path_mat[round] = rel->cheapest_startup_path;
-    rel->cheapest_total_path_mat[round] = rel->cheapest_total_path;
-    rel->cheapest_unique_path_mat[round] = rel->cheapest_unique_path;
-    rel->cheapest_parameterized_paths_mat[round] = rel->cheapest_parameterized_paths;
-}
-
-static void init_baserel_path_context_2p(
-    PlannerInfo *root,
-    RelOptInfo *rel
-) {
-    Assert(root->pass == 1);
-
-    root->round = -1;
-
-    rel->pathlist = NIL;
-    rel->partial_pathlist = NIL;
-    rel->cheapest_startup_path = NULL;
-    rel->cheapest_total_path = NULL;
-    rel->cheapest_unique_path = NULL;
-    rel->cheapest_parameterized_paths = NIL;
-}
-
 /*
  * set_base_rel_pathlists
  *	  Finds all paths available for scanning each base-relation entry.
@@ -449,6 +477,9 @@ set_base_rel_pathlists(PlannerInfo *root) {
             );
             set_rel_pathlist(
                 root, rel, rti, root->simple_rte_array[rti]
+            );
+            finalize_baserel_path_context_2p(
+                root, rel
             );
         } else {
             elog(ERROR, "bad pass number");
@@ -2136,6 +2167,7 @@ static void
 set_dummy_rel_pathlist(RelOptInfo *rel) {
     /* Set dummy size estimates --- we leave attr_widths[] as zeroes */
     rel->rows = 0;
+    rel->saved_rows = 0;
     rel->reltarget->width = 0;
 
     /* Discard any pre-existing paths; no further need for them */
@@ -3399,27 +3431,29 @@ standard_join_search(PlannerInfo *root, const int levels_needed, List *initial_r
         foreach(lc, root->join_rel_level[lev]) {
             RelOptInfo *rel = lfirst(lc);
 
-            /* Compute per-round cost samples for this rel */
-            calc_score_from_pathlist(rel);
-
-            /* Add partition-wise join paths (if applicable) */
+            /* Compute per-round cost samples for this join rel */
+            calc_min_score_from_pathlist(rel);
 
             for (int round = 0; round < error_sample_count; ++round) {
-                // FIXME
+                init_joinrel_path_context_1p(
+                    root, rel, NULL, NULL, round
+                );
+                /* Add partition-wise join paths (if applicable) */
                 generate_partitionwise_join_paths(root, rel);
+                /*
+                 * Add gather paths for partial plans except for the final joinrel.
+                 * (final handling happens later in grouping_planner)
+                 */
+                if (!bms_equal(rel->relids, root->all_query_rels)) {
+                    generate_useful_gather_paths(root, rel, false);
+                }
+                /* Select the cheapest paths now that all are built */
+                set_cheapest(rel);
+
+                finalize_joinrel_path_context_1p(
+                    root, rel, NULL, NULL, round
+                );
             }
-
-            /*
-             * Add gather paths for partial plans except for the final joinrel.
-             * (final handling happens later in grouping_planner)
-             */
-            if (!bms_equal(rel->relids, root->all_query_rels)) {
-                generate_useful_gather_paths(root, rel, false);
-            }
-
-            /* Select the cheapest paths now that all are built */
-            set_cheapest(rel);
-
 #ifdef OPTIMIZER_DEBUG
             debug_print_rel(root, rel);
 #endif
@@ -3508,7 +3542,6 @@ standard_join_search(PlannerInfo *root, const int levels_needed, List *initial_r
             /* Sort selected normal paths by total cost (ascending) */
             rel->pathlist = sort_pathlist_by_total_cost(rel->pathlist);
 
-
             /* --------------------------------------------------------------------
              * Phase 2 (partial paths):
              *   Same logic as above, but operating on partial_pathlist.
@@ -3554,6 +3587,7 @@ standard_join_search(PlannerInfo *root, const int levels_needed, List *initial_r
 #endif
         }
     }
+
 
     /*
      * We should have a single rel at the final level.

@@ -638,6 +638,37 @@ join_is_legal(PlannerInfo *root, RelOptInfo *rel1, RelOptInfo *rel2,
     return true;
 }
 
+static void
+print_joinrel_paths_dbg(
+    const PlannerInfo *root,
+    const RelOptInfo *joinrel,
+    const char *label
+) {
+    if (!joinrel || joinrel->reloptkind != RELOPT_JOINREL)
+        return;
+
+    elog(LOG, "=== %s: joinrel rows=%.2f paths=%d ===",
+         label,
+         joinrel->rows,
+         list_length(joinrel->pathlist));
+
+    int idx = 0;
+    for (ListCell *lc = list_head(joinrel->pathlist); lc; lc = lnext(joinrel->pathlist, lc)) {
+        Path *path = (Path *) lfirst(lc);
+        bool parameterized = (path->param_info != NULL);
+        int nkeys = list_length(path->pathkeys);
+
+        elog(LOG,
+             "  Path#%d rows=%.2f cost=%.2f..%.2f parallel=%s pathkeys=%d%s",
+             idx++,
+             path->rows,
+             path->startup_cost,
+             path->total_cost,
+             path->parallel_aware ? "yes" : "no",
+             nkeys,
+             parameterized ? " (parameterized)" : "");
+    }
+}
 
 /*
  * make_join_rel
@@ -736,6 +767,8 @@ make_join_rel(PlannerInfo *root, RelOptInfo *rel1, RelOptInfo *rel2) {
     /* Add paths to the join relation. */
     populate_joinrel_with_paths(root, rel1, rel2, joinrel, sjinfo,
                                 restrictlist);
+
+    // print_joinrel_paths_dbg(root, joinrel, "after populate_joinrel_with_paths");
 
     bms_free(joinrelids);
 
@@ -1321,6 +1354,7 @@ mark_dummy_rel(RelOptInfo *rel) {
 
     /* Set dummy size estimate */
     rel->rows = 0;
+    rel->saved_rows = 0;
 
     /* Evict any previously chosen paths */
     rel->pathlist = NIL;

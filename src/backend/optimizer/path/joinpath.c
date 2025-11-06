@@ -22,6 +22,7 @@
 #include "optimizer/cost.h"
 #include "optimizer/ep.h"
 #include "optimizer/optimizer.h"
+#include "optimizer/pathcxt.h"
 #include "optimizer/pathnode.h"
 #include "optimizer/paths.h"
 #include "optimizer/planmain.h"
@@ -106,105 +107,6 @@ static void generate_mergejoin_paths(
     List *merge_pathkeys,
     bool is_partial
 );
-
-static void init_joinrel_path_context_1p(
-    PlannerInfo *root,
-    RelOptInfo *joinrel,
-    RelOptInfo *outerrel,
-    RelOptInfo *innerrel,
-    const int round
-) {
-    Assert(root->pass == 1);
-    Assert(round > 0 && round <= error_sample_count);
-
-    root->round = round;
-
-    joinrel->pathlist = joinrel->pathlist_mat[round];
-    joinrel->partial_pathlist = joinrel->partial_pathlist_mat[round];
-    joinrel->cheapest_startup_path = joinrel->cheapest_startup_path_mat[round];
-    joinrel->cheapest_total_path = joinrel->cheapest_total_path_mat[round];
-    joinrel->cheapest_unique_path = joinrel->cheapest_unique_path_mat[round];
-    joinrel->cheapest_parameterized_paths = joinrel->cheapest_parameterized_paths_mat[round];
-
-    outerrel->pathlist = outerrel->pathlist_mat[round];
-    outerrel->partial_pathlist = outerrel->partial_pathlist_mat[round];
-    outerrel->cheapest_startup_path = outerrel->cheapest_startup_path_mat[round];
-    outerrel->cheapest_total_path = outerrel->cheapest_total_path_mat[round];
-    outerrel->cheapest_unique_path = outerrel->cheapest_unique_path_mat[round];
-    outerrel->cheapest_parameterized_paths = outerrel->cheapest_parameterized_paths_mat[round];
-
-    innerrel->pathlist = innerrel->pathlist_mat[round];
-    innerrel->partial_pathlist = innerrel->partial_pathlist_mat[round];
-    innerrel->cheapest_startup_path = innerrel->cheapest_startup_path_mat[round];
-    innerrel->cheapest_total_path = innerrel->cheapest_total_path_mat[round];
-    innerrel->cheapest_unique_path = innerrel->cheapest_unique_path_mat[round];
-    innerrel->cheapest_parameterized_paths = innerrel->cheapest_parameterized_paths_mat[round];
-}
-
-static void finalize_joinrel_path_context_1p(
-    PlannerInfo *root,
-    RelOptInfo *joinrel,
-    RelOptInfo *outerrel,
-    RelOptInfo *innerrel,
-    const int round
-) {
-    Assert(root->pass == 1);
-    Assert(round > 0 && round <= error_sample_count);
-
-    root->round = round;
-
-    joinrel->pathlist_mat[round] = joinrel->pathlist;
-    joinrel->partial_pathlist_mat[round] = joinrel->partial_pathlist;
-    joinrel->cheapest_startup_path_mat[round] = joinrel->cheapest_startup_path;
-    joinrel->cheapest_total_path_mat[round] = joinrel->cheapest_total_path;
-    joinrel->cheapest_unique_path_mat[round] = joinrel->cheapest_unique_path;
-    joinrel->cheapest_parameterized_paths_mat[round] = joinrel->cheapest_parameterized_paths;
-
-    outerrel->pathlist_mat[round] = outerrel->pathlist;
-    outerrel->partial_pathlist_mat[round] = outerrel->partial_pathlist;
-    outerrel->cheapest_startup_path_mat[round] = outerrel->cheapest_startup_path;
-    outerrel->cheapest_total_path_mat[round] = outerrel->cheapest_total_path;
-    outerrel->cheapest_unique_path_mat[round] = outerrel->cheapest_unique_path;
-    outerrel->cheapest_parameterized_paths_mat[round] = outerrel->cheapest_parameterized_paths;
-
-    innerrel->pathlist_mat[round] = innerrel->pathlist;
-    innerrel->partial_pathlist_mat[round] = innerrel->partial_pathlist;
-    innerrel->cheapest_startup_path_mat[round] = innerrel->cheapest_startup_path;
-    innerrel->cheapest_total_path_mat[round] = innerrel->cheapest_total_path;
-    innerrel->cheapest_unique_path_mat[round] = innerrel->cheapest_unique_path;
-    innerrel->cheapest_parameterized_paths_mat[round] = innerrel->cheapest_parameterized_paths;
-}
-
-static void init_joinrel_path_context_2p(
-    PlannerInfo *root,
-    RelOptInfo *joinrel,
-    RelOptInfo *outerrel,
-    RelOptInfo *innerrel
-) {
-    Assert(root->pass == 2);
-    root->round = -1;
-
-    joinrel->pathlist = NIL;
-    joinrel->partial_pathlist = NIL;
-    joinrel->cheapest_startup_path = NULL;
-    joinrel->cheapest_total_path = NULL;
-    joinrel->cheapest_unique_path = NULL;
-    joinrel->cheapest_parameterized_paths = NIL;
-
-    outerrel->pathlist = NIL;
-    outerrel->partial_pathlist = NIL;
-    outerrel->cheapest_startup_path = NULL;
-    outerrel->cheapest_total_path = NULL;
-    outerrel->cheapest_unique_path = NULL;
-    outerrel->cheapest_parameterized_paths = NIL;
-
-    innerrel->pathlist = NIL;
-    innerrel->partial_pathlist = NIL;
-    innerrel->cheapest_startup_path = NULL;
-    innerrel->cheapest_total_path = NULL;
-    innerrel->cheapest_unique_path = NULL;
-    innerrel->cheapest_parameterized_paths = NIL;
-}
 
 /*
  * add_paths_to_joinrel
@@ -400,6 +302,12 @@ add_paths_to_joinrel(
         extra.param_source_rels, joinrel->lateral_relids
     );
 
+    if (root->pass == 2) {
+        init_joinrel_path_context_2p(
+            root, joinrel, outerrel, innerrel
+        );
+    }
+
     /*
      * 1. Consider mergejoin paths where both relations must be explicitly
      * sorted.  Skip this if we can't mergejoin.
@@ -413,11 +321,11 @@ add_paths_to_joinrel(
                 sort_inner_and_outer(
                     root, joinrel, outerrel, innerrel, jointype, &extra
                 );
+                finalize_joinrel_path_context_1p(
+                    root, joinrel, outerrel, innerrel, round
+                );
             }
         } else if (root->pass == 2) {
-            init_joinrel_path_context_2p(
-                root, joinrel, outerrel, innerrel
-            );
             sort_inner_and_outer(
                 root, joinrel, outerrel, innerrel, jointype, &extra
             );
@@ -448,9 +356,6 @@ add_paths_to_joinrel(
                 );
             }
         } else if (root->pass == 2) {
-            init_joinrel_path_context_2p(
-                root, joinrel, outerrel, innerrel
-            );
             match_unsorted_outer(
                 root, joinrel, outerrel, innerrel, jointype, &extra
             );
@@ -473,11 +378,11 @@ add_paths_to_joinrel(
                 hash_inner_and_outer(
                     root, joinrel, outerrel, innerrel, jointype, &extra
                 );
+                finalize_joinrel_path_context_1p(
+                    root, joinrel, outerrel, innerrel, round
+                );
             }
         } else if (root->pass == 2) {
-            init_joinrel_path_context_2p(
-                root, joinrel, outerrel, innerrel
-            );
             hash_inner_and_outer(
                 root, joinrel, outerrel, innerrel, jointype, &extra
             );

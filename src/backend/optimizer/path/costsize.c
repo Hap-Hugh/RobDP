@@ -340,7 +340,7 @@ void cost_gather(
     const ParamPathInfo *param_info,
     const double *rows
 ) {
-    if (!enable_rows_dist || root->pass == 1) {
+    if (!enable_rows_dist || root->pass == 1 || root->pass == 3) {
         cost_gather_1p(path, root, rel, param_info, rows);
     } else if (root->pass == 2) {
         cost_gather_2p(path, root, rel, param_info, rows);
@@ -393,7 +393,7 @@ void cost_gather_merge(
     const Cost input_total_cost,
     const double *rows
 ) {
-    if (!enable_rows_dist || root->pass == 1) {
+    if (!enable_rows_dist || root->pass == 1 || root->pass == 3) {
         cost_gather_merge_1p(
             path, root, rel, param_info, input_startup_cost, input_total_cost, rows
         );
@@ -3186,15 +3186,6 @@ void set_joinrel_size_estimates(
         set_joinrel_rows_sample(
             root, rel, outer_rel, inner_rel, restrictlist, sel_est
         );
-
-        if (root->pass == 1) {
-            /* Overwrite: we only need rows at a particular sample point. */
-            Assert(rel->rows_sample != NULL);
-            if (rel->rows_sample->sample_count != 1) {
-                Assert(rel->rows_sample->sample_count == error_sample_count);
-                rel->rows = rel->rows_sample->sample[root->round];
-            }
-        }
     } else {
         rel->rows_sample = NULL;
     }

@@ -883,6 +883,7 @@ typedef struct RelOptInfo
 	 */
 	/* estimated number of result tuples */
 	Cardinality rows;
+	Cardinality saved_rows;
 
 	/*
 	 * per-relation planner control flags
@@ -910,6 +911,13 @@ typedef struct RelOptInfo
 	struct Path *cheapest_total_path;
 	struct Path *cheapest_unique_path;
 	List	   *cheapest_parameterized_paths;
+
+	List	   *pathlist_saved;		/* Path structures */
+	List	   *partial_pathlist_saved;	/* Partial Paths */
+	struct Path *cheapest_startup_path_saved;
+	struct Path *cheapest_total_path_saved;
+	struct Path *cheapest_unique_path_saved;
+	List	   *cheapest_parameterized_paths_saved;
 
 	/*
 	 * materialization information (with samples)
