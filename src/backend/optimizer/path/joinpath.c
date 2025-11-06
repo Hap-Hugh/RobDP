@@ -94,17 +94,117 @@ static List *select_mergejoin_clauses(PlannerInfo *root,
                                       JoinType jointype,
                                       bool *mergejoin_allowed);
 
-static void generate_mergejoin_paths(PlannerInfo *root,
-                                     RelOptInfo *joinrel,
-                                     RelOptInfo *innerrel,
-                                     Path *outerpath,
-                                     JoinType jointype,
-                                     JoinPathExtraData *extra,
-                                     bool useallclauses,
-                                     Path *inner_cheapest_total,
-                                     List *merge_pathkeys,
-                                     bool is_partial);
+static void generate_mergejoin_paths(
+    PlannerInfo *root,
+    RelOptInfo *joinrel,
+    RelOptInfo *innerrel,
+    Path *outerpath,
+    JoinType jointype,
+    JoinPathExtraData *extra,
+    bool useallclauses,
+    Path *inner_cheapest_total,
+    List *merge_pathkeys,
+    bool is_partial
+);
 
+static void init_joinrel_path_context_1p(
+    PlannerInfo *root,
+    RelOptInfo *joinrel,
+    RelOptInfo *outerrel,
+    RelOptInfo *innerrel,
+    const int round
+) {
+    Assert(root->pass == 1);
+    Assert(round > 0 && round <= error_sample_count);
+
+    root->round = round;
+
+    joinrel->pathlist = joinrel->pathlist_mat[round];
+    joinrel->partial_pathlist = joinrel->partial_pathlist_mat[round];
+    joinrel->cheapest_startup_path = joinrel->cheapest_startup_path_mat[round];
+    joinrel->cheapest_total_path = joinrel->cheapest_total_path_mat[round];
+    joinrel->cheapest_unique_path = joinrel->cheapest_unique_path_mat[round];
+    joinrel->cheapest_parameterized_paths = joinrel->cheapest_parameterized_paths_mat[round];
+
+    outerrel->pathlist = outerrel->pathlist_mat[round];
+    outerrel->partial_pathlist = outerrel->partial_pathlist_mat[round];
+    outerrel->cheapest_startup_path = outerrel->cheapest_startup_path_mat[round];
+    outerrel->cheapest_total_path = outerrel->cheapest_total_path_mat[round];
+    outerrel->cheapest_unique_path = outerrel->cheapest_unique_path_mat[round];
+    outerrel->cheapest_parameterized_paths = outerrel->cheapest_parameterized_paths_mat[round];
+
+    innerrel->pathlist = innerrel->pathlist_mat[round];
+    innerrel->partial_pathlist = innerrel->partial_pathlist_mat[round];
+    innerrel->cheapest_startup_path = innerrel->cheapest_startup_path_mat[round];
+    innerrel->cheapest_total_path = innerrel->cheapest_total_path_mat[round];
+    innerrel->cheapest_unique_path = innerrel->cheapest_unique_path_mat[round];
+    innerrel->cheapest_parameterized_paths = innerrel->cheapest_parameterized_paths_mat[round];
+}
+
+static void finalize_joinrel_path_context_1p(
+    PlannerInfo *root,
+    RelOptInfo *joinrel,
+    RelOptInfo *outerrel,
+    RelOptInfo *innerrel,
+    const int round
+) {
+    Assert(root->pass == 1);
+    Assert(round > 0 && round <= error_sample_count);
+
+    root->round = round;
+
+    joinrel->pathlist_mat[round] = joinrel->pathlist;
+    joinrel->partial_pathlist_mat[round] = joinrel->partial_pathlist;
+    joinrel->cheapest_startup_path_mat[round] = joinrel->cheapest_startup_path;
+    joinrel->cheapest_total_path_mat[round] = joinrel->cheapest_total_path;
+    joinrel->cheapest_unique_path_mat[round] = joinrel->cheapest_unique_path;
+    joinrel->cheapest_parameterized_paths_mat[round] = joinrel->cheapest_parameterized_paths;
+
+    outerrel->pathlist_mat[round] = outerrel->pathlist;
+    outerrel->partial_pathlist_mat[round] = outerrel->partial_pathlist;
+    outerrel->cheapest_startup_path_mat[round] = outerrel->cheapest_startup_path;
+    outerrel->cheapest_total_path_mat[round] = outerrel->cheapest_total_path;
+    outerrel->cheapest_unique_path_mat[round] = outerrel->cheapest_unique_path;
+    outerrel->cheapest_parameterized_paths_mat[round] = outerrel->cheapest_parameterized_paths;
+
+    innerrel->pathlist_mat[round] = innerrel->pathlist;
+    innerrel->partial_pathlist_mat[round] = innerrel->partial_pathlist;
+    innerrel->cheapest_startup_path_mat[round] = innerrel->cheapest_startup_path;
+    innerrel->cheapest_total_path_mat[round] = innerrel->cheapest_total_path;
+    innerrel->cheapest_unique_path_mat[round] = innerrel->cheapest_unique_path;
+    innerrel->cheapest_parameterized_paths_mat[round] = innerrel->cheapest_parameterized_paths;
+}
+
+static void init_joinrel_path_context_2p(
+    PlannerInfo *root,
+    RelOptInfo *joinrel,
+    RelOptInfo *outerrel,
+    RelOptInfo *innerrel
+) {
+    Assert(root->pass == 2);
+    root->round = -1;
+
+    joinrel->pathlist = NIL;
+    joinrel->partial_pathlist = NIL;
+    joinrel->cheapest_startup_path = NULL;
+    joinrel->cheapest_total_path = NULL;
+    joinrel->cheapest_unique_path = NULL;
+    joinrel->cheapest_parameterized_paths = NIL;
+
+    outerrel->pathlist = NIL;
+    outerrel->partial_pathlist = NIL;
+    outerrel->cheapest_startup_path = NULL;
+    outerrel->cheapest_total_path = NULL;
+    outerrel->cheapest_unique_path = NULL;
+    outerrel->cheapest_parameterized_paths = NIL;
+
+    innerrel->pathlist = NIL;
+    innerrel->partial_pathlist = NIL;
+    innerrel->cheapest_startup_path = NULL;
+    innerrel->cheapest_total_path = NULL;
+    innerrel->cheapest_unique_path = NULL;
+    innerrel->cheapest_parameterized_paths = NIL;
+}
 
 /*
  * add_paths_to_joinrel
@@ -130,13 +230,15 @@ static void generate_mergejoin_paths(PlannerInfo *root,
  * with sjinfo->jointype == JOIN_SEMI indicates that.
  */
 void
-add_paths_to_joinrel(PlannerInfo *root,
-                     RelOptInfo *joinrel,
-                     RelOptInfo *outerrel,
-                     RelOptInfo *innerrel,
-                     JoinType jointype,
-                     SpecialJoinInfo *sjinfo,
-                     List *restrictlist) {
+add_paths_to_joinrel(
+    PlannerInfo *root,
+    RelOptInfo *joinrel,
+    RelOptInfo *outerrel,
+    RelOptInfo *innerrel,
+    JoinType jointype,
+    SpecialJoinInfo *sjinfo,
+    List *restrictlist
+) {
     JoinPathExtraData extra;
     bool mergejoin_allowed = true;
     bool consider_join_pushdown = false;
@@ -150,10 +252,11 @@ add_paths_to_joinrel(PlannerInfo *root,
      * representing the restriction, consider relids of topmost parent of
      * partitions.
      */
-    if (joinrel->reloptkind == RELOPT_OTHER_JOINREL)
+    if (joinrel->reloptkind == RELOPT_OTHER_JOINREL) {
         joinrelids = joinrel->top_parent_relids;
-    else
+    } else {
         joinrelids = joinrel->relids;
+    }
 
     extra.restrictlist = restrictlist;
     extra.mergeclause_list = NIL;
@@ -186,26 +289,31 @@ add_paths_to_joinrel(PlannerInfo *root,
             extra.inner_unique = false; /* well, unproven */
             break;
         case JOIN_UNIQUE_INNER:
-            extra.inner_unique = bms_is_subset(sjinfo->min_lefthand,
-                                               outerrel->relids);
+            extra.inner_unique = bms_is_subset(
+                sjinfo->min_lefthand, outerrel->relids
+            );
             break;
         case JOIN_UNIQUE_OUTER:
-            extra.inner_unique = innerrel_is_unique(root,
-                                                    joinrel->relids,
-                                                    outerrel->relids,
-                                                    innerrel,
-                                                    JOIN_INNER,
-                                                    restrictlist,
-                                                    false);
+            extra.inner_unique = innerrel_is_unique(
+                root,
+                joinrel->relids,
+                outerrel->relids,
+                innerrel,
+                JOIN_INNER,
+                restrictlist,
+                false
+            );
             break;
         default:
-            extra.inner_unique = innerrel_is_unique(root,
-                                                    joinrel->relids,
-                                                    outerrel->relids,
-                                                    innerrel,
-                                                    jointype,
-                                                    restrictlist,
-                                                    false);
+            extra.inner_unique = innerrel_is_unique(
+                root,
+                joinrel->relids,
+                outerrel->relids,
+                innerrel,
+                jointype,
+                restrictlist,
+                false
+            );
             break;
     }
 
@@ -215,23 +323,28 @@ add_paths_to_joinrel(PlannerInfo *root,
      * way of implementing a full outer join, so override enable_mergejoin if
      * it's a full join.
      */
-    if (enable_mergejoin || jointype == JOIN_FULL)
-        extra.mergeclause_list = select_mergejoin_clauses(root,
-                                                          joinrel,
-                                                          outerrel,
-                                                          innerrel,
-                                                          restrictlist,
-                                                          jointype,
-                                                          &mergejoin_allowed);
+    if (enable_mergejoin || jointype == JOIN_FULL) {
+        extra.mergeclause_list = select_mergejoin_clauses(
+            root,
+            joinrel,
+            outerrel,
+            innerrel,
+            restrictlist,
+            jointype,
+            &mergejoin_allowed
+        );
+    }
 
     /*
      * If it's SEMI, ANTI, or inner_unique join, compute correction factors
      * for cost estimation.  These will be the same for all paths.
      */
-    if (jointype == JOIN_SEMI || jointype == JOIN_ANTI || extra.inner_unique)
-        compute_semi_anti_join_factors(root, joinrel, outerrel, innerrel,
-                                       jointype, sjinfo, restrictlist,
-                                       &extra.semifactors);
+    if (jointype == JOIN_SEMI || jointype == JOIN_ANTI || extra.inner_unique) {
+        compute_semi_anti_join_factors(
+            root, joinrel, outerrel, innerrel,
+            jointype, sjinfo, restrictlist, &extra.semifactors
+        );
+    }
 
     /*
      * Decide whether it's sensible to generate parameterized paths for this
@@ -258,18 +371,22 @@ add_paths_to_joinrel(PlannerInfo *root,
          * presents constraints for joining to anything not in its RHS.
          */
         if (bms_overlap(joinrelids, sjinfo2->min_righthand) &&
-            !bms_overlap(joinrelids, sjinfo2->min_lefthand))
-            extra.param_source_rels = bms_join(extra.param_source_rels,
-                                               bms_difference(root->all_baserels,
-                                                              sjinfo2->min_righthand));
+            !bms_overlap(joinrelids, sjinfo2->min_lefthand)) {
+            extra.param_source_rels = bms_join(
+                extra.param_source_rels,
+                bms_difference(root->all_baserels, sjinfo2->min_righthand)
+            );
+        }
 
         /* full joins constrain both sides symmetrically */
         if (sjinfo2->jointype == JOIN_FULL &&
             bms_overlap(joinrelids, sjinfo2->min_lefthand) &&
-            !bms_overlap(joinrelids, sjinfo2->min_righthand))
-            extra.param_source_rels = bms_join(extra.param_source_rels,
-                                               bms_difference(root->all_baserels,
-                                                              sjinfo2->min_lefthand));
+            !bms_overlap(joinrelids, sjinfo2->min_righthand)) {
+            extra.param_source_rels = bms_join(
+                extra.param_source_rels,
+                bms_difference(root->all_baserels, sjinfo2->min_lefthand)
+            );
+        }
     }
 
     /*
@@ -279,16 +396,35 @@ add_paths_to_joinrel(PlannerInfo *root,
      * within the joinrel.  So we might as well allow additional dependencies
      * on whatever residual lateral dependencies the joinrel will have.
      */
-    extra.param_source_rels = bms_add_members(extra.param_source_rels,
-                                              joinrel->lateral_relids);
+    extra.param_source_rels = bms_add_members(
+        extra.param_source_rels, joinrel->lateral_relids
+    );
 
     /*
      * 1. Consider mergejoin paths where both relations must be explicitly
      * sorted.  Skip this if we can't mergejoin.
      */
-	if (mergejoin_allowed)
-		sort_inner_and_outer(root, joinrel, outerrel, innerrel,
-							 jointype, &extra);
+    if (mergejoin_allowed) {
+        if (root->pass == 1) {
+            for (int round = 0; round < error_sample_count; ++round) {
+                init_joinrel_path_context_1p(
+                    root, joinrel, outerrel, innerrel, round
+                );
+                sort_inner_and_outer(
+                    root, joinrel, outerrel, innerrel, jointype, &extra
+                );
+            }
+        } else if (root->pass == 2) {
+            init_joinrel_path_context_2p(
+                root, joinrel, outerrel, innerrel
+            );
+            sort_inner_and_outer(
+                root, joinrel, outerrel, innerrel, jointype, &extra
+            );
+        } else {
+            elog(ERROR, "bad pass number");
+        }
+    }
 
     /*
      * 2. Consider paths where the outer relation need not be explicitly
@@ -298,36 +434,57 @@ add_paths_to_joinrel(PlannerInfo *root,
      * right/right-anti/full joins at all, so it wouldn't work in the
      * prohibited cases either.)
      */
-    if (mergejoin_allowed)
-        match_unsorted_outer(root, joinrel, outerrel, innerrel,
-                             jointype, &extra);
-
-#ifdef NOT_USED
-
-    /*
-     * 3. Consider paths where the inner relation need not be explicitly
-     * sorted.  This includes mergejoins only (nestloops were already built in
-     * match_unsorted_outer).
-     *
-     * Diked out as redundant 2/13/2000 -- tgl.  There isn't any really
-     * significant difference between the inner and outer side of a mergejoin,
-     * so match_unsorted_inner creates no paths that aren't equivalent to
-     * those made by match_unsorted_outer when add_paths_to_joinrel() is
-     * invoked with the two rels given in the other order.
-     */
-    if (mergejoin_allowed)
-        match_unsorted_inner(root, joinrel, outerrel, innerrel,
-                             jointype, &extra);
-#endif
+    if (mergejoin_allowed) {
+        if (root->pass == 1) {
+            for (int round = 0; round < error_sample_count; ++round) {
+                init_joinrel_path_context_1p(
+                    root, joinrel, outerrel, innerrel, round
+                );
+                match_unsorted_outer(
+                    root, joinrel, outerrel, innerrel, jointype, &extra
+                );
+                finalize_joinrel_path_context_1p(
+                    root, joinrel, outerrel, innerrel, round
+                );
+            }
+        } else if (root->pass == 2) {
+            init_joinrel_path_context_2p(
+                root, joinrel, outerrel, innerrel
+            );
+            match_unsorted_outer(
+                root, joinrel, outerrel, innerrel, jointype, &extra
+            );
+        } else {
+            elog(ERROR, "bad pass number");
+        }
+    }
 
     /*
      * 4. Consider paths where both outer and inner relations must be hashed
      * before being joined.  As above, disregard enable_hashjoin for full
      * joins, because there may be no other alternative.
      */
-    if (enable_hashjoin || jointype == JOIN_FULL)
-        hash_inner_and_outer(root, joinrel, outerrel, innerrel,
-                             jointype, &extra);
+    if (enable_hashjoin || jointype == JOIN_FULL) {
+        if (root->pass == 1) {
+            for (int round = 0; round < error_sample_count; ++round) {
+                init_joinrel_path_context_1p(
+                    root, joinrel, outerrel, innerrel, round
+                );
+                hash_inner_and_outer(
+                    root, joinrel, outerrel, innerrel, jointype, &extra
+                );
+            }
+        } else if (root->pass == 2) {
+            init_joinrel_path_context_2p(
+                root, joinrel, outerrel, innerrel
+            );
+            hash_inner_and_outer(
+                root, joinrel, outerrel, innerrel, jointype, &extra
+            );
+        } else {
+            elog(ERROR, "bad pass number");
+        }
+    }
 
     /*
      * createplan.c does not currently support handling of pseudoconstant
@@ -337,9 +494,11 @@ add_paths_to_joinrel(PlannerInfo *root,
      */
     if ((joinrel->fdwroutine &&
          joinrel->fdwroutine->GetForeignJoinPaths) ||
-        set_join_pathlist_hook)
-        consider_join_pushdown = !has_pseudoconstant_clauses(root,
-                                                             restrictlist);
+        set_join_pathlist_hook) {
+        consider_join_pushdown = !has_pseudoconstant_clauses(
+            root, restrictlist
+        );
+    }
 
     /*
      * 5. If inner and outer relations are foreign tables (or joins) belonging
@@ -348,10 +507,11 @@ add_paths_to_joinrel(PlannerInfo *root,
      */
     if (joinrel->fdwroutine &&
         joinrel->fdwroutine->GetForeignJoinPaths &&
-        consider_join_pushdown)
-        joinrel->fdwroutine->GetForeignJoinPaths(root, joinrel,
-                                                 outerrel, innerrel,
-                                                 jointype, &extra);
+        consider_join_pushdown) {
+        joinrel->fdwroutine->GetForeignJoinPaths(
+            root, joinrel, outerrel, innerrel, jointype, &extra
+        );
+    }
 
     /*
      * 6. Finally, give extensions a chance to manipulate the path list.  They
@@ -360,9 +520,11 @@ add_paths_to_joinrel(PlannerInfo *root,
      * paths added by the core code.
      */
     if (set_join_pathlist_hook &&
-        consider_join_pushdown)
-        set_join_pathlist_hook(root, joinrel, outerrel, innerrel,
-                               jointype, &extra);
+        consider_join_pushdown) {
+        set_join_pathlist_hook(
+            root, joinrel, outerrel, innerrel, jointype, &extra
+        );
+    }
 }
 
 /*
@@ -1226,12 +1388,14 @@ clause_sides_match_join(RestrictInfo *rinfo, RelOptInfo *outerrel,
  * 'extra' contains additional input values
  */
 static void
-sort_inner_and_outer(PlannerInfo *root,
-                     RelOptInfo *joinrel,
-                     RelOptInfo *outerrel,
-                     RelOptInfo *innerrel,
-                     JoinType jointype,
-                     JoinPathExtraData *extra) {
+sort_inner_and_outer(
+    PlannerInfo *root,
+    RelOptInfo *joinrel,
+    RelOptInfo *outerrel,
+    RelOptInfo *innerrel,
+    JoinType jointype,
+    JoinPathExtraData *extra
+) {
     JoinType save_jointype = jointype;
     Path *outer_path;
     Path *inner_path;
@@ -1657,12 +1821,14 @@ generate_mergejoin_paths(PlannerInfo *root,
  * 'extra' contains additional input values
  */
 static void
-match_unsorted_outer(PlannerInfo *root,
-                     RelOptInfo *joinrel,
-                     RelOptInfo *outerrel,
-                     RelOptInfo *innerrel,
-                     JoinType jointype,
-                     JoinPathExtraData *extra) {
+match_unsorted_outer(
+    PlannerInfo *root,
+    RelOptInfo *joinrel,
+    RelOptInfo *outerrel,
+    RelOptInfo *innerrel,
+    JoinType jointype,
+    JoinPathExtraData *extra
+) {
     JoinType save_jointype = jointype;
     bool nestjoinOK;
     bool useallclauses;
@@ -2014,12 +2180,14 @@ consider_parallel_nestloop(PlannerInfo *root,
  * 'extra' contains additional input values
  */
 static void
-hash_inner_and_outer(PlannerInfo *root,
-                     RelOptInfo *joinrel,
-                     RelOptInfo *outerrel,
-                     RelOptInfo *innerrel,
-                     JoinType jointype,
-                     JoinPathExtraData *extra) {
+hash_inner_and_outer(
+    PlannerInfo *root,
+    RelOptInfo *joinrel,
+    RelOptInfo *outerrel,
+    RelOptInfo *innerrel,
+    JoinType jointype,
+    JoinPathExtraData *extra
+) {
     JoinType save_jointype = jointype;
     bool isouterjoin = IS_OUTER_JOIN(jointype);
     List *hashclauses;

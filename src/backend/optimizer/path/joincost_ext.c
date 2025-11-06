@@ -27,6 +27,8 @@
 #include "utils/tuplesort.h"
 
 
+/* ==== ==== ==== ==== ==== ==== JOIN COST HELPERS ==== ==== ==== ==== ==== ==== */
+
 /*
  * Estimate the fraction of the work that each worker will do given the
  * number of workers budgeted for the path.
@@ -583,6 +585,8 @@ static void cost_rescan(
     }
 }
 
+/* ==== ==== ==== ==== ==== ==== 1-PASS NEST LOOP COST MODEL ==== ==== ==== ==== ==== ==== */
+
 void initial_cost_nestloop_1p(
     PlannerInfo *root,
     JoinCostWorkspace *workspace,
@@ -842,6 +846,8 @@ void final_cost_nestloop_1p(
     path->jpath.path.startup_cost = startup_cost;
     path->jpath.path.total_cost = startup_cost + run_cost;
 }
+
+/* ==== ==== ==== ==== ==== ==== 1-PASS MERGE JOIN COST MODEL ==== ==== ==== ==== ==== ==== */
 
 void initial_cost_mergejoin_1p(
     PlannerInfo *root,
@@ -1302,6 +1308,8 @@ void final_cost_mergejoin_1p(
     path->jpath.path.total_cost = startup_cost + run_cost;
 }
 
+/* ==== ==== ==== ==== ==== ==== 1-PASS HASH JOIN COST MODEL ==== ==== ==== ==== ==== ==== */
+
 void initial_cost_hashjoin_1p(
     PlannerInfo *root,
     JoinCostWorkspace *workspace,
@@ -1669,6 +1677,8 @@ void final_cost_hashjoin_1p(
     path->jpath.path.total_cost = startup_cost + run_cost;
 }
 
+/* ==== ==== ==== ==== ==== ==== 2-PASS NEST LOOP COST MODEL ==== ==== ==== ==== ==== ==== */
+
 void initial_cost_nestloop_2p(
     PlannerInfo *root,
     JoinCostWorkspace *workspace,
@@ -1967,6 +1977,8 @@ void final_cost_nestloop_2p(
     path->jpath.path.startup_cost = startup_accum * invN;
     path->jpath.path.total_cost = total_accum * invN;
 }
+
+/* ==== ==== ==== ==== ==== ==== 2-PASS MERGE JOIN COST MODEL ==== ==== ==== ==== ==== ==== */
 
 void initial_cost_mergejoin_2p(
     PlannerInfo *root,
@@ -2413,6 +2425,8 @@ void final_cost_mergejoin_2p(
     path->jpath.path.startup_cost = startup_accum * invN;
     path->jpath.path.total_cost = total_accum * invN;
 }
+
+/* ==== ==== ==== ==== ==== ==== 2-PASS HASH JOIN COST MODEL ==== ==== ==== ==== ==== ==== */
 
 void initial_cost_hashjoin_2p(
     PlannerInfo *root,

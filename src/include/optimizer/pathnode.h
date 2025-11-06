@@ -23,8 +23,8 @@
  */
 
 extern int compare_path_costs(
-    Path *path1,
-    Path *path2,
+    const Path *path1,
+    const Path *path2,
     CostSelector criterion
 );
 

@@ -3524,7 +3524,7 @@ struct config_int ConfigureNamesInt[] =
 			NULL
 		},
 		&error_sample_count,
-		20, 4, 64,
+		20, 4, 32,
 		NULL, NULL, NULL
 	},
 

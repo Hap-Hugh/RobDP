@@ -981,6 +981,8 @@ pull_up_simple_subquery(PlannerInfo *root, Node *jtnode, RangeTblEntry *rte,
 	 * would that just make things uglier?
 	 */
 	subroot = makeNode(PlannerInfo);
+	root->pass = 0;
+	root->round = -1;
 	subroot->parse = subquery;
 	subroot->glob = root->glob;
 	subroot->query_level = root->query_level;

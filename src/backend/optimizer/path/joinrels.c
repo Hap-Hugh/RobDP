@@ -848,9 +848,11 @@ add_outer_joins_to_relids(PlannerInfo *root, Relids input_relids,
  *	  of the joining relations.
  */
 static void
-populate_joinrel_with_paths(PlannerInfo *root, RelOptInfo *rel1,
-                            RelOptInfo *rel2, RelOptInfo *joinrel,
-                            SpecialJoinInfo *sjinfo, List *restrictlist) {
+populate_joinrel_with_paths(
+    PlannerInfo *root, RelOptInfo *rel1,
+    RelOptInfo *rel2, RelOptInfo *joinrel,
+    SpecialJoinInfo *sjinfo, List *restrictlist
+) {
     /*
      * Consider paths using each rel as both outer and inner.  Depending on
      * the join type, a provably empty outer or inner rel might mean the join
@@ -1326,8 +1328,8 @@ mark_dummy_rel(RelOptInfo *rel) {
 
     /* Set up the dummy path */
     add_path(NULL, rel, (Path *) create_append_path(NULL, rel, NIL, NIL,
-                                              NIL, rel->lateral_relids,
-                                              0, false, -1));
+                                                    NIL, rel->lateral_relids,
+                                                    0, false, -1));
 
     /* Set or update cheapest_total_path and related fields */
     set_cheapest(rel);

@@ -99,8 +99,6 @@
 #include "utils/tuplesort.h"
 
 
-#define LOG2(x)  (log(x) / 0.693147180559945)
-
 /*
  * Append and MergeAppend nodes are less expensive than some other operations
  * which use cpu_tuple_cost; instead of adding a separate GUC, estimate the
@@ -242,8 +240,10 @@ long clamp_cardinality_to_long(Cardinality x) {
  * consistent, especially under parallelism (rows represent per-worker rows).
  */
 void cost_seqscan(
-    Path *path, PlannerInfo *root,
-    const RelOptInfo *baserel, const ParamPathInfo *param_info
+    Path *path,
+    PlannerInfo *root,
+    const RelOptInfo *baserel,
+    const ParamPathInfo *param_info
 ) {
     if (!enable_rows_dist || root->pass == 1) {
         cost_seqscan_1p(path, root, baserel, param_info);
@@ -334,82 +334,19 @@ void cost_samplescan(Path *path, PlannerInfo *root,
  * correspond to any particular RelOptInfo.
  */
 void cost_gather(
-    GatherPath *path, PlannerInfo *root,
-    const RelOptInfo *rel, const ParamPathInfo *param_info,
+    GatherPath *path,
+    PlannerInfo *root,
+    const RelOptInfo *rel,
+    const ParamPathInfo *param_info,
     const double *rows
 ) {
-    /* ------------------------------- 1) Resolve rows & sample ------------------------------- */
-    /* Path rows (scalar) per PG semantics; also prepare a rows_sample for per-sample loop */
-    if (rows) {
-        path->path.rows = *rows;
-        path->path.rows_sample = make_sample_by_single_value(*rows);
-    } else if (param_info) {
-        path->path.rows = param_info->ppi_rows;
-        path->path.rows_sample = make_sample_by_single_value(param_info->ppi_rows);
+    if (!enable_rows_dist || root->pass == 1) {
+        cost_gather_1p(path, root, rel, param_info, rows);
+    } else if (root->pass == 2) {
+        cost_gather_2p(path, root, rel, param_info, rows);
     } else {
-        path->path.rows = rel->rows;
-        path->path.rows_sample = duplicate_sample(rel->rows_sample);
+        elog(ERROR, "bad pass number");
     }
-
-    /* ------------------------------- 2) Subpath costs (scalar + sample) ------------------------------- */
-    const Path *subpath = path->subpath;
-
-    const Sample *rows_samp = path->path.rows_sample; /* may be NULL */
-    const Sample *sub_startup_samp = subpath->startup_cost_sample;
-    const Sample *sub_total_samp = subpath->total_cost_sample;
-
-    const bool rows_is_const
-            = rows_samp == NULL || rows_samp->sample_count <= 1;
-    const bool sub_startup_is_const
-            = sub_startup_samp == NULL || sub_startup_samp->sample_count <= 1;
-    const bool sub_total_is_const
-            = sub_total_samp == NULL || sub_total_samp->sample_count <= 1;
-
-    /* Decide loop sample_count: if all have N>1, require same N; otherwise use the non-1 side. */
-    int sample_count;
-    if (sub_startup_is_const && sub_total_is_const && rows_is_const) {
-        sample_count = 1;
-    } else {
-        sample_count = error_sample_count;
-    }
-
-    path->path.startup_cost = 0.0;
-    path->path.startup_cost_sample = initialize_sample(sample_count);
-    path->path.total_cost = 0.0;
-    path->path.total_cost_sample = initialize_sample(sample_count);
-
-    /* ------------------------------- 4) Per-sample aggregation ------------------------------- */
-    for (int i = 0; i < sample_count; ++i) {
-        /* 4.1) Read subpath costs for this sample (fallback to scalar if no samples) */
-        const Cost sub_startup_i
-                = GET_COST(sub_startup_samp, i, path->subpath->startup_cost, sub_startup_is_const);
-        const Cost sub_total_i
-                = GET_COST(sub_total_samp, i, path->subpath->total_cost, sub_total_is_const);
-        Cost startup_cost = sub_startup_i;
-        Cost run_cost = sub_total_i - sub_startup_i;
-
-        /* 4.2) Rows for parallel tuple cost (use sample-or-scalar rows) */
-        double rows_i = GET_ROW(rows_samp, i, path->path.rows, rows_is_const);
-        if (rows_i < 0) rows_i = 0;
-
-        /* 4.3) Gather-specific overhead: setup once, per-tuple comm on output */
-        startup_cost += parallel_setup_cost;
-        run_cost += parallel_tuple_cost * rows_i;
-
-        /* 4.4) Write per-sample outputs and accumulate means */
-        const Cost total_cost = startup_cost + run_cost;
-
-        path->path.startup_cost_sample->sample[i] = startup_cost;
-        path->path.total_cost_sample->sample[i] = total_cost;
-
-        path->path.startup_cost += startup_cost;
-        path->path.total_cost += total_cost;
-    }
-
-    /* ------------------------------- 5) Finalize scalar outputs (means) ------------------------------- */
-    const double invN = 1.0 / (double) sample_count;
-    path->path.startup_cost *= invN;
-    path->path.total_cost *= invN;
 }
 
 /*
@@ -448,98 +385,25 @@ void cost_gather(
  *       : ((is_const) ? (s)->sample[0] : (s)->sample[(i)]) )
  */
 void cost_gather_merge(
-    GatherMergePath *path, PlannerInfo *root,
-    const RelOptInfo *rel, const ParamPathInfo *param_info,
-    const Cost input_startup_cost, const Cost input_total_cost,
+    GatherMergePath *path,
+    PlannerInfo *root,
+    const RelOptInfo *rel,
+    const ParamPathInfo *param_info,
+    const Cost input_startup_cost,
+    const Cost input_total_cost,
     const double *rows
 ) {
-    /* ------------------------------- 1) Resolve rows & rows_sample ------------------------------- */
-    if (rows) {
-        path->path.rows = *rows;
-        path->path.rows_sample = make_sample_by_single_value(*rows);
-    } else if (param_info) {
-        path->path.rows = param_info->ppi_rows;
-        path->path.rows_sample = make_sample_by_single_value(param_info->ppi_rows);
+    if (!enable_rows_dist || root->pass == 1) {
+        cost_gather_merge_1p(
+            path, root, rel, param_info, input_startup_cost, input_total_cost, rows
+        );
+    } else if (root->pass == 2) {
+        cost_gather_merge_2p(
+            path, root, rel, param_info, input_startup_cost, input_total_cost, rows
+        );
     } else {
-        path->path.rows = rel->rows;
-        path->path.rows_sample = duplicate_sample(rel->rows_sample);
+        elog(ERROR, "bad pass number");
     }
-
-    const Sample *rows_samp = path->path.rows_sample; /* may be NULL */
-    const int rows_sc = rows_samp ? rows_samp->sample_count : 0;
-    const bool rows_is_const = (rows_sc <= 1);
-    const int sample_count = (rows_sc > 1) ? rows_sc : 1;
-
-    path->path.startup_cost = 0.0;
-    path->path.startup_cost_sample = initialize_sample(sample_count);
-    path->path.total_cost = 0.0;
-    path->path.total_cost_sample = initialize_sample(sample_count);
-
-    /* ------------------------------- 2) Precompute GM constants ------------------------------- */
-    /* Apply disable penalty once (we'll fold it into each sample's startup). */
-    const bool add_disable_penalty = !enable_gathermerge;
-
-    /* +1 worker for leader (same as upstream) */
-    Assert(path->num_workers > 0);
-    const double N = (double) path->num_workers + 1.0;
-    const double logN = LOG2(N);
-
-    /* Cost per tuple comparison (same as upstream) */
-    const Cost comparison_cost = 2.0 * cpu_operator_cost;
-
-    /* ------------------------------- 3) Init per-sample outputs ------------------------------- */
-    path->path.startup_cost = 0.0;
-    path->path.total_cost = 0.0;
-    path->path.startup_cost_sample = initialize_sample(sample_count);
-    path->path.total_cost_sample = initialize_sample(sample_count);
-
-    /* ------------------------------- 4) Per-sample evaluation ------------------------------- */
-    for (int i = 0; i < sample_count; ++i) {
-        /* 4.1) Output row count for this sample (fallback to scalar rows) */
-        double rows_i = GET_ROW(rows_samp, i, path->path.rows, rows_is_const);
-        if (rows_i < 0.0)
-            rows_i = 0.0; /* defensive: never negative */
-
-        /* 4.2) Gather Merge startup costs (for this sample) */
-        Cost gm_startup_i = 0.0;
-
-        if (add_disable_penalty)
-            gm_startup_i += disable_cost;
-
-        /* Heap creation: ~ N * log2(N) tuple comparisons */
-        gm_startup_i += comparison_cost * N * logN;
-
-        /* Parallel setup once */
-        gm_startup_i += parallel_setup_cost;
-
-        /* 4.3) Gather Merge run costs (for this sample) */
-        Cost gm_run_i = 0.0;
-
-        /* Per-tuple heap maintenance: rows_i * log2(N) comparisons */
-        gm_run_i += rows_i * comparison_cost * logN;
-
-        /* Small management overhead per output tuple (like MergeAppend) */
-        gm_run_i += cpu_operator_cost * rows_i;
-
-        /* IPC per tuple, with 5% bump vs Gather */
-        gm_run_i += parallel_tuple_cost * rows_i * 1.05;
-
-        /* 4.4) Combine with input costs (same shape as upstream) */
-        const Cost startup_i = gm_startup_i + input_startup_cost;
-        const Cost total_i = gm_startup_i + gm_run_i + input_total_cost;
-
-        /* 4.5) Write per-sample results & accumulate means */
-        path->path.startup_cost_sample->sample[i] = startup_i;
-        path->path.total_cost_sample->sample[i] = total_i;
-
-        path->path.startup_cost += startup_i;
-        path->path.total_cost += total_i;
-    }
-
-    /* ------------------------------- 5) Finalize scalar outputs (means) ------------------------------- */
-    const double invN = 1.0 / (double) sample_count;
-    path->path.startup_cost *= invN;
-    path->path.total_cost *= invN;
 }
 
 /*
@@ -565,8 +429,10 @@ void cost_gather_merge(
  * semantics (esp. under parallelism: rows represent per-worker rows).
  */
 void cost_index(
-    IndexPath *path, PlannerInfo *root,
-    const double loop_count, const bool partial_path
+    IndexPath *path,
+    PlannerInfo *root,
+    const double loop_count,
+    const bool partial_path
 ) {
     if (!enable_rows_dist || root->pass == 1) {
         cost_index_1p(path, root, loop_count, partial_path);
@@ -3220,6 +3086,17 @@ void set_baserel_size_estimates(
 
     if (enable_rows_dist) {
         set_baserel_rows_sample(root, rel, est_sel);
+
+        if (root->pass == 1) {
+            /* Overwrite: we only need rows at a particular sample point. */
+            Assert(rel->rows_sample != NULL);
+            if (rel->rows_sample->sample_count != 1) {
+                Assert(rel->rows_sample->sample_count == error_sample_count);
+                rel->rows = rel->rows_sample->sample[root->round];
+            }
+        }
+    } else {
+        rel->rows_sample = NULL;
     }
 }
 
@@ -3318,6 +3195,8 @@ void set_joinrel_size_estimates(
                 rel->rows = rel->rows_sample->sample[root->round];
             }
         }
+    } else {
+        rel->rows_sample = NULL;
     }
 }
 
@@ -3343,8 +3222,6 @@ double get_parameterized_joinrel_size(
     SpecialJoinInfo *sjinfo,
     List *restrict_clauses
 ) {
-    double nrows;
-
     /*
      * Estimate the number of rows returned by the parameterized join as the
      * sizes of the input paths times the selectivity of the clauses that have
@@ -3354,7 +3231,7 @@ double get_parameterized_joinrel_size(
      * on the pair of input paths provided, though ideally we'd get the same
      * estimate for any pair with the same parameterization.
      */
-    nrows = calc_joinrel_size_estimate(
+    double nrows = calc_joinrel_size_estimate(
         root,
         rel,
         outer_path->parent,

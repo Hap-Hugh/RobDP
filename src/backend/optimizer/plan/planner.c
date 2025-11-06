@@ -663,6 +663,8 @@ subquery_planner(PlannerGlobal *glob, Query *parse,
 
     /* Create a PlannerInfo data structure for this subquery */
     root = makeNode(PlannerInfo);
+    root->pass = 0;
+    root->round = -1;
     root->parse = parse;
     root->glob = glob;
     root->query_level = parent_root ? parent_root->query_level + 1 : 1;
@@ -6219,6 +6221,8 @@ plan_cluster_use_sort(Oid tableOid, Oid indexOid) {
     glob = makeNode(PlannerGlobal);
 
     root = makeNode(PlannerInfo);
+    root->pass = 0;
+    root->round = -1;
     root->parse = query;
     root->glob = glob;
     root->query_level = 1;
@@ -6339,6 +6343,8 @@ plan_create_index_workers(Oid tableOid, Oid indexOid) {
     glob = makeNode(PlannerGlobal);
 
     root = makeNode(PlannerInfo);
+    root->pass = 0;
+    root->round = -1;
     root->parse = query;
     root->glob = glob;
     root->query_level = 1;

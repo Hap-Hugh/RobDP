@@ -77,7 +77,7 @@ static bool ris_contain_references_to(PlannerInfo *root, List *rinfos,
  *	  or more expensive than path2 for the specified criterion.
  */
 int
-compare_path_costs(Path *path1, Path *path2, CostSelector criterion) {
+compare_path_costs(const Path *path1, const Path *path2, const CostSelector criterion) {
     if (criterion == STARTUP_COST) {
         if (path1->startup_cost < path2->startup_cost)
             return -1;
@@ -928,10 +928,9 @@ add_partial_path_precheck(PlannerInfo *root, RelOptInfo *parent_rel,
      * answer at this stage avoids the need to call add_path_precheck.
      */
     foreach(p1, parent_rel->partial_pathlist) {
-        Path *old_path = (Path *) lfirst(p1);
-        PathKeysComparison keyscmp;
+        const Path *old_path = (Path *) lfirst(p1);
+        const PathKeysComparison keyscmp = compare_pathkeys(pathkeys, old_path->pathkeys);
 
-        keyscmp = compare_pathkeys(pathkeys, old_path->pathkeys);
         if (keyscmp != PATHKEYS_DIFFERENT) {
             if (total_cost > old_path->total_cost * STD_FUZZ_FACTOR &&
                 keyscmp != PATHKEYS_BETTER1)
@@ -3840,9 +3839,12 @@ adjust_limit_rows_costs(double *rows, /* in/out parameter */
  * as members of an append path.
  */
 Path *
-reparameterize_path(PlannerInfo *root, Path *path,
-                    Relids required_outer,
-                    double loop_count) {
+reparameterize_path(
+    PlannerInfo *root,
+    Path *path,
+    Relids required_outer,
+    double loop_count
+) {
     RelOptInfo *rel = path->parent;
 
     /* Can only increase, not decrease, path's parameterization */
@@ -3852,7 +3854,7 @@ reparameterize_path(PlannerInfo *root, Path *path,
         case T_SeqScan:
             return create_seqscan_path(root, rel, required_outer, 0);
         case T_SampleScan:
-            return (Path *) create_samplescan_path(root, rel, required_outer);
+            return create_samplescan_path(root, rel, required_outer);
         case T_IndexScan:
         case T_IndexOnlyScan: {
             IndexPath *ipath = (IndexPath *) path;

@@ -20,11 +20,20 @@
 #include "lib/stringinfo.h"
 #include "nodes/params.h"
 #include "nodes/parsenodes.h"
+#include "optimizer/pathstrategy.h"
 #include "storage/block.h"
 
-#define JCW_MAX_SAMPLE 64
+#define DIST_MAX_SAMPLE		32
+#define JCW_MAX_SAMPLE		32
 
 typedef struct Sample Sample;
+
+typedef double (*path_score_strategy)(
+	const Sample *startup_cost_sample,
+	const Sample *total_cost_sample,
+	const double *min_global,
+	int effective
+);
 
 /*
  * Relids
@@ -295,10 +304,10 @@ struct PlannerInfo
 	/* save which round of the first pass it is now -- we have multiple rounds,
 	 * should be consistent with the sample count. */
 	int			round;
-	/* lists of join-relation RelOptInfos (the first pass) */
+	/* lists of join-relation RelOptInfos */
 	List	  **join_rel_level pg_node_attr(read_write_ignore);
-	/* additional lists of join-relation RelOptInfos (the second pass) */
-	List	  **join_rel_level_first pg_node_attr(read_write_ignore);
+	/* lists of join-relation RelOptInfos (the min envelope, derived from post-processing) */
+	List	  **min_envelope pg_node_attr(read_write_ignore);
 	/* index of list being extended */
 	int			join_cur_level;
 
@@ -554,6 +563,10 @@ struct PlannerInfo
 
 	/* Does this query modify any partition key columns? */
 	bool		partColsUpdated;
+
+	/* function pointers for adding and retaining paths */
+	path_score_strategy add_path_score_func pg_node_attr(read_write_ignore);
+	path_score_strategy retain_path_score_func pg_node_attr(read_write_ignore);
 };
 
 
@@ -890,13 +903,23 @@ typedef struct RelOptInfo
 	/*
 	 * materialization information
 	 */
-	List	   *pathlist;		/* Path structures */
 	List	   *ppilist;		/* ParamPathInfos used in pathlist */
-	List	   *partial_pathlist;	/* partial Paths */
+	List	   *pathlist;		/* Path structures */
+	List	   *partial_pathlist;	/* Partial Paths */
 	struct Path *cheapest_startup_path;
 	struct Path *cheapest_total_path;
 	struct Path *cheapest_unique_path;
 	List	   *cheapest_parameterized_paths;
+
+	/*
+	 * materialization information (with samples)
+	 */
+	List	   *pathlist_mat[DIST_MAX_SAMPLE] pg_node_attr(read_write_ignore);		/* Path structures */
+	List	   *partial_pathlist_mat[DIST_MAX_SAMPLE] pg_node_attr(read_write_ignore);	/* Partial Paths */
+	struct Path *cheapest_startup_path_mat[DIST_MAX_SAMPLE] pg_node_attr(read_write_ignore);
+	struct Path *cheapest_total_path_mat[DIST_MAX_SAMPLE] pg_node_attr(read_write_ignore);
+	struct Path *cheapest_unique_path_mat[DIST_MAX_SAMPLE] pg_node_attr(read_write_ignore);
+	List	   *cheapest_parameterized_paths_mat[DIST_MAX_SAMPLE] pg_node_attr(read_write_ignore);
 
 	/*
 	 * parameterization information needed for both base rels and join rels

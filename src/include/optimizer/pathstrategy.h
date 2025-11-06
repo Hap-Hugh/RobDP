@@ -7,7 +7,11 @@
 
 #include "postgres.h"
 #include "nodes/pathnodes.h"
+
 #include "optimizer/sample.h"
+
+/* Forward Declarations */
+typedef struct Sample Sample;
 
 typedef double (*path_score_strategy)(
     const Sample *startup_cost_sample,

@@ -7,7 +7,17 @@
 
 #include "nodes/pathnodes.h"
 
-/* ==== ==== ==== ==== ==== ==== SCAN COST ==== ==== ==== ==== ==== ==== */
+#define LOG2(x)  (log(x) / 0.693147180559945)
+
+#define GET_ROW(s, i, scalar, is_const) \
+( ((s) == NULL || (s)->sample_count <= 0) \
+? (scalar) : ((is_const) ? (s)->sample[0] : (s)->sample[(i)]) )
+
+#define GET_COST(s, i, scalar, is_const) \
+( ((s) == NULL || (s)->sample_count <= 0) \
+? (scalar) : ((is_const) ? (s)->sample[0] : (s)->sample[(i)]) )
+
+/* ==== ==== ==== ==== ==== ==== SCAN COST HELPERS ==== ==== ==== ==== ==== ==== */
 
 extern void get_restriction_qual_cost(
     PlannerInfo *root,
@@ -15,6 +25,8 @@ extern void get_restriction_qual_cost(
     const ParamPathInfo *param_info,
     QualCost *qpqual_cost
 );
+
+/* ==== ==== ==== ==== ==== ==== SCAN COST MODEL ==== ==== ==== ==== ==== ==== */
 
 extern void cost_seqscan_1p(
     Path *path,
@@ -44,16 +56,7 @@ extern void cost_index_2p(
     bool partial_path
 );
 
-/* ==== ==== ==== ==== ==== ==== JOIN COST ==== ==== ==== ==== ==== ==== */
-
-#define GET_ROW(s, i, scalar, is_const) \
-( ((s) == NULL || (s)->sample_count <= 0) \
-? (scalar) : ((is_const) ? (s)->sample[0] : (s)->sample[(i)]) )
-
-#define GET_COST(s, i, scalar, is_const) \
-( ((s) == NULL || (s)->sample_count <= 0) \
-? (scalar) : ((is_const) ? (s)->sample[0] : (s)->sample[(i)]) )
-
+/* ==== ==== ==== ==== ==== ==== JOIN COST HELPERS ==== ==== ==== ==== ==== ==== */
 
 extern double get_parallel_divisor(
     const Path *path
@@ -83,6 +86,8 @@ extern double page_size(
 extern bool has_indexed_join_quals(
     NestPath *path
 );
+
+/* ==== ==== ==== ==== ==== ==== 1-PASS JOIN COST MODEL ==== ==== ==== ==== ==== ==== */
 
 extern void initial_cost_nestloop_1p(
     PlannerInfo *root,
@@ -137,6 +142,8 @@ extern void final_cost_hashjoin_1p(
     const JoinPathExtraData *extra
 );
 
+/* ==== ==== ==== ==== ==== ==== 2-PASS JOIN COST MODEL ==== ==== ==== ==== ==== ==== */
+
 extern void initial_cost_nestloop_2p(
     PlannerInfo *root,
     JoinCostWorkspace *workspace,
@@ -188,6 +195,44 @@ extern void final_cost_hashjoin_2p(
     HashPath *path,
     JoinCostWorkspace *workspace,
     const JoinPathExtraData *extra
+);
+
+/* ==== ==== ==== ==== ==== ==== OTHER COST MODEL ==== ==== ==== ==== ==== ==== */
+
+extern void cost_gather_1p(
+    GatherPath *path,
+    PlannerInfo *root,
+    const RelOptInfo *rel,
+    const ParamPathInfo *param_info,
+    const double *rows
+);
+
+extern void cost_gather_2p(
+    GatherPath *path,
+    PlannerInfo *root,
+    const RelOptInfo *rel,
+    const ParamPathInfo *param_info,
+    const double *rows
+);
+
+extern void cost_gather_merge_1p(
+    GatherMergePath *path,
+    PlannerInfo *root,
+    const RelOptInfo *rel,
+    const ParamPathInfo *param_info,
+    Cost input_startup_cost,
+    Cost input_total_cost,
+    const double *rows
+);
+
+extern void cost_gather_merge_2p(
+    GatherMergePath *path,
+    PlannerInfo *root,
+    const RelOptInfo *rel,
+    const ParamPathInfo *param_info,
+    Cost input_startup_cost,
+    Cost input_total_cost,
+    const double *rows
 );
 
 #endif // COST_EXT_H

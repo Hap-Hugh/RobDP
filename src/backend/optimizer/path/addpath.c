@@ -127,7 +127,7 @@ add_path_by_strategy(
 
     /* Fetch rels for this level/index */
     const RelOptInfo *joinrel_first =
-            (RelOptInfo *) list_nth(root->join_rel_level_first[lev_index], rel_index);
+            (RelOptInfo *) list_nth(root->min_envelope[lev_index], rel_index);
     RelOptInfo *joinrel =
             (RelOptInfo *) list_nth(root->join_rel_level[lev_index], rel_index);
 
@@ -332,8 +332,8 @@ retain_path_by_strategy(
     Assert(cand_list != NULL);
 
     /* Fetch RelOptInfo for reading baseline and writing survivors */
-    const RelOptInfo *joinrel_first =
-            (RelOptInfo *) list_nth(root->join_rel_level_first[lev_index], rel_index);
+    const RelOptInfo *min_envelope =
+            (RelOptInfo *) list_nth(root->min_envelope[lev_index], rel_index);
     RelOptInfo *joinrel =
             (RelOptInfo *) list_nth(root->join_rel_level[lev_index], rel_index);
 
@@ -346,8 +346,8 @@ retain_path_by_strategy(
      * Get global min per-sample baseline from calc_*_score functions
      * (this is needed for scoring).
      */
-    Assert(joinrel_first->score_sample_final != NULL);
-    const Sample *score_sample = joinrel_first->min_score_sample;
+    Assert(min_envelope->score_sample_final != NULL);
+    const Sample *score_sample = min_envelope->min_score_sample;
 
     Assert(score_sample->sample_count >= 0 &&
         score_sample->sample_count <= DIST_MAX_SAMPLE);

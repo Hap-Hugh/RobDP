@@ -10,21 +10,21 @@
 #include "postgres.h"
 #include "nodes/pathnodes.h"
 
-#define DIST_MAX_SAMPLE   64
-
 /* GUC Parameters */
 extern bool enable_rows_dist;
 extern int error_sample_count;
 extern int error_sample_seed;
 
+#define DIST_MAX_SAMPLE		32
+
 /* Forward Declarations */
 typedef struct Sample Sample;
-
 typedef struct ErrorProfileRaw ErrorProfileRaw;
-
 typedef struct ErrorSampleParams ErrorSampleParams;
-
 typedef struct ErrorProfile ErrorProfile;
+
+typedef struct PlannerInfo PlannerInfo;
+typedef struct RelOptInfo RelOptInfo;
 
 struct Sample {
     int sample_count;

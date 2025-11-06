@@ -213,10 +213,6 @@ static void remove_unused_subquery_outputs(Query *subquery, RelOptInfo *rel,
  */
 RelOptInfo *
 make_one_rel(PlannerInfo *root, List *joinlist) {
-    RelOptInfo *rel;
-    Index rti;
-    double total_pages;
-
     /* Mark base rels as to whether we care about fast-start plans */
     set_base_rel_consider_startup(root);
 
@@ -239,8 +235,8 @@ make_one_rel(PlannerInfo *root, List *joinlist) {
      * which perhaps is the wrong thing ... but that's not completely clear,
      * and detecting self-joins here is difficult, so ignore it for now.
      */
-    total_pages = 0;
-    for (rti = 1; rti < root->simple_rel_array_size; rti++) {
+    double total_pages = 0;
+    for (Index rti = 1; rti < root->simple_rel_array_size; rti++) {
         RelOptInfo *brel = root->simple_rel_array[rti];
 
         /* there may be empty slots corresponding to non-baserel RTEs */
@@ -260,12 +256,15 @@ make_one_rel(PlannerInfo *root, List *joinlist) {
     /*
      * Generate access paths for each base rel.
      */
+    root->pass = 1;
+    set_base_rel_pathlists(root);
+    root->pass = 2;
     set_base_rel_pathlists(root);
 
     /*
      * Generate access paths for the entire join tree.
      */
-    rel = make_rel_from_joinlist(root, joinlist);
+    RelOptInfo *rel = make_rel_from_joinlist(root, joinlist);
 
     /*
      * The result should join all and only the query's base + outer-join rels.
@@ -327,11 +326,8 @@ set_base_rel_consider_startup(PlannerInfo *root) {
  */
 static void
 set_base_rel_sizes(PlannerInfo *root) {
-    Index rti;
-
-    for (rti = 1; rti < root->simple_rel_array_size; rti++) {
+    for (Index rti = 1; rti < root->simple_rel_array_size; rti++) {
         RelOptInfo *rel = root->simple_rel_array[rti];
-        RangeTblEntry *rte;
 
         /* there may be empty slots corresponding to non-baserel RTEs */
         if (rel == NULL)
@@ -343,7 +339,7 @@ set_base_rel_sizes(PlannerInfo *root) {
         if (rel->reloptkind != RELOPT_BASEREL)
             continue;
 
-        rte = root->simple_rte_array[rti];
+        RangeTblEntry *rte = root->simple_rte_array[rti];
 
         /*
          * If parallelism is allowable for this query in general, see whether
@@ -360,6 +356,58 @@ set_base_rel_sizes(PlannerInfo *root) {
     }
 }
 
+static void init_baserel_path_context_1p(
+    PlannerInfo *root,
+    RelOptInfo *rel,
+    const int round
+) {
+    Assert(root->pass == 1);
+    Assert(round > 0 && round <= error_sample_count);
+
+    root->round = round;
+
+    rel->pathlist = rel->pathlist_mat[round];
+    rel->partial_pathlist = rel->partial_pathlist_mat[round];
+    rel->cheapest_startup_path = rel->cheapest_startup_path_mat[round];
+    rel->cheapest_total_path = rel->cheapest_total_path_mat[round];
+    rel->cheapest_unique_path = rel->cheapest_unique_path_mat[round];
+    rel->cheapest_parameterized_paths = rel->cheapest_parameterized_paths_mat[round];
+}
+
+static void finalize_baserel_path_context_1p(
+    PlannerInfo *root,
+    RelOptInfo *rel,
+    const int round
+) {
+    Assert(root->pass == 1);
+    Assert(round > 0 && round <= error_sample_count);
+
+    root->round = round;
+
+    rel->pathlist_mat[round] = rel->pathlist;
+    rel->partial_pathlist_mat[round] = rel->partial_pathlist;
+    rel->cheapest_startup_path_mat[round] = rel->cheapest_startup_path;
+    rel->cheapest_total_path_mat[round] = rel->cheapest_total_path;
+    rel->cheapest_unique_path_mat[round] = rel->cheapest_unique_path;
+    rel->cheapest_parameterized_paths_mat[round] = rel->cheapest_parameterized_paths;
+}
+
+static void init_baserel_path_context_2p(
+    PlannerInfo *root,
+    RelOptInfo *rel
+) {
+    Assert(root->pass == 1);
+
+    root->round = -1;
+
+    rel->pathlist = NIL;
+    rel->partial_pathlist = NIL;
+    rel->cheapest_startup_path = NULL;
+    rel->cheapest_total_path = NULL;
+    rel->cheapest_unique_path = NULL;
+    rel->cheapest_parameterized_paths = NIL;
+}
+
 /*
  * set_base_rel_pathlists
  *	  Finds all paths available for scanning each base-relation entry.
@@ -368,22 +416,43 @@ set_base_rel_sizes(PlannerInfo *root) {
  */
 static void
 set_base_rel_pathlists(PlannerInfo *root) {
-    Index rti;
-
-    for (rti = 1; rti < root->simple_rel_array_size; rti++) {
+    for (Index rti = 1; rti < root->simple_rel_array_size; rti++) {
         RelOptInfo *rel = root->simple_rel_array[rti];
 
         /* there may be empty slots corresponding to non-baserel RTEs */
-        if (rel == NULL)
+        if (rel == NULL) {
             continue;
+        }
 
         Assert(rel->relid == rti); /* sanity check on array */
 
         /* ignore RTEs that are "other rels" */
-        if (rel->reloptkind != RELOPT_BASEREL)
+        if (rel->reloptkind != RELOPT_BASEREL) {
             continue;
+        }
 
-        set_rel_pathlist(root, rel, rti, root->simple_rte_array[rti]);
+        if (root->pass == 1) {
+            for (int round = 0; round < error_sample_count; ++round) {
+                init_baserel_path_context_1p(
+                    root, rel, round
+                );
+                set_rel_pathlist(
+                    root, rel, rti, root->simple_rte_array[rti]
+                );
+                finalize_baserel_path_context_1p(
+                    root, rel, round
+                );
+            }
+        } else if (root->pass == 2) {
+            init_baserel_path_context_2p(
+                root, rel
+            );
+            set_rel_pathlist(
+                root, rel, rti, root->simple_rte_array[rti]
+            );
+        } else {
+            elog(ERROR, "bad pass number");
+        }
     }
 }
 
@@ -2958,11 +3027,10 @@ generate_gather_paths(PlannerInfo *root, RelOptInfo *rel, bool override_rows) {
      * of partial_pathlist because of the way add_partial_path works.
      */
     cheapest_partial_path = linitial(rel->partial_pathlist);
-    rows =
-            cheapest_partial_path->rows * cheapest_partial_path->parallel_workers;
-    simple_gather_path = (Path *)
-            create_gather_path(root, rel, cheapest_partial_path, rel->reltarget,
-                               NULL, rowsp);
+    rows = cheapest_partial_path->rows * cheapest_partial_path->parallel_workers;
+    simple_gather_path = (Path *) create_gather_path(
+        root, rel, cheapest_partial_path, rel->reltarget, NULL, rowsp
+    );
     add_path(root, rel, simple_gather_path);
 
     /*
@@ -3282,7 +3350,6 @@ standard_join_search(PlannerInfo *root, const int levels_needed, List *initial_r
      * problem, so join_rel_level[] can't be in use already.
      */
     Assert(root->join_rel_level == NULL);
-
     /*
      * We employ a simple "dynamic programming" algorithm: we first find all
      * ways to build joins of two jointree items, then all ways to build joins
@@ -3294,79 +3361,70 @@ standard_join_search(PlannerInfo *root, const int levels_needed, List *initial_r
      * set root->join_rel_level[1] to represent all the single-jointree-item
      * relations.
      */
-    List *saved_join_rel_levels = NIL;
 
-    /* The first pass -- we would like to find out the minimum expected total cost vector. */
+    /*
+     * Pick scoring strategy for the "add path" phase.
+     * This strategy ranks newly generated candidate paths before admitting them
+     * into the main pathlist.
+     */
+    root->add_path_score_func = path_score_strategies[add_path_strategy_id];
+    /*
+     * Pick scoring strategy for the "retain path" phase.
+     * This strategy ranks previously dropped paths to decide whether any
+     * should be re-inserted into the pathlist.
+     */
+    root->retain_path_score_func = path_score_strategies[retain_path_strategy_id];
+
+    /* Each round samples a different cost-estimation scenario */
     root->pass = 1;
-    root->join_rel_level = NULL;
-    root->join_rel_level_first = NULL;
+    root->round = 0;
+    /* Allocate per-round join_rel storage (indexed by join level) */
+    root->join_rel_level = palloc0((levels_needed + 1) * sizeof(List *));
+    root->join_rel_level[1] = initial_rels;
+    root->min_envelope = NULL;
 
-    Assert(error_sample_count >= 1);
+    for (int lev = 2; lev <= levels_needed; ++lev) {
+        ListCell *lc;
 
-    for (int round = 0; round < error_sample_count; ++round) {
-        /* Each round samples a different cost-estimation scenario */
-        root->round = round;
+        /*
+         * Enumerate join rels at this level and build paths for them.
+         * (Classic dynamic-programming join search)
+         */
+        join_search_one_level(root, lev);
 
-        /* Allocate per-round join_rel storage (indexed by join level) */
-        root->join_rel_level = palloc0((levels_needed + 1) * sizeof(List *));
-        root->join_rel_level[1] = initial_rels;
-        root->join_rel_list = NIL;
-        root->join_rel_hash = NULL;
+        /*
+         * Now add partitionwise paths, gather paths, and pick cheapest
+         * paths for each joinrel at this level.
+         */
+        foreach(lc, root->join_rel_level[lev]) {
+            RelOptInfo *rel = lfirst(lc);
 
-        /* Record this round's join_rel state for later envelope reduction */
-        saved_join_rel_levels = lappend(saved_join_rel_levels, root->join_rel_level);
+            /* Compute per-round cost samples for this rel */
+            calc_score_from_pathlist(rel);
 
-        for (int lev = 2; lev <= levels_needed; ++lev) {
-            ListCell *lc;
+            /* Add partition-wise join paths (if applicable) */
 
-            /*
-             * Enumerate join rels at this level and build paths for them.
-             * (Classic dynamic-programming join search)
-             */
-            join_search_one_level(root, lev);
-
-            /*
-             * Now add partitionwise paths, gather paths, and pick cheapest
-             * paths for each joinrel at this level.
-             */
-            foreach(lc, root->join_rel_level[lev]) {
-                RelOptInfo *rel = lfirst(lc);
-
-                /* Compute per-round cost samples for this rel */
-                calc_score_from_pathlist(rel);
-
-                /* Add partition-wise join paths (if applicable) */
+            for (int round = 0; round < error_sample_count; ++round) {
+                // FIXME
                 generate_partitionwise_join_paths(root, rel);
+            }
 
-                /*
-                 * Add gather paths for partial plans except for the final joinrel.
-                 * (final handling happens later in grouping_planner)
-                 */
-                if (!bms_equal(rel->relids, root->all_query_rels)) {
-                    generate_useful_gather_paths(root, rel, false);
-                }
+            /*
+             * Add gather paths for partial plans except for the final joinrel.
+             * (final handling happens later in grouping_planner)
+             */
+            if (!bms_equal(rel->relids, root->all_query_rels)) {
+                generate_useful_gather_paths(root, rel, false);
+            }
 
-                /* Select the cheapest paths now that all are built */
-                set_cheapest(rel);
+            /* Select the cheapest paths now that all are built */
+            set_cheapest(rel);
 
 #ifdef OPTIMIZER_DEBUG
-                debug_print_rel(root, rel);
+            debug_print_rel(root, rel);
 #endif
-            }
         }
     }
-
-    /* Ensure we have exactly `round` saved snapshots before reduction */
-    Assert(round == list_length(saved_join_rel_levels));
-    /*
-     * Compute the minimum-envelope across all saved join_rel snapshots.
-     * The first snapshot is updated in-place and returned.
-     */
-    List **min_envelope = calc_minimum_envelope(
-        saved_join_rel_levels,
-        error_sample_count,
-        levels_needed
-    );
 
     RelOptInfo *final_rel = linitial(root->join_rel_level[levels_needed]);
 
@@ -3390,29 +3448,14 @@ standard_join_search(PlannerInfo *root, const int levels_needed, List *initial_r
     /* The second pass -- we would like to calculated penalty based on previous results. */
     root->pass = 2;
     root->round = -1;
+    root->min_envelope = root->join_rel_level;
+    /* Allocate per-round join_rel storage (indexed by join level) */
     root->join_rel_level = palloc0((levels_needed + 1) * sizeof(List *));
-    root->join_rel_level_first = min_envelope;
     root->join_rel_level[1] = initial_rels;
     root->join_rel_list = NIL;
     root->join_rel_hash = NULL;
 
-    /*
-     * Pick scoring strategy for the "add path" phase.
-     * This strategy ranks newly generated candidate paths before admitting them
-     * into the main pathlist.
-     */
-    const path_score_strategy add_path_score_func =
-            path_score_strategies[add_path_strategy_id];
-
-    /*
-     * Pick scoring strategy for the "retain path" phase.
-     * This strategy ranks previously dropped paths to decide whether any
-     * should be re-inserted into the pathlist.
-     */
-    const path_score_strategy retain_path_score_func =
-            path_score_strategies[retain_path_strategy_id];
-
-    for (int lev = 2; lev <= levels_needed; lev++) {
+    for (int lev = 2; lev <= levels_needed; ++lev) {
         ListCell *lc;
 
         /*
@@ -3447,7 +3490,7 @@ standard_join_search(PlannerInfo *root, const int levels_needed, List *initial_r
              * -------------------------------------------------------------------- */
             List *dropped_pathlist = add_path_by_strategy(
                 root, lev, rel_index,
-                add_path_score_func, /* penalty metric: add phase */
+                root->add_path_score_func, /* penalty metric: add phase */
                 add_path_limit,
                 error_sample_count,
                 false /* is_partial = false */
@@ -3456,7 +3499,7 @@ standard_join_search(PlannerInfo *root, const int levels_needed, List *initial_r
             dropped_pathlist = retain_path_by_strategy(
                 root, lev, rel_index,
                 dropped_pathlist,
-                retain_path_score_func, /* same metric: retain phase */
+                root->retain_path_score_func, /* same metric: retain phase */
                 retain_path_limit,
                 error_sample_count,
                 false /* normal pathlist */
@@ -3473,7 +3516,7 @@ standard_join_search(PlannerInfo *root, const int levels_needed, List *initial_r
              * -------------------------------------------------------------------- */
             List *dropped_partial_pathlist = add_path_by_strategy(
                 root, lev, rel_index,
-                add_path_score_func, /* penalty metric: add partial paths */
+                root->add_path_score_func, /* penalty metric: add partial paths */
                 add_path_limit,
                 error_sample_count,
                 true /* is_partial = true */
@@ -3482,7 +3525,7 @@ standard_join_search(PlannerInfo *root, const int levels_needed, List *initial_r
             dropped_partial_pathlist = retain_path_by_strategy(
                 root, lev, rel_index,
                 dropped_partial_pathlist,
-                retain_path_score_func, /* same metric: retain phase */
+                root->retain_path_score_func, /* same metric: retain phase */
                 retain_path_limit,
                 error_sample_count,
                 true /* partial pathlist */
