@@ -656,3 +656,17 @@ sort_pathlist_by_total_cost(List *pathlist) {
 
     return new_list;
 }
+
+Cost
+get_best_path_total_cost(const RelOptInfo *final_rel) {
+    Assert(final_rel != NULL);
+    Assert(final_rel->pathlist_mat != NULL);
+
+    Cost best_cost = DBL_MAX;
+    for (int round = 0; round < error_sample_count; ++round) {
+        const Path *best_path = linitial(final_rel->pathlist_mat[round]);
+        best_cost = Max(best_path->total_cost, best_cost);
+    }
+
+    return best_cost;
+}

@@ -567,6 +567,8 @@ struct PlannerInfo
 	/* function pointers for adding and retaining paths */
 	path_score_strategy add_path_score_func pg_node_attr(read_write_ignore);
 	path_score_strategy retain_path_score_func pg_node_attr(read_write_ignore);
+
+	Cost		global_min_total_cost pg_node_attr(read_write_ignore);
 };
 
 

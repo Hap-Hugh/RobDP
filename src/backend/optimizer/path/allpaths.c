@@ -13,6 +13,8 @@
  *-------------------------------------------------------------------------
  */
 
+#include <float.h>
+
 #include "postgres.h"
 
 #include <limits.h>
@@ -3382,18 +3384,14 @@ standard_join_search(PlannerInfo *root, const int levels_needed, List *initial_r
 
     RelOptInfo *final_rel = linitial(root->join_rel_level[levels_needed]);
 
+    /* The global total cost threshold must be set before 2-Pass DP. */
+    Cost global_min_total_cost = get_best_path_total_cost(final_rel);
+    root->global_min_total_cost = global_min_total_cost;
+
     ListCell *lc_final;
     foreach(lc_final, final_rel->pathlist) {
         const Path *path = lfirst(lc_final);
         elog(LOG, "[1-pass] [final rel] [path %d] [pathtype %d] "
-             "[startup cost %.3f] [total cost %.3f] [score %.3f]",
-             foreach_current_index(lc_final), path->pathtype,
-             path->startup_cost, path->total_cost, path->score);
-    }
-
-    foreach(lc_final, final_rel->partial_pathlist) {
-        const Path *path = lfirst(lc_final);
-        elog(LOG, "[1-pass] [final rel] [partial path %d] [pathtype %d] "
              "[startup cost %.3f] [total cost %.3f] [score %.3f]",
              foreach_current_index(lc_final), path->pathtype,
              path->startup_cost, path->total_cost, path->score);

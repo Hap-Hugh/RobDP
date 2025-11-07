@@ -52,4 +52,9 @@ sort_pathlist_by_total_cost(
     List *pathlist
 );
 
+Cost
+get_best_path_total_cost(
+    const RelOptInfo *final_rel
+);
+
 #endif // ADDPATH_H

@@ -49,6 +49,7 @@ typedef enum {
  * between planner runtime and the accuracy of path cost comparisons.
  */
 #define STD_FUZZ_FACTOR 1.01
+#define GLOBAL_MIN_COST_FACTOR 1.1
 
 static List *translate_sub_tlist(List *tlist, int relid);
 
@@ -413,10 +414,19 @@ add_path(PlannerInfo *root, RelOptInfo *parent_rel, Path *new_path) {
         switch (new_path->pathtype) {
             case T_BitmapHeapScan:
             case T_BitmapAnd:
-            case T_BitmapOr:
+            case T_BitmapOr: {
                 return;
-            default:
+            }
+            case T_NestLoop:
+            case T_MergeJoin:
+            case T_HashJoin: {
+                if (new_path->total_cost > GLOBAL_MIN_COST_FACTOR * root->global_min_total_cost) {
+                    return;
+                }
+            }
+            default: {
                 break;
+            }
         }
 
         /*
@@ -763,10 +773,19 @@ add_partial_path(PlannerInfo *root, RelOptInfo *parent_rel, Path *new_path) {
         switch (new_path->pathtype) {
             case T_BitmapHeapScan:
             case T_BitmapAnd:
-            case T_BitmapOr:
+            case T_BitmapOr: {
                 return;
-            default:
+            }
+            case T_NestLoop:
+            case T_MergeJoin:
+            case T_HashJoin: {
+                if (new_path->total_cost > GLOBAL_MIN_COST_FACTOR * root->global_min_total_cost) {
+                    return;
+                }
+            }
+            default: {
                 break;
+            }
         }
 
         /*
