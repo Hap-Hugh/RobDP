@@ -3086,6 +3086,7 @@ void set_baserel_size_estimates(
 
     if (enable_rows_dist) {
         set_baserel_rows_sample(root, rel, est_sel);
+        rel->saved_rows = rel->rows;
 
         if (root->pass == 1) {
             /* Overwrite: we only need rows at a particular sample point. */
@@ -3186,6 +3187,7 @@ void set_joinrel_size_estimates(
         set_joinrel_rows_sample(
             root, rel, outer_rel, inner_rel, restrictlist, sel_est
         );
+        rel->saved_rows = rel->rows;
     } else {
         rel->rows_sample = NULL;
     }

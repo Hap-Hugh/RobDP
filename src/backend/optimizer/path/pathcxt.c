@@ -16,7 +16,7 @@ void init_baserel_path_context_1p(
     root->round = round;
     /* Overwrite: we only need rows at a particular sample point. */
     rel->rows = rel->rows_sample->sample_count == 1
-                    ? rel->saved_rows
+                    ? rel->rows
                     : rel->rows_sample->sample[round];
 
     rel->pathlist = rel->pathlist_mat[round];
