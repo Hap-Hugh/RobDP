@@ -206,84 +206,6 @@ static void recurse_push_qual(Node *setOp, Query *topquery,
 static void remove_unused_subquery_outputs(Query *subquery, RelOptInfo *rel,
                                            Bitmapset *extra_used_attrs);
 
-static void
-print_rels_paths(const PlannerInfo *root, const char *label) {
-    elog(LOG, "=== %s: simple_rel_array_size=%d ===",
-         label, root->simple_rel_array_size);
-
-    for (int i = 1; i < root->simple_rel_array_size; i++) {
-        RelOptInfo *rel = root->simple_rel_array[i];
-        if (!rel)
-            continue;
-
-        if (rel->reloptkind != RELOPT_BASEREL &&
-            rel->reloptkind != RELOPT_OTHER_MEMBER_REL)
-            continue;
-
-        elog(LOG, "[Rel %d] rows=%.2f pages=%.0u paths=%d",
-             i, rel->rows, rel->pages, list_length(rel->pathlist));
-
-        int idx = 0;
-        for (ListCell *lc = list_head(rel->pathlist); lc; lc = lnext(rel->pathlist, lc)) {
-            Path *path = (Path *) lfirst(lc);
-            bool parameterized = (path->param_info != NULL);
-            int nkeys = list_length(path->pathkeys);
-
-            elog(LOG,
-                 "  Path#%d rows=%.2f cost=%.2f..%.2f parallel=%s pathkeys=%d%s",
-                 idx++,
-                 path->rows,
-                 path->startup_cost,
-                 path->total_cost,
-                 path->parallel_aware ? "yes" : "no",
-                 nkeys,
-                 parameterized ? " (parameterized)" : "");
-
-            if (IsA(path, IndexPath)) {
-                IndexPath *ip = (IndexPath *) path;
-                elog(LOG, "      index: %s",
-                     ip->indexinfo && ip->indexinfo->indexoid
-                     ? get_rel_name(ip->indexinfo->indexoid)
-                     : "(unknown)");
-            }
-        }
-
-        /* === NEW: also print all pathlists inside pathlist_mat (array of List*) === */
-        for (int s = 0; s < error_sample_count; s++) {
-            List *plist = rel->pathlist_mat[s]; /* each entry points to a pathlist */
-            if (!plist)
-                continue;
-
-            elog(LOG, "  [pathlist_mat #%d] paths=%d", s, list_length(plist));
-
-            idx = 0;
-            for (ListCell *lc2 = list_head(plist); lc2; lc2 = lnext(plist, lc2)) {
-                Path *path = (Path *) lfirst(lc2);
-                bool parameterized = (path->param_info != NULL);
-                int nkeys = list_length(path->pathkeys);
-
-                elog(LOG,
-                     "    Path#%d rows=%.2f cost=%.2f..%.2f parallel=%s pathkeys=%d%s",
-                     idx++,
-                     path->rows,
-                     path->startup_cost,
-                     path->total_cost,
-                     path->parallel_aware ? "yes" : "no",
-                     nkeys,
-                     parameterized ? " (parameterized)" : "");
-
-                if (IsA(path, IndexPath)) {
-                    IndexPath *ip = (IndexPath *) path;
-                    elog(LOG, "        index: %s",
-                         ip->indexinfo && ip->indexinfo->indexoid
-                         ? get_rel_name(ip->indexinfo->indexoid)
-                         : "(unknown)");
-                }
-            }
-        }
-    }
-}
-
 /*
  * make_one_rel
  *	  Finds all possible access paths for executing a query, returning a
@@ -336,10 +258,8 @@ make_one_rel(PlannerInfo *root, List *joinlist) {
      */
     root->pass = 1;
     set_base_rel_pathlists(root);
-    print_rels_paths(root, "pass-1");
     root->pass = 2;
     set_base_rel_pathlists(root);
-    print_rels_paths(root, "pass-2");
 
     /*
      * Generate access paths for the entire join tree.
