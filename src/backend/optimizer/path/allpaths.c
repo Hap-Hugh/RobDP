@@ -3353,24 +3353,6 @@ standard_join_search(PlannerInfo *root, const int levels_needed, List *initial_r
         foreach(lc, root->join_rel_level[lev]) {
             RelOptInfo *rel = lfirst(lc);
 
-            ListCell *lc_path;
-            for (int round = 0; round < error_sample_count; ++round) {
-                foreach(lc_path, rel->pathlist_mat[round]) {
-                    const Path *path = lfirst(lc_path);
-                    elog(LOG, "[1-pass] [round %d] [rel %d] [path %d] [pathtype %d] "
-                         "[rows %.3f] [startup cost %.3f] [total cost %.3f] [score %.3f]",
-                         round, foreach_current_index(lc), foreach_current_index(lc_path), path->pathtype,
-                         path->rows, path->startup_cost, path->total_cost, path->score);
-                }
-                foreach(lc_path, rel->partial_pathlist_mat[round]) {
-                    const Path *path = lfirst(lc_path);
-                    elog(LOG, "[1-pass] [round %d] [partial rel %d] [path %d] [pathtype %d] "
-                         "[rows %.3f] [startup cost %.3f] [total cost %.3f] [score %.3f]",
-                         round, foreach_current_index(lc), foreach_current_index(lc_path), path->pathtype,
-                         path->rows, path->startup_cost, path->total_cost, path->score);
-                }
-            }
-
             /* Compute per-round cost samples for this join rel */
             calc_min_score_from_pathlist(rel);
 
@@ -3397,6 +3379,30 @@ standard_join_search(PlannerInfo *root, const int levels_needed, List *initial_r
 #ifdef OPTIMIZER_DEBUG
             debug_print_rel(root, rel);
 #endif
+        }
+    }
+
+    for (int round = 0; round < error_sample_count; ++round) {
+        for (int lev = 2; lev <= levels_needed; ++lev) {
+            ListCell *lc;
+            foreach(lc, root->join_rel_level[lev]) {
+                const RelOptInfo *rel = lfirst(lc);
+                ListCell *lc_path;
+                foreach(lc_path, rel->pathlist_mat[round]) {
+                    const Path *path = lfirst(lc_path);
+                    elog(LOG, "[1-pass] [round %d] [lev %d] [rel %d] [path %d] [pathtype %d] "
+                         "[rows %.3f] [startup cost %.3f] [total cost %.3f] [score %.3f]",
+                         round, lev, foreach_current_index(lc), foreach_current_index(lc_path), path->pathtype,
+                         path->rows, path->startup_cost, path->total_cost, path->score);
+                }
+                foreach(lc_path, rel->partial_pathlist_mat[round]) {
+                    const Path *path = lfirst(lc_path);
+                    elog(LOG, "[1-pass] [round %d] [lev %d] [rel %d] [partial path %d] [pathtype %d] "
+                         "[rows %.3f] [startup cost %.3f] [total cost %.3f] [score %.3f]",
+                         round, lev, foreach_current_index(lc), foreach_current_index(lc_path), path->pathtype,
+                         path->rows, path->startup_cost, path->total_cost, path->score);
+                }
+            }
         }
     }
 
