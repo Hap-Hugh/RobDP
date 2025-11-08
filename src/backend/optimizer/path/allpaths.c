@@ -3353,6 +3353,24 @@ standard_join_search(PlannerInfo *root, const int levels_needed, List *initial_r
         foreach(lc, root->join_rel_level[lev]) {
             RelOptInfo *rel = lfirst(lc);
 
+            ListCell *lc_path;
+            for (int round = 0; round < error_sample_count; ++round) {
+                foreach(lc_path, rel->pathlist_mat[round]) {
+                    const Path *path = lfirst(lc_path);
+                    elog(LOG, "[1-pass] [round %d] [rel %d] [path %d] [pathtype %d] "
+                         "[rows %.3f] [startup cost %.3f] [total cost %.3f] [score %.3f]",
+                         round, foreach_current_index(lc), foreach_current_index(lc_path), path->pathtype,
+                         path->rows, path->startup_cost, path->total_cost, path->score);
+                }
+                foreach(lc_path, rel->partial_pathlist_mat[round]) {
+                    const Path *path = lfirst(lc_path);
+                    elog(LOG, "[1-pass] [round %d] [partial rel %d] [path %d] [pathtype %d] "
+                         "[rows %.3f] [startup cost %.3f] [total cost %.3f] [score %.3f]",
+                         round, foreach_current_index(lc), foreach_current_index(lc_path), path->pathtype,
+                         path->rows, path->startup_cost, path->total_cost, path->score);
+                }
+            }
+
             /* Compute per-round cost samples for this join rel */
             calc_min_score_from_pathlist(rel);
 
@@ -3385,17 +3403,8 @@ standard_join_search(PlannerInfo *root, const int levels_needed, List *initial_r
     RelOptInfo *final_rel = linitial(root->join_rel_level[levels_needed]);
 
     /* The global total cost threshold must be set before 2-Pass DP. */
-    Cost global_min_total_cost = get_best_path_total_cost(final_rel);
+    const Cost global_min_total_cost = get_best_path_total_cost(final_rel);
     root->global_min_total_cost = global_min_total_cost;
-
-    ListCell *lc_final;
-    foreach(lc_final, final_rel->pathlist) {
-        const Path *path = lfirst(lc_final);
-        elog(LOG, "[1-pass] [final rel] [path %d] [pathtype %d] "
-             "[startup cost %.3f] [total cost %.3f] [score %.3f]",
-             foreach_current_index(lc_final), path->pathtype,
-             path->startup_cost, path->total_cost, path->score);
-    }
 
     /* The second pass -- we would like to calculated penalty based on previous results. */
     root->pass = 2;
@@ -3517,6 +3526,7 @@ standard_join_search(PlannerInfo *root, const int levels_needed, List *initial_r
 
     final_rel = (RelOptInfo *) linitial(root->join_rel_level[levels_needed]);
 
+    ListCell *lc_final;
     foreach(lc_final, final_rel->pathlist) {
         const Path *path = lfirst(lc_final);
         elog(LOG, "[2-pass] [final rel] [path %d] [pathtype %d] "

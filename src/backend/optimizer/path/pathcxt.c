@@ -205,6 +205,8 @@ void init_joinrel_path_context_2p(
     root->round = -1;
     /* Write back: we now need expected rows instead of a particular sample point. */
     joinrel->rows = joinrel->saved_rows;
+    outerrel->rows = outerrel->saved_rows;
+    innerrel->rows = innerrel->saved_rows;
 
     /* Do not initialize the join relation's paths -- already initialized. */
 
