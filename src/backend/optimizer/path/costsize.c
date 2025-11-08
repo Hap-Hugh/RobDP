@@ -246,7 +246,7 @@ void cost_seqscan(
     const ParamPathInfo *param_info
 ) {
     if (!enable_rows_dist || root->pass == 1) {
-        cost_seqscan_1p(path, root, baserel, param_info);
+        cost_seqscan_2p(path, root, baserel, param_info);
     } else if (root->pass == 2) {
         cost_seqscan_2p(path, root, baserel, param_info);
     } else {
@@ -341,7 +341,7 @@ void cost_gather(
     const double *rows
 ) {
     if (!enable_rows_dist || root->pass == 1 || root->pass == 3) {
-        cost_gather_1p(path, root, rel, param_info, rows);
+        cost_gather_2p(path, root, rel, param_info, rows);
     } else if (root->pass == 2) {
         cost_gather_2p(path, root, rel, param_info, rows);
     } else {
@@ -394,7 +394,7 @@ void cost_gather_merge(
     const double *rows
 ) {
     if (!enable_rows_dist || root->pass == 1 || root->pass == 3) {
-        cost_gather_merge_1p(
+        cost_gather_merge_2p(
             path, root, rel, param_info, input_startup_cost, input_total_cost, rows
         );
     } else if (root->pass == 2) {
@@ -435,7 +435,7 @@ void cost_index(
     const bool partial_path
 ) {
     if (!enable_rows_dist || root->pass == 1) {
-        cost_index_1p(path, root, loop_count, partial_path);
+        cost_index_2p(path, root, loop_count, partial_path);
     } else if (root->pass == 2) {
         cost_index_2p(path, root, loop_count, partial_path);
     } else {

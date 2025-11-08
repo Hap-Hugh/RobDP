@@ -383,7 +383,7 @@ set_base_rel_pathlists(PlannerInfo *root) {
 
         if (root->pass == 1) {
             for (int round = 0; round < error_sample_count; ++round) {
-                init_baserel_path_context_1p(
+                init_baserel_path_context_1pk(
                     root, rel, round
                 );
                 set_rel_pathlist(

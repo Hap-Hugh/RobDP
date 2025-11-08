@@ -4,7 +4,7 @@
 
 #include "optimizer/pathcxt.h"
 
-void init_baserel_path_context_1p(
+void init_baserel_path_context_1pk(
     PlannerInfo *root,
     RelOptInfo *rel,
     const int round
@@ -14,10 +14,7 @@ void init_baserel_path_context_1p(
     Assert(rel->rows_sample != NULL);
 
     root->round = round;
-    /* Overwrite: we only need rows at a particular sample point. */
-    rel->rows = rel->rows_sample->sample_count == 1
-                    ? rel->rows
-                    : rel->rows_sample->sample[round];
+    /* Do not overwrite. */
 
     rel->pathlist = rel->pathlist_mat[round];
     rel->partial_pathlist = rel->partial_pathlist_mat[round];
@@ -52,8 +49,7 @@ void init_baserel_path_context_2p(
     Assert(root->pass == 2);
 
     root->round = -1;
-    /* Write back: we now need expected rows instead of a particular sample point. */
-    rel->rows = rel->saved_rows;
+    /* No need to write back. */
 
     rel->pathlist = NIL;
     rel->partial_pathlist = NIL;

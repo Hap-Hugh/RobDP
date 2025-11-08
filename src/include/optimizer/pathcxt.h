@@ -7,7 +7,7 @@
 
 #include "optimizer/sample.h"
 
-extern void init_baserel_path_context_1p(
+extern void init_baserel_path_context_1pk(
     PlannerInfo *root,
     RelOptInfo *rel,
     int round
