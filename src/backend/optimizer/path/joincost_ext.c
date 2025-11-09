@@ -27,6 +27,8 @@
 #include "utils/tuplesort.h"
 
 
+/* ==== ==== ==== ==== ==== ==== JOIN COST HELPERS ==== ==== ==== ==== ==== ==== */
+
 /*
  * Estimate the fraction of the work that each worker will do given the
  * number of workers budgeted for the path.
@@ -48,9 +50,7 @@ double get_parallel_divisor(
      * parallel plan.
      */
     if (parallel_leader_participation) {
-        double leader_contribution;
-
-        leader_contribution = 1.0 - (0.3 * path->parallel_workers);
+        const double leader_contribution = 1.0 - (0.3 * path->parallel_workers);
         if (leader_contribution > 0)
             parallel_divisor += leader_contribution;
     }
@@ -585,64 +585,7 @@ static void cost_rescan(
     }
 }
 
-/*
- * Return per-round sampled row estimate for base scan paths.
- * For non-scan paths or single-sample mode, fall back to deterministic estimate.
- */
-static double get_path_rows(
-    const Path *path,
-    const int round
-) {
-    /* Only apply sampling for base scans in multi-sample mode */
-    if ((IsA(path, SeqScan) || IsA(path, IndexScan)) &&
-        path->rows_sample->sample_count != 1) {
-        /* Sanity checks: expect multi-sample and valid round index */
-        Assert(path->rows_sample->sample_count == error_sample_count);
-        Assert(round >= 0 && round < error_sample_count);
-
-        /* Use the sample for this round */
-        return path->rows_sample->sample[round];
-    }
-    /* Default deterministic estimate */
-    return path->rows;
-}
-
-/*
- * Return per-round sampled startup cost for base scan paths,
- * or fall back to deterministic startup cost in single-sample mode.
- */
-static double get_path_startup_cost(
-    const Path *path,
-    const int round
-) {
-    if ((IsA(path, SeqScan) || IsA(path, IndexScan)) &&
-        path->startup_cost_sample->sample_count != 1) {
-        Assert(path->startup_cost_sample->sample_count == error_sample_count);
-        Assert(round >= 0 && round < error_sample_count);
-
-        return path->startup_cost_sample->sample[round];
-    }
-    return path->startup_cost;
-}
-
-/*
- * Return per-round sampled total cost for base scan paths,
- * or fall back to deterministic total cost in single-sample mode.
- */
-static double get_path_total_cost(
-    const Path *path,
-    const int round
-) {
-    if ((IsA(path, SeqScan) || IsA(path, IndexScan)) &&
-        path->total_cost_sample->sample_count != 1) {
-        Assert(path->total_cost_sample->sample_count == error_sample_count);
-        Assert(round >= 0 && round < error_sample_count);
-
-        return path->total_cost_sample->sample[round];
-    }
-    return path->total_cost;
-}
-
+/* ==== ==== ==== ==== ==== ==== 1-PASS NEST LOOP COST MODEL ==== ==== ==== ==== ==== ==== */
 
 void initial_cost_nestloop_1p(
     PlannerInfo *root,
@@ -659,13 +602,13 @@ void initial_cost_nestloop_1p(
      * In single-sample mode (sample_count == 1) or non-scan paths,
      * fall back to the planner's deterministic row estimate.
      */
-    const double outer_path_rows = get_path_rows(outer_path, root->round);
+    const double outer_path_rows = outer_path->rows;
 
     /* Use per-round sampled costs for base scans; otherwise deterministic costs */
-    const Cost outer_startup_cost = get_path_startup_cost(outer_path, root->round);
-    const Cost outer_total_cost = get_path_total_cost(outer_path, root->round);
-    const Cost inner_startup_cost = get_path_startup_cost(inner_path, root->round);
-    const Cost inner_total_cost = get_path_total_cost(inner_path, root->round);
+    const Cost outer_startup_cost = outer_path->startup_cost;
+    const Cost outer_total_cost = outer_path->total_cost;
+    const Cost inner_startup_cost = inner_path->startup_cost;
+    const Cost inner_total_cost = inner_path->total_cost;
 
     Cost inner_rescan_start_cost;
     Cost inner_rescan_total_cost;
@@ -735,12 +678,12 @@ void final_cost_nestloop_1p(
      * In single-sample mode (sample_count == 1) or non-scan paths,
      * fall back to the planner's deterministic row estimate.
      */
-    double outer_path_rows = get_path_rows(outer_path, root->round);
+    double outer_path_rows = outer_path->rows;
     /*
      * Same logic for inner path. Use sampled rows only for scan paths
      * when running in multi-sample mode.
      */
-    double inner_path_rows = get_path_rows(inner_path, root->round);
+    double inner_path_rows = inner_path->rows;
 
     Cost startup_cost = workspace->startup_cost;
     Cost run_cost = workspace->run_cost;
@@ -904,6 +847,8 @@ void final_cost_nestloop_1p(
     path->jpath.path.total_cost = startup_cost + run_cost;
 }
 
+/* ==== ==== ==== ==== ==== ==== 1-PASS MERGE JOIN COST MODEL ==== ==== ==== ==== ==== ==== */
+
 void initial_cost_mergejoin_1p(
     PlannerInfo *root,
     JoinCostWorkspace *workspace,
@@ -922,18 +867,18 @@ void initial_cost_mergejoin_1p(
      * In single-sample mode (sample_count == 1) or non-scan paths,
      * fall back to the planner's deterministic row estimate.
      */
-    double outer_path_rows = get_path_rows(outer_path, root->round);
+    double outer_path_rows = outer_path->rows;
     /*
      * Same logic for inner path. Use sampled rows only for scan paths
      * when running in multi-sample mode.
      */
-    double inner_path_rows = get_path_rows(inner_path, root->round);
+    double inner_path_rows = inner_path->rows;
 
     /* Use per-round sampled costs for base scans; otherwise deterministic costs */
-    const Cost outer_startup_cost = get_path_startup_cost(outer_path, root->round);
-    const Cost outer_total_cost = get_path_total_cost(outer_path, root->round);
-    const Cost inner_startup_cost = get_path_startup_cost(inner_path, root->round);
-    const Cost inner_total_cost = get_path_total_cost(inner_path, root->round);
+    const Cost outer_startup_cost = outer_path->startup_cost;
+    const Cost outer_total_cost = outer_path->total_cost;
+    const Cost inner_startup_cost = inner_path->startup_cost;
+    const Cost inner_total_cost = inner_path->total_cost;
 
     Cost inner_run_cost;
     double outer_rows,
@@ -1123,7 +1068,7 @@ void final_cost_mergejoin_1p(
      * In single-sample mode (sample_count == 1) or non-scan paths,
      * fall back to the planner's deterministic row estimate.
      */
-    double inner_path_rows = get_path_rows(inner_path, root->round);
+    double inner_path_rows = inner_path->rows;
 
     List *mergeclauses = path->path_mergeclauses;
     List *innersortkeys = path->innersortkeys;
@@ -1363,6 +1308,8 @@ void final_cost_mergejoin_1p(
     path->jpath.path.total_cost = startup_cost + run_cost;
 }
 
+/* ==== ==== ==== ==== ==== ==== 1-PASS HASH JOIN COST MODEL ==== ==== ==== ==== ==== ==== */
+
 void initial_cost_hashjoin_1p(
     PlannerInfo *root,
     JoinCostWorkspace *workspace,
@@ -1377,22 +1324,22 @@ void initial_cost_hashjoin_1p(
     Cost run_cost = 0;
 
     /* Use per-round sampled costs for base scans; otherwise deterministic costs */
-    const Cost outer_startup_cost = get_path_startup_cost(outer_path, root->round);
-    const Cost outer_total_cost = get_path_total_cost(outer_path, root->round);
-    // const Cost inner_startup_cost = get_path_startup_cost(inner_path, root->round);
-    const Cost inner_total_cost = get_path_total_cost(inner_path, root->round);
+    const Cost outer_startup_cost = outer_path->startup_cost;
+    const Cost outer_total_cost = outer_path->total_cost;
+    // const Cost inner_startup_cost = inner_path->startup_cost;
+    const Cost inner_total_cost = inner_path->total_cost;
 
     /*
      * Use per-round sampled row estimates for base scan paths (Seq/Index).
      * In single-sample mode (sample_count == 1) or non-scan paths,
      * fall back to the planner's deterministic row estimate.
      */
-    const double outer_path_rows = get_path_rows(outer_path, root->round);
+    const double outer_path_rows = outer_path->rows;
     /*
      * Same logic for inner path. Use sampled rows only for scan paths
      * when running in multi-sample mode.
      */
-    const double inner_path_rows = get_path_rows(inner_path, root->round);
+    const double inner_path_rows = inner_path->rows;
 
     double inner_path_rows_total = inner_path_rows;
     int num_hashclauses = list_length(hashclauses);
@@ -1493,12 +1440,12 @@ void final_cost_hashjoin_1p(
      * In single-sample mode (sample_count == 1) or non-scan paths,
      * fall back to the planner's deterministic row estimate.
      */
-    const double outer_path_rows = get_path_rows(outer_path, root->round);
+    const double outer_path_rows = outer_path->rows;
     /*
      * Same logic for inner path. Use sampled rows only for scan paths
      * when running in multi-sample mode.
      */
-    const double inner_path_rows = get_path_rows(inner_path, root->round);
+    const double inner_path_rows = inner_path->rows;
 
     double inner_path_rows_total = workspace->inner_rows_total;
     List *hashclauses = path->path_hashclauses;
@@ -1730,6 +1677,8 @@ void final_cost_hashjoin_1p(
     path->jpath.path.total_cost = startup_cost + run_cost;
 }
 
+/* ==== ==== ==== ==== ==== ==== 2-PASS NEST LOOP COST MODEL ==== ==== ==== ==== ==== ==== */
+
 void initial_cost_nestloop_2p(
     PlannerInfo *root,
     JoinCostWorkspace *workspace,
@@ -1893,7 +1842,7 @@ void final_cost_nestloop_2p(
     /* Mark rows (scalar) per PG semantics: param_info or parent->rows */
     if (path->jpath.path.param_info) {
         path->jpath.path.rows = path->jpath.path.param_info->ppi_rows;
-        path->jpath.path.rows_sample = duplicate_sample(path->jpath.path.param_info->ppi_rows_sample);
+        path->jpath.path.rows_sample = make_sample_by_single_value(path->jpath.path.param_info->ppi_rows);
     } else {
         path->jpath.path.rows = path->jpath.path.parent->rows;
         path->jpath.path.rows_sample = duplicate_sample(path->jpath.path.parent->rows_sample);
@@ -2028,6 +1977,8 @@ void final_cost_nestloop_2p(
     path->jpath.path.startup_cost = startup_accum * invN;
     path->jpath.path.total_cost = total_accum * invN;
 }
+
+/* ==== ==== ==== ==== ==== ==== 2-PASS MERGE JOIN COST MODEL ==== ==== ==== ==== ==== ==== */
 
 void initial_cost_mergejoin_2p(
     PlannerInfo *root,
@@ -2322,7 +2273,7 @@ void final_cost_mergejoin_2p(
     /* ------------------------------- 2) Set scalar output rows (+ optional rows_sample) ------------------------------- */
     if (path->jpath.path.param_info) {
         path->jpath.path.rows = path->jpath.path.param_info->ppi_rows;
-        path->jpath.path.rows_sample = duplicate_sample(path->jpath.path.param_info->ppi_rows_sample);
+        path->jpath.path.rows_sample = make_sample_by_single_value(path->jpath.path.param_info->ppi_rows);
     } else {
         path->jpath.path.rows = path->jpath.path.parent->rows;
         path->jpath.path.rows_sample = duplicate_sample(path->jpath.path.parent->rows_sample);
@@ -2474,6 +2425,8 @@ void final_cost_mergejoin_2p(
     path->jpath.path.startup_cost = startup_accum * invN;
     path->jpath.path.total_cost = total_accum * invN;
 }
+
+/* ==== ==== ==== ==== ==== ==== 2-PASS HASH JOIN COST MODEL ==== ==== ==== ==== ==== ==== */
 
 void initial_cost_hashjoin_2p(
     PlannerInfo *root,
@@ -2672,7 +2625,7 @@ void final_cost_hashjoin_2p(
     /* Mark rows (scalar) per PG semantics: param_info or parent->rows; also copy rows_sample */
     if (path->jpath.path.param_info) {
         path->jpath.path.rows = path->jpath.path.param_info->ppi_rows;
-        path->jpath.path.rows_sample = duplicate_sample(path->jpath.path.param_info->ppi_rows_sample);
+        path->jpath.path.rows_sample = make_sample_by_single_value(path->jpath.path.param_info->ppi_rows);
     } else {
         path->jpath.path.rows = path->jpath.path.parent->rows;
         path->jpath.path.rows_sample = duplicate_sample(path->jpath.path.parent->rows_sample);

@@ -81,8 +81,8 @@ extern double index_pages_fetched(
 extern void cost_seqscan(
     Path *path,
     PlannerInfo *root,
-    RelOptInfo *baserel,
-    ParamPathInfo *param_info
+    const RelOptInfo *baserel,
+    const ParamPathInfo *param_info
 );
 
 extern void cost_samplescan(
