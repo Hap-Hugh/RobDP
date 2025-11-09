@@ -1527,35 +1527,27 @@ void final_cost_hashjoin_1p(
             if (bms_is_subset(restrictinfo->right_relids,
                               inner_path->parent->relids)) {
                 /* righthand side is inner */
+                estimate_hash_bucket_stats(
+                    root,
+                    get_rightop(restrictinfo->clause),
+                    virtualbuckets,
+                    &restrictinfo->right_mcvfreq,
+                    &restrictinfo->right_bucketsize
+                );
                 thisbucketsize = restrictinfo->right_bucketsize;
-                if (thisbucketsize < 0) {
-                    /* not cached yet */
-                    estimate_hash_bucket_stats(
-                        root,
-                        get_rightop(restrictinfo->clause),
-                        virtualbuckets,
-                        &restrictinfo->right_mcvfreq,
-                        &restrictinfo->right_bucketsize
-                    );
-                    thisbucketsize = restrictinfo->right_bucketsize;
-                }
                 thismcvfreq = restrictinfo->right_mcvfreq;
             } else {
                 Assert(bms_is_subset(restrictinfo->left_relids,
                     inner_path->parent->relids));
                 /* lefthand side is inner */
+                estimate_hash_bucket_stats(
+                    root,
+                    get_leftop(restrictinfo->clause),
+                    virtualbuckets,
+                    &restrictinfo->left_mcvfreq,
+                    &restrictinfo->left_bucketsize
+                );
                 thisbucketsize = restrictinfo->left_bucketsize;
-                if (thisbucketsize < 0) {
-                    /* not cached yet */
-                    estimate_hash_bucket_stats(
-                        root,
-                        get_leftop(restrictinfo->clause),
-                        virtualbuckets,
-                        &restrictinfo->left_mcvfreq,
-                        &restrictinfo->left_bucketsize
-                    );
-                    thisbucketsize = restrictinfo->left_bucketsize;
-                }
                 thismcvfreq = restrictinfo->left_mcvfreq;
             }
 
