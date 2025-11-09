@@ -3655,7 +3655,13 @@ estimate_num_groups(PlannerInfo *root, List *groupExprs, double input_rows,
 			 * guarding against division by zero when reldistinct is zero.
 			 * Also skip this if we know that we are returning all rows.
 			 */
-			if (reldistinct > 0 && rel->rows < rel->tuples)
+			Cardinality rel_rows;
+			if (root->pass == 1)
+				rel_rows = rel->saved_rows;
+			else
+				rel_rows = rel->rows;
+
+			if (reldistinct > 0 && rel_rows < rel->tuples)
 			{
 				/*
 				 * Given a table containing N rows with n distinct values in a
@@ -3692,7 +3698,7 @@ estimate_num_groups(PlannerInfo *root, List *groupExprs, double input_rows,
 				 * works well even when n is small.
 				 */
 				reldistinct *=
-					(1 - pow((rel->tuples - rel->rows) / rel->tuples,
+					(1 - pow((rel->tuples - rel_rows) / rel->tuples,
 							 rel->tuples / reldistinct));
 			}
 			reldistinct = clamp_row_est(reldistinct);
@@ -3835,7 +3841,11 @@ estimate_hash_bucket_stats(PlannerInfo *root, Node *hashkey, double nbuckets,
 	 */
 	if (vardata.rel && vardata.rel->tuples > 0)
 	{
-		ndistinct *= vardata.rel->rows / vardata.rel->tuples;
+		if (root->pass == 1) {
+			ndistinct *= vardata.rel->saved_rows / vardata.rel->tuples;
+		} else {
+			ndistinct *= vardata.rel->rows / vardata.rel->tuples;
+		}
 		ndistinct = clamp_row_est(ndistinct);
 	}
 
