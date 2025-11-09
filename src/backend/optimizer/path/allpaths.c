@@ -262,24 +262,24 @@ make_one_rel(PlannerInfo *root, List *joinlist) {
      */
     set_base_rel_pathlists(root);
 
-    for (rti = 1; rti < root->simple_rel_array_size; ++rti) {
-        const RelOptInfo *baserel = root->simple_rel_array[rti];
-        ListCell *lc_path;
-        foreach(lc_path, baserel->pathlist) {
-            const Path *path = lfirst(lc_path);
-            elog(LOG, "[1-pass] [round %d] [lev %d] [rel %d] [path %d] [pathtype %d] "
-                 "[rows %.3f] [startup cost %.3f] [total cost %.3f] [score %.3f]",
-                 0, 1, rti, foreach_current_index(lc_path),
-                 path->pathtype, path->rows, path->startup_cost, path->total_cost, path->score);
-        }
-        foreach(lc_path, baserel->partial_pathlist) {
-            const Path *path = lfirst(lc_path);
-            elog(LOG, "[1-pass] [round %d] [lev %d] [rel %d] [partial path %d] [pathtype %d] "
-                 "[rows %.3f] [startup cost %.3f] [total cost %.3f] [score %.3f]",
-                 0, 1, rti, foreach_current_index(lc_path),
-                 path->pathtype, path->rows, path->startup_cost, path->total_cost, path->score);
-        }
-    }
+    // for (rti = 1; rti < root->simple_rel_array_size; ++rti) {
+    //     const RelOptInfo *baserel = root->simple_rel_array[rti];
+    //     ListCell *lc_path;
+    //     foreach(lc_path, baserel->pathlist) {
+    //         const Path *path = lfirst(lc_path);
+    //         elog(LOG, "[1-pass] [round %d] [lev %d] [rel %d] [path %d] [pathtype %d] "
+    //              "[rows %.3f] [startup cost %.3f] [total cost %.3f] [score %.3f]",
+    //              0, 1, rti, foreach_current_index(lc_path),
+    //              path->pathtype, path->rows, path->startup_cost, path->total_cost, path->score);
+    //     }
+    //     foreach(lc_path, baserel->partial_pathlist) {
+    //         const Path *path = lfirst(lc_path);
+    //         elog(LOG, "[1-pass] [round %d] [lev %d] [rel %d] [partial path %d] [pathtype %d] "
+    //              "[rows %.3f] [startup cost %.3f] [total cost %.3f] [score %.3f]",
+    //              0, 1, rti, foreach_current_index(lc_path),
+    //              path->pathtype, path->rows, path->startup_cost, path->total_cost, path->score);
+    //     }
+    // }
 
     /*
      * Generate access paths for the entire join tree.
@@ -3375,33 +3375,33 @@ standard_join_search(PlannerInfo *root, const int levels_needed, List *initial_r
         }
     }
 
-    ListCell *lc_round;
-    foreach(lc_round, saved_join_rel_levels) {
-        List **join_rel_levels = lfirst(lc_round);
-        for (int lev = 2; lev <= levels_needed; ++lev) {
-            ListCell *lc;
-            foreach(lc, join_rel_levels[lev]) {
-                const RelOptInfo *rel = lfirst(lc);
-                ListCell *lc_path;
-                foreach(lc_path, rel->pathlist) {
-                    const Path *path = lfirst(lc_path);
-                    elog(LOG, "[1-pass] [round %d] [lev %d] [rel %d] [path %d] [pathtype %d] "
-                         "[rows %.3f] [startup cost %.3f] [total cost %.3f] [score %.3f]",
-                         foreach_current_index(lc_round), lev, foreach_current_index(lc),
-                         foreach_current_index(lc_path), path->pathtype,
-                         path->rows, path->startup_cost, path->total_cost, path->score);
-                }
-                foreach(lc_path, rel->partial_pathlist) {
-                    const Path *path = lfirst(lc_path);
-                    elog(LOG, "[1-pass] [round %d] [lev %d] [rel %d] [partial path %d] [pathtype %d] "
-                         "[rows %.3f] [startup cost %.3f] [total cost %.3f] [score %.3f]",
-                         foreach_current_index(lc_round), lev, foreach_current_index(lc),
-                         foreach_current_index(lc_path), path->pathtype,
-                         path->rows, path->startup_cost, path->total_cost, path->score);
-                }
-            }
-        }
-    }
+    // ListCell *lc_round;
+    // foreach(lc_round, saved_join_rel_levels) {
+    //     List **join_rel_levels = lfirst(lc_round);
+    //     for (int lev = 2; lev <= levels_needed; ++lev) {
+    //         ListCell *lc;
+    //         foreach(lc, join_rel_levels[lev]) {
+    //             const RelOptInfo *rel = lfirst(lc);
+    //             ListCell *lc_path;
+    //             foreach(lc_path, rel->pathlist) {
+    //                 const Path *path = lfirst(lc_path);
+    //                 elog(LOG, "[1-pass] [round %d] [lev %d] [rel %d] [path %d] [pathtype %d] "
+    //                      "[rows %.3f] [startup cost %.3f] [total cost %.3f] [score %.3f]",
+    //                      foreach_current_index(lc_round), lev, foreach_current_index(lc),
+    //                      foreach_current_index(lc_path), path->pathtype,
+    //                      path->rows, path->startup_cost, path->total_cost, path->score);
+    //             }
+    //             foreach(lc_path, rel->partial_pathlist) {
+    //                 const Path *path = lfirst(lc_path);
+    //                 elog(LOG, "[1-pass] [round %d] [lev %d] [rel %d] [partial path %d] [pathtype %d] "
+    //                      "[rows %.3f] [startup cost %.3f] [total cost %.3f] [score %.3f]",
+    //                      foreach_current_index(lc_round), lev, foreach_current_index(lc),
+    //                      foreach_current_index(lc_path), path->pathtype,
+    //                      path->rows, path->startup_cost, path->total_cost, path->score);
+    //             }
+    //         }
+    //     }
+    // }
 
     /* Ensure we have exactly `round` saved snapshots before reduction */
     Assert(round == list_length(saved_join_rel_levels));
@@ -3417,22 +3417,22 @@ standard_join_search(PlannerInfo *root, const int levels_needed, List *initial_r
 
     RelOptInfo *final_rel = linitial(root->join_rel_level[levels_needed]);
 
-    ListCell *lc_final;
-    foreach(lc_final, final_rel->pathlist) {
-        const Path *path = lfirst(lc_final);
-        elog(LOG, "[1-pass] [final rel] [path %d] [pathtype %d] "
-             "[startup cost %.3f] [total cost %.3f] [score %.3f]",
-             foreach_current_index(lc_final), path->pathtype,
-             path->startup_cost, path->total_cost, path->score);
-    }
-
-    foreach(lc_final, final_rel->partial_pathlist) {
-        const Path *path = lfirst(lc_final);
-        elog(LOG, "[1-pass] [final rel] [partial path %d] [pathtype %d] "
-             "[startup cost %.3f] [total cost %.3f] [score %.3f]",
-             foreach_current_index(lc_final), path->pathtype,
-             path->startup_cost, path->total_cost, path->score);
-    }
+    // ListCell *lc_final;
+    // foreach(lc_final, final_rel->pathlist) {
+    //     const Path *path = lfirst(lc_final);
+    //     elog(LOG, "[1-pass] [final rel] [path %d] [pathtype %d] "
+    //          "[startup cost %.3f] [total cost %.3f] [score %.3f]",
+    //          foreach_current_index(lc_final), path->pathtype,
+    //          path->startup_cost, path->total_cost, path->score);
+    // }
+    //
+    // foreach(lc_final, final_rel->partial_pathlist) {
+    //     const Path *path = lfirst(lc_final);
+    //     elog(LOG, "[1-pass] [final rel] [partial path %d] [pathtype %d] "
+    //          "[startup cost %.3f] [total cost %.3f] [score %.3f]",
+    //          foreach_current_index(lc_final), path->pathtype,
+    //          path->startup_cost, path->total_cost, path->score);
+    // }
 
     /* The second pass -- we would like to calculated penalty based on previous results. */
     root->pass = 2;
@@ -3569,21 +3569,21 @@ standard_join_search(PlannerInfo *root, const int levels_needed, List *initial_r
 
     final_rel = (RelOptInfo *) linitial(root->join_rel_level[levels_needed]);
 
-    foreach(lc_final, final_rel->pathlist) {
-        const Path *path = lfirst(lc_final);
-        elog(LOG, "[2-pass] [final rel] [path %d] [pathtype %d] "
-             "[startup cost %.3f] [total cost %.3f] [score %.3f]",
-             foreach_current_index(lc_final), path->pathtype,
-             path->startup_cost, path->total_cost, path->score);
-    }
-
-    foreach(lc_final, final_rel->partial_pathlist) {
-        const Path *path = lfirst(lc_final);
-        elog(LOG, "[2-pass] [final rel] [partial path %d] [pathtype %d] "
-             "[startup cost %.3f] [total cost %.3f] [score %.3f]",
-             foreach_current_index(lc_final), path->pathtype,
-             path->startup_cost, path->total_cost, path->score);
-    }
+    // foreach(lc_final, final_rel->pathlist) {
+    //     const Path *path = lfirst(lc_final);
+    //     elog(LOG, "[2-pass] [final rel] [path %d] [pathtype %d] "
+    //          "[startup cost %.3f] [total cost %.3f] [score %.3f]",
+    //          foreach_current_index(lc_final), path->pathtype,
+    //          path->startup_cost, path->total_cost, path->score);
+    // }
+    //
+    // foreach(lc_final, final_rel->partial_pathlist) {
+    //     const Path *path = lfirst(lc_final);
+    //     elog(LOG, "[2-pass] [final rel] [partial path %d] [pathtype %d] "
+    //          "[startup cost %.3f] [total cost %.3f] [score %.3f]",
+    //          foreach_current_index(lc_final), path->pathtype,
+    //          path->startup_cost, path->total_cost, path->score);
+    // }
 
     root->pass = 3;
     root->join_rel_level = NULL;

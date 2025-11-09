@@ -230,7 +230,7 @@ void set_baserel_rows_sample(
     /* 1. Resolve relation aliases (original alias and a standard fallback). */
     const char *alias = get_alias(root, baserel->relid);
     const char *alias_fallback = get_std_alias(root, baserel->relid);
-    elog(LOG, "[baserel %s] considering relation rows sample.", alias);
+    // elog(LOG, "[baserel %s] considering relation rows sample.", alias);
 
     /* 2. Allocate an error profile holder and try to populate it from cache. */
     ErrorProfile *ep;
@@ -238,15 +238,10 @@ void set_baserel_rows_sample(
 
     /* 2.1 If no profile is available, fall back to a degenerate sample. */
     if (!found) {
-        elog(LOG, "[baserel %s] no error profile is available, using a single sample.", alias);
+        // elog(LOG, "[baserel %s] no error profile is available, using a single sample.", alias);
         baserel->rows = rows_fallback;
         baserel->rows_sample = make_sample_by_single_value(rows_fallback);
         return;
-    }
-
-    /* 2.2 Debug-print the error profile. */
-    for (int i = 0; i < ep->sample_count; ++i) {
-        elog(LOG, "[baserel %s] est = %g, true = %g.", alias, ep->data[i].sel_est, ep->data[i].sel_true);
     }
 
     /* 3. Get conditional sample p(true_sel | sel_est=e0). */
@@ -254,15 +249,10 @@ void set_baserel_rows_sample(
 
     /* 3.1 Fallback to a single sample if we fail to build `sel_true_sample`. */
     if (sel_true_sample == NULL) {
-        elog(LOG, "[baserel %s] failed to build conditional sample, using a single sample.", alias);
+        // elog(LOG, "[baserel %s] failed to build conditional sample, using a single sample.", alias);
         baserel->rows = rows_fallback;
         baserel->rows_sample = make_sample_by_single_value(rows_fallback);
         return;
-    }
-
-    /* 3.2 Debug-print the produced sample. */
-    for (int i = 0; i < sel_true_sample->sample_count; ++i) {
-        elog(LOG, "[baserel %s] value = %g.", alias, sel_true_sample->sample[i]);
     }
 
     /* 4. Scale the `sel_true_sample` -- from selectivity sample to rows sample. */
@@ -276,7 +266,7 @@ void set_baserel_rows_sample(
     rows_sample_mean /= (double) rows_sample->sample_count;
 
     /* 5.1 Save the rows and rows sample. */
-    elog(LOG, "[baserel %s] original: %g rows -> adjusted: %g rows.", alias, baserel->rows, rows_sample_mean);
+    // elog(LOG, "[baserel %s] original: %g rows -> adjusted: %g rows.", alias, baserel->rows, rows_sample_mean);
     baserel->rows = rows_sample_mean;
     baserel->rows_sample = rows_sample;
 }
@@ -339,10 +329,9 @@ void set_joinrel_rows_sample(
             else
                 snprintf(alias, sizeof(alias), "%s=%s", right_rel_alias, left_rel_alias);
 
-            elog(LOG, "alias: %s; join key: %s.%d = %s.%d.",
-                 alias,
-                 left_rel_alias, leftvar->varattno,
-                 right_rel_alias, rightvar->varattno);
+            // elog(LOG, "alias: %s; join key: %s.%d = %s.%d.",
+            //      alias, left_rel_alias, leftvar->varattno,
+            //      right_rel_alias, rightvar->varattno);
 
             /* Canonicalize order to avoid duplicate “A=B” vs “B=A”. */
             if (strcmp(left_rel_std_alias, right_rel_std_alias) < 0)
@@ -350,16 +339,15 @@ void set_joinrel_rows_sample(
             else
                 snprintf(alias_fallback, sizeof(alias_fallback), "%s=%s", right_rel_std_alias, left_rel_std_alias);
 
-            elog(LOG, "alias fallback: %s; join key: %s.%d = %s.%d.",
-                 alias_fallback,
-                 left_rel_std_alias, leftvar->varattno,
-                 right_rel_std_alias, rightvar->varattno);
+            // elog(LOG, "alias fallback: %s; join key: %s.%d = %s.%d.",
+            //      alias_fallback, left_rel_std_alias, leftvar->varattno,
+            //      right_rel_std_alias, rightvar->varattno);
 
             break;
         }
     }
     // TODO: Check whether we have a sane alias with its fallback version.
-    elog(LOG, "[joinrel %s] considering relation rows sample.", alias);
+   //  elog(LOG, "[joinrel %s] considering relation rows sample.", alias);
 
     /* 2. Allocate an error profile holder and try to populate it from cache. */
     ErrorProfile *ep;
@@ -367,7 +355,7 @@ void set_joinrel_rows_sample(
 
     /* 2.1 If no profile is available, fall back to a degenerate sample. */
     if (!found) {
-        elog(LOG, "[joinrel %s] no profile is available, using a single sample.", alias);
+        // elog(LOG, "[joinrel %s] no profile is available, using a single sample.", alias);
         joinrel->rows = rows_fallback;
         joinrel->rows_sample = make_sample_by_single_value(rows_fallback);
         return;
@@ -378,15 +366,10 @@ void set_joinrel_rows_sample(
 
     /* 3.1 Fallback to single point sample if we fail to build `sel_true_sample`. */
     if (sel_true_sample == NULL) {
-        elog(LOG, "[joinrel %s] failed to build conditional sample, using a single sample.", alias);
+        // elog(LOG, "[joinrel %s] failed to build conditional sample, using a single sample.", alias);
         joinrel->rows = rows_fallback;
         joinrel->rows_sample = make_sample_by_single_value(rows_fallback);
         return;
-    }
-
-    /* 3.2 Debug-print the produced sample. */
-    for (int i = 0; i < sel_true_sample->sample_count; ++i) {
-        elog(LOG, "[joinrel %s] value = %g.", alias, sel_true_sample->sample[i]);
     }
 
     /* 4. Push selectivity uncertainty through the join-size model to get rows sample.
@@ -406,7 +389,7 @@ void set_joinrel_rows_sample(
     rows_sample_mean /= (double) rows_sample->sample_count;
 
     /* 5.1 Save the rows and rows sample. */
-    elog(LOG, "[joinrel %s] original: %g rows -> adjusted: %g rows.", alias, joinrel->rows, rows_sample_mean);
+    // elog(LOG, "[joinrel %s] original: %g rows -> adjusted: %g rows.", alias, joinrel->rows, rows_sample_mean);
     joinrel->rows = rows_sample_mean;
     joinrel->rows_sample = rows_sample;
 }
