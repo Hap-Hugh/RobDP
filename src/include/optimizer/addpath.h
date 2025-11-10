@@ -28,11 +28,6 @@ calc_score_from_pathlist(
     RelOptInfo *joinrel
 );
 
-void
-calc_final_score_from_pathlist(
-    RelOptInfo *joinrel
-);
-
 List **
 calc_minimum_envelope(
     List *saved_join_rel_levels,
