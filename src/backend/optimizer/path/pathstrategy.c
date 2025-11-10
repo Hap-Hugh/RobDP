@@ -352,13 +352,36 @@ extern void calc_robust_coverage(
     elog(ERROR, "`calc_robust_coverage` not implemented.");
 }
 
+static unsigned int rng_state = 123456789u;
+
+static unsigned int xorshift32(void) {
+    unsigned int x = rng_state;
+    x ^= x << 13;
+    x ^= x >> 17;
+    x ^= x << 5;
+    rng_state = x;
+    return x;
+}
+
+static double rng_uniform01(void) {
+    return xorshift32() / (double) UINT32_MAX;
+}
+
 extern void calc_random_score(
     const List *cand_list,
     PathRank *rank_arr,
     const double *min_envelope,
     const int sample_count
 ) {
-    elog(ERROR, "`calc_random_score` not implemented.");
+    int idx = 0;
+    ListCell *lc;
+    foreach(lc, cand_list) {
+        Path *path = lfirst(lc);
+        rank_arr[idx].path = path;
+        rank_arr[idx].score = rng_uniform01();
+        idx++;
+    }
+    Assert(idx == cand_count);
 }
 
 extern void calc_postgres_original_score(
