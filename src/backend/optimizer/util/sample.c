@@ -218,15 +218,12 @@ Sample *make_sample_by_join_sample(
 }
 
 /* ------------------------------- Relations ------------------------------- */
-void set_baserel_rows_sample(
+void set_baserel_rows(
     const PlannerInfo *root,
     RelOptInfo *baserel,
-    const double sel_est
+    const double sel_est,
+    const double rows_fallback
 ) {
-    /* 0. Prepare fallback rows estimation result.
-     * Note: we don't use `baserel->rows`, which has been clamped already. */
-    const double rows_fallback = sel_est * baserel->tuples;
-
     /* 1. Resolve relation aliases (original alias and a standard fallback). */
     const char *alias = get_alias(root, baserel->relid);
     const char *alias_fallback = get_std_alias(root, baserel->relid);
@@ -271,7 +268,116 @@ void set_baserel_rows_sample(
     baserel->rows_sample = rows_sample;
 }
 
-void set_joinrel_rows_sample(
+void set_joinrel_rows_1p(
+    const PlannerInfo *root,
+    RelOptInfo *joinrel,
+    const RelOptInfo *outer_rel,
+    const RelOptInfo *inner_rel,
+    List *restrictlist,
+    const double sel_est,
+    const double outer_rows_single_point,
+    const double inner_rows_single_point
+) {
+    /**
+     * 1-Pass DP for join relations: we do not use per-sample vectors here.
+     *
+     * Note: The only reason “sample” is relevant at this stage is historical:
+     * when we set baserel rows earlier, the single-point `rows` value may have
+     * been stored inside a sample container. That sample (if needed) is consumed
+     * outside this function via `rows_fallback`.
+     */
+    const double rows_fallback = outer_rows_single_point * inner_rows_single_point * sel_est;
+
+    /* We never keep a sample vector for joinrels in 1-pass DP. */
+    joinrel->rows_sample = NULL;
+
+    /* 1. Resolve relation aliases (both canonical and a standard fallback).
+     *
+     * FIXME: We assume the first RestrictInfo we find is `can_join`.
+     * FIXME: We should also check `rinfo->hashjoinoperator`. */
+    char alias[SM_KEY_LEN];
+    char alias_fallback[SM_KEY_LEN];
+    memset(alias, 0, sizeof(alias));
+    memset(alias_fallback, 0, sizeof(alias_fallback));
+
+    ListCell *lc;
+    foreach(lc, restrictlist) {
+        const RestrictInfo *rinfo = lfirst(lc);
+        if (!IsA(rinfo->clause, OpExpr)) {
+            continue;
+        }
+        const OpExpr *opexpr = (OpExpr *) rinfo->clause;
+        if (list_length(opexpr->args) != 2) {
+            continue;
+        }
+
+        /* Both sides must be plain Vars (skip RelabelType, etc.). */
+        Node *l = linitial(opexpr->args);
+        Node *r = lsecond(opexpr->args);
+        if (!IsA(l, Var) || !IsA(r, Var)) {
+            continue;
+        }
+        const Var *leftvar = (Var *) l;
+        const Var *rightvar = (Var *) r;
+
+        /* Accept either orientation: (outer, left)-(inner, right) or swapped. */
+        const bool l_in_outer = bms_is_member(leftvar->varno, outer_rel->relids);
+        const bool r_in_inner = bms_is_member(rightvar->varno, inner_rel->relids);
+        const bool r_in_outer = bms_is_member(rightvar->varno, outer_rel->relids);
+        const bool l_in_inner = bms_is_member(leftvar->varno, inner_rel->relids);
+
+        if ((l_in_outer && r_in_inner) || (r_in_outer && l_in_inner)) {
+            const char *left_rel_alias = get_alias(root, leftvar->varno);
+            const char *right_rel_alias = get_alias(root, rightvar->varno);
+            const char *left_rel_std_alias = get_std_alias(root, leftvar->varno);
+            const char *right_rel_std_alias = get_std_alias(root, rightvar->varno);
+
+            /* Canonicalize order to avoid duplicates “A=B” vs “B=A”. */
+            if (strcmp(left_rel_alias, right_rel_alias) < 0)
+                snprintf(alias, sizeof(alias), "%s=%s", left_rel_alias, right_rel_alias);
+            else
+                snprintf(alias, sizeof(alias), "%s=%s", right_rel_alias, left_rel_alias);
+
+            /* Canonicalize order for the standard/fallback alias as well. */
+            if (strcmp(left_rel_std_alias, right_rel_std_alias) < 0)
+                snprintf(alias_fallback, sizeof(alias_fallback), "%s=%s", left_rel_std_alias, right_rel_std_alias);
+            else
+                snprintf(alias_fallback, sizeof(alias_fallback), "%s=%s", right_rel_std_alias, left_rel_std_alias);
+
+            break;
+        }
+    }
+    /* TODO: Verify that `alias` and `alias_fallback` are sane. */
+
+    /* 2. Allocate an error profile holder and try to populate it from cache.*/
+    ErrorProfile *ep;
+    const bool found = get_error_profile(alias, alias_fallback, &ep);
+
+    /* 2.1 If no profile is available, fall back to the single-point estimate. */
+    if (!found) {
+        // elog(LOG, "[joinrel %s] no profile is available, using a single sample.", alias);
+        joinrel->rows = rows_fallback;
+        return;
+    }
+
+    /* 3. Build conditional sample p(true_sel | sel_est = e0). */
+    const Sample *sel_true_sample = make_sample_by_bin(ep, sel_est);
+
+    /* 3.1 If we fail to build `sel_true_sample`, use the single-point fallback. */
+    if (sel_true_sample == NULL) {
+        // elog(LOG, "[joinrel %s] failed to build conditional sample, using a single sample.", alias);
+        joinrel->rows = rows_fallback;
+        return;
+    }
+
+    /* 4. With an error profile, use the single-point value for this DP round.
+     * Note: In 1-pass DP for joinrels we still collapse to a scalar `rows`
+     * per round (indexed by `root->round`) rather than a vector. */
+    const double sel_true = sel_true_sample->sample[root->round];
+    joinrel->rows = outer_rows_single_point * inner_rows_single_point * sel_true;
+}
+
+void set_joinrel_rows_2p(
     const PlannerInfo *root,
     RelOptInfo *joinrel,
     const RelOptInfo *outer_rel,
@@ -279,8 +385,16 @@ void set_joinrel_rows_sample(
     List *restrictlist,
     const double sel_est
 ) {
-    /* 0. Prepare fallback rows estimation result.
-     * Note: we don't use `joinrel->rows`, which has been clamped already. */
+    /**
+     * 2-Pass DP for join relations.
+     *
+     * In 2-pass DP, joinrels use *expected* row estimates derived from samples.
+     * The fallback estimate directly uses:
+     *
+     *     rows_fallback = sel_est * outer_rows * inner_rows
+     *
+     * This is only used when no error profile can be applied.
+     */
     const double rows_fallback = sel_est * outer_rel->rows * inner_rel->rows;
 
     /* 1. Resolve relation aliases (original alias and a standard fallback). */
@@ -311,7 +425,7 @@ void set_joinrel_rows_sample(
         const Var *leftvar = (Var *) l;
         const Var *rightvar = (Var *) r;
 
-        /* Accept either orientation: (outer,left)-(inner,right) or swapped. */
+        /* Accept either orientation: (outer, left)-(inner, right) or swapped. */
         const bool l_in_outer = bms_is_member(leftvar->varno, outer_rel->relids);
         const bool r_in_inner = bms_is_member(rightvar->varno, inner_rel->relids);
         const bool r_in_outer = bms_is_member(rightvar->varno, outer_rel->relids);
@@ -323,37 +437,28 @@ void set_joinrel_rows_sample(
             const char *left_rel_std_alias = get_std_alias(root, leftvar->varno);
             const char *right_rel_std_alias = get_std_alias(root, rightvar->varno);
 
-            /* Canonicalize order to avoid duplicate “A=B” vs “B=A”. */
+            /* Canonicalize order to avoid duplicates “A=B” vs “B=A”. */
             if (strcmp(left_rel_alias, right_rel_alias) < 0)
                 snprintf(alias, sizeof(alias), "%s=%s", left_rel_alias, right_rel_alias);
             else
                 snprintf(alias, sizeof(alias), "%s=%s", right_rel_alias, left_rel_alias);
 
-            // elog(LOG, "alias: %s; join key: %s.%d = %s.%d.",
-            //      alias, left_rel_alias, leftvar->varattno,
-            //      right_rel_alias, rightvar->varattno);
-
-            /* Canonicalize order to avoid duplicate “A=B” vs “B=A”. */
+            /* Same canonical ordering for fallback alias. */
             if (strcmp(left_rel_std_alias, right_rel_std_alias) < 0)
                 snprintf(alias_fallback, sizeof(alias_fallback), "%s=%s", left_rel_std_alias, right_rel_std_alias);
             else
                 snprintf(alias_fallback, sizeof(alias_fallback), "%s=%s", right_rel_std_alias, left_rel_std_alias);
 
-            // elog(LOG, "alias fallback: %s; join key: %s.%d = %s.%d.",
-            //      alias_fallback, left_rel_std_alias, leftvar->varattno,
-            //      right_rel_std_alias, rightvar->varattno);
-
             break;
         }
     }
     // TODO: Check whether we have a sane alias with its fallback version.
-   //  elog(LOG, "[joinrel %s] considering relation rows sample.", alias);
 
-    /* 2. Allocate an error profile holder and try to populate it from cache. */
+    /* 2. Allocate an error profile container and try to load it from cache. */
     ErrorProfile *ep;
     const bool found = get_error_profile(alias, alias_fallback, &ep);
 
-    /* 2.1 If no profile is available, fall back to a degenerate sample. */
+    /* 2.1 If no profile is available, fall back to a single-point estimate. */
     if (!found) {
         // elog(LOG, "[joinrel %s] no profile is available, using a single sample.", alias);
         joinrel->rows = rows_fallback;
@@ -361,10 +466,10 @@ void set_joinrel_rows_sample(
         return;
     }
 
-    /* 3. Get conditional sample p(true_sel | sel_est=e0). */
+    /* 3. Obtain the conditional sample p(true_sel | sel_est = e0). */
     const Sample *sel_true_sample = make_sample_by_bin(ep, sel_est);
 
-    /* 3.1 Fallback to single point sample if we fail to build `sel_true_sample`. */
+    /* 3.1 If this fails, fall back to a single-point sample. */
     if (sel_true_sample == NULL) {
         // elog(LOG, "[joinrel %s] failed to build conditional sample, using a single sample.", alias);
         joinrel->rows = rows_fallback;

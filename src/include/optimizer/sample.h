@@ -74,13 +74,24 @@ Sample *make_sample_by_join_sample(
 );
 
 /* ------------------------------- Relations ------------------------------- */
-void set_baserel_rows_sample(
+void set_baserel_rows(
     const PlannerInfo *root,
     RelOptInfo *baserel,
-    double sel_est
+    double sel_est, double rows_fallback
 );
 
-void set_joinrel_rows_sample(
+void set_joinrel_rows_1p(
+    const PlannerInfo *root,
+    RelOptInfo *joinrel,
+    const RelOptInfo *outer_rel,
+    const RelOptInfo *inner_rel,
+    List *restrictlist,
+    double sel_est,
+    double outer_rows_single_point,
+    double inner_rows_single_point
+);
+
+void set_joinrel_rows_2p(
     const PlannerInfo *root,
     RelOptInfo *joinrel,
     const RelOptInfo *outer_rel,

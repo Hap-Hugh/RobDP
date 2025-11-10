@@ -3075,26 +3075,76 @@ void compute_semi_anti_join_factors(
  *	baserestrictcost: estimated cost of evaluating baserestrictinfo clauses.
  */
 void set_baserel_size_estimates(PlannerInfo *root, RelOptInfo *rel) {
-    double nrows, est_sel;
-
     /* Should only be applied to base relations */
     Assert(rel->relid > 0);
 
-    est_sel = clauselist_selectivity(
+    const double sel_est = clauselist_selectivity(
         root, rel->baserestrictinfo, 0, JOIN_INNER, NULL
     );
-
-    nrows = rel->tuples * est_sel;
-
+    const double nrows = rel->tuples * sel_est;
     rel->rows = clamp_row_est(nrows);
 
     cost_qual_eval(&rel->baserestrictcost, rel->baserestrictinfo, root);
-
     set_rel_width(root, rel);
 
-    if (enable_rows_dist) {
-        set_baserel_rows_sample(root, rel, est_sel);
-    }
+    /*
+     * Base relation row estimation setup.
+     *
+     * 1. Row estimate basics:
+     *    - We are setting up the row estimates for a base relation (baserel).
+     *    - `rows` represents the correctly-set mean estimate for the current
+     *      relation, which will be used later during dynamic programming (DP).
+     *    - When join relations are computed, this mean value will be referenced.
+     *
+     * 2. Use in DP one-pass:
+     *    - During one-pass DP, we use each value in `rows_sample`.
+     *    - For example, if there are 20 error samples, we will execute DP
+     *      20 times, and each run will use baserel's rows_sample[k].
+     *
+     * 3. Use in DP two-pass:
+     *    - Two-pass DP requires both the mean (`rows`) and all individual samples.
+     *    - The mean has already been stored correctly beforehand.
+     *    - The function `set_baserel_rows` below initializes all row samples.
+     *
+     * 4. Difference between baserel and joinrel handling:
+     *    - The concepts of one-pass and two-pass apply only to DP,
+     *      but baserels are constructed before DP begins.
+     *    - In one-pass DP, although multiple iterations occur, `rows`
+     *      remains a single scalar value.
+     *    - Therefore for joinrels in one-pass, `rows_sample` would normally
+     *      remain NULL, which is a key distinction from baserels and two-pass.
+     *
+     * 5. Relevance to cost model:
+     *    - We set these estimates now because `rows` and `rows_sample`
+     *      are used later.
+     *    - The cost model will not use the baserel's `rows` directly;
+     *      it will use the row estimate from the scan path instead.
+     */
+
+    /*
+     * Difference caused by the presence or absence of an error profile.
+     *
+     * 1. Behavior with or without an error profile:
+     *    - Even if a baserel has no error profile, both `rows` and
+     *      `rows_sample` are still set.
+     *    - In that case, `rows_sample` becomes a single-point sample structure.
+     *    - Regardless of whether an error profile exists,
+     *      `rows_sample` is never NULL.
+     *
+     * 2. How to distinguish:
+     *    - Later components can easily detect this condition:
+     *        * single-point structure → sample_count == 1
+     *        * real error profile     → sample_count != 1
+     *    - The sample count will never be 1 when an actual error profile
+     *      exists, because the GUC for `error_sample_count` enforces a
+     *      minimum number of samples.
+     *
+     * 3. Relation to joinrel handling:
+     *    - This design is different from how we set `rows_sample` for joinrels
+     *      during size estimation.
+     */
+    const double rows_fallback = sel_est * rel->tuples;
+    set_baserel_rows(root, rel, sel_est, rows_fallback);
 }
 
 /*
@@ -3161,40 +3211,73 @@ void set_joinrel_size_estimates(
     SpecialJoinInfo *sjinfo,
     List *restrictlist
 ) {
-    rel->rows = calc_joinrel_size_estimate(
+    /* Estimated selectivity for conditioning p(true_sel | est_sel=e0).
+     * Notes: we assume that the join type is always JOIN_INNER. */
+    const double sel_est = clauselist_selectivity(
         root,
-        rel,
-        outer_rel,
-        inner_rel,
-        outer_rel->rows,
-        inner_rel->rows,
-        sjinfo,
-        restrictlist
+        restrictlist,
+        0,
+        sjinfo->jointype,
+        sjinfo
     );
 
-    if (enable_rows_dist) {
-        /* Estimated selectivity for conditioning p(true_sel | est_sel=e0).
-         * Notes: we assume that the join type is always JOIN_INNER. */
-        const double sel_est = clauselist_selectivity(
-            root,
-            restrictlist,
-            0,
-            sjinfo->jointype,
-            sjinfo
-        );
+    if (root->pass == 1) {
+        /*
+         * This is 1-pass DP, and join relations never carry row samples.
+         * So for any joinrel, we simply use its scalar `rows` value.
+         *
+         * The interesting part is the baserel case:
+         * Every base relation always has a `rows_sample` container,
+         * but we must distinguish two scenarios:
+         *
+         *   1. If the baserel has an error profile:
+         *        rows_sample->sample[k] contains the per-round sample value.
+         *        We should use rows_sample->sample[root->round].
+         *
+         *   2. If the baserel does *not* have an error profile:
+         *        rows_sample is still present, but it contains exactly one
+         *        sample point (sample_count == 1), and that value equals `rows`.
+         *        In this case we just use `rows` directly.
+         *
+         * Summary:
+         *   For baserels:
+         *       error profile present → use rows_sample[round]
+         *       no error profile     → use rows
+         *   For joinrels:
+         *       always use rows
+         */
 
-        set_joinrel_rows_sample(
+        /* Determine the outer relation's single-point row estimate. */
+        double outer_rows_single_point;
+        if (outer_rel->relid > 0 && outer_rel->rows_sample->sample_count > 1) {
+            outer_rows_single_point = outer_rel->rows_sample->sample[root->round];
+        } else {
+            outer_rows_single_point = outer_rel->rows;
+        }
+
+        /* Determine the inner relation's single-point row estimate. */
+        double inner_rows_single_point;
+        if (outer_rel->relid > 0 && outer_rel->rows_sample->sample_count > 1) {
+            inner_rows_single_point = outer_rel->rows_sample->sample[root->round];
+        } else {
+            inner_rows_single_point = outer_rel->rows;
+        }
+
+        set_joinrel_rows_1p(
+            root, rel, outer_rel, inner_rel, restrictlist,
+            sel_est, outer_rows_single_point, inner_rows_single_point
+        );
+    } else if (root->pass == 2) {
+        /*
+         * 现在是 2-pass DP 我们需要用的都一定是 rows_sample（如果没有
+         * error profile 那就 fallback 到均值），这也是被正确设置的
+         * 但是我们一定不能用 单点的值
+         */
+        set_joinrel_rows_2p(
             root, rel, outer_rel, inner_rel, restrictlist, sel_est
         );
-
-        if (root->pass == 1) {
-            /* Overwrite: we only need rows at a particular sample point. */
-            Assert(rel->rows_sample != NULL);
-            if (rel->rows_sample->sample_count != 1) {
-                Assert(rel->rows_sample->sample_count == error_sample_count);
-                rel->rows = rel->rows_sample->sample[root->round];
-            }
-        }
+    } else {
+        elog(ERROR, "bad pass number");
     }
 }
 

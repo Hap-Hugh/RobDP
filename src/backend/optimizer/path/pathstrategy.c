@@ -346,10 +346,25 @@ double calc_expected_startup_cost_impl(
 extern void calc_robust_coverage(
     const List *cand_list,
     PathRank *rank_arr,
-    const double *min_envelope,
+    const double *min_envelope, /* unused */
     const int sample_count
 ) {
-    elog(ERROR, "`calc_robust_coverage` not implemented.");
+    // const int path_count = list_length(cand_list);
+    // double cost_array[path_count][sample_count];
+    // memset(cost_array, 0, sizeof(cost_array));
+    //
+    // ListCell *lc;
+    // int idx = 0;
+    // foreach(lc, cand_list) {
+    //     const Path *path = lfirst(lc);
+    //     Sample *sample = path.
+    //     Assert(path_count > 0);
+    //     path->total_cost_sample;
+    //     ++idx;
+    // }
+    //
+    // for (int i = 0; i < path_count; ++i) {
+    // }
 }
 
 static unsigned int rng_state = 123456789u;
@@ -370,8 +385,8 @@ static double rng_uniform01(void) {
 extern void calc_random_score(
     const List *cand_list,
     PathRank *rank_arr,
-    const double *min_envelope,
-    const int sample_count
+    const double *min_envelope, /* unused */
+    const int sample_count /* unused */
 ) {
     int idx = 0;
     ListCell *lc;
@@ -399,7 +414,15 @@ extern void calc_jointype_based_score(
     const double *min_envelope,
     const int sample_count
 ) {
-    elog(ERROR, "`calc_jointype_based_score` not implemented.");
+    int idx = 0;
+    ListCell *lc;
+    foreach(lc, cand_list) {
+        Path *path = lfirst(lc);
+        rank_arr[idx].path = path;
+        rank_arr[idx].score = rng_uniform01();
+        idx++;
+    }
+    Assert(idx == cand_count);
 }
 
 /* Global strategy array */

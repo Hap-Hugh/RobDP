@@ -409,16 +409,15 @@ set_cheapest(RelOptInfo *parent_rel) {
  */
 void
 add_path(PlannerInfo *root, RelOptInfo *parent_rel, Path *new_path) {
+    switch (new_path->pathtype) {
+        case T_BitmapHeapScan:
+        case T_BitmapAnd:
+        case T_BitmapOr:
+            return;
+        default:
+            break;
+    }
     if (root->pass == 2) {
-        switch (new_path->pathtype) {
-            case T_BitmapHeapScan:
-            case T_BitmapAnd:
-            case T_BitmapOr:
-                return;
-            default:
-                break;
-        }
-
         /*
          * Always add every path to the parent_rel's pathlist,
          * but keep the list sorted by total_cost in ascending order.
@@ -759,16 +758,15 @@ add_path_precheck(PlannerInfo *root,
  */
 void
 add_partial_path(PlannerInfo *root, RelOptInfo *parent_rel, Path *new_path) {
+    switch (new_path->pathtype) {
+        case T_BitmapHeapScan:
+        case T_BitmapAnd:
+        case T_BitmapOr:
+            return;
+        default:
+            break;
+    }
     if (root->pass == 2) {
-        switch (new_path->pathtype) {
-            case T_BitmapHeapScan:
-            case T_BitmapAnd:
-            case T_BitmapOr:
-                return;
-            default:
-                break;
-        }
-
         /*
          * Always add every partial path to the parent_rel's partial_pathlist,
          * but keep the list sorted by total_cost in ascending order.
