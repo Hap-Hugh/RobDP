@@ -343,24 +343,52 @@ double calc_expected_startup_cost_impl(
     return expected_startup_cost / (double) effective;
 }
 
-extern void calc_robust_cover(
+extern void calc_robust_coverage(
     const List *cand_list,
     PathRank *rank_arr,
     const double *min_envelope,
     const int sample_count
 ) {
-    basic_select_path_strategy_helper(
-        cand_list, rank_arr, min_envelope, sample_count, calc_expected_startup_cost_impl
-    );
+    elog(ERROR, "`calc_robust_coverage` not implemented.");
+}
+
+extern void calc_random_score(
+    const List *cand_list,
+    PathRank *rank_arr,
+    const double *min_envelope,
+    const int sample_count
+) {
+    elog(ERROR, "`calc_random_score` not implemented.");
+}
+
+extern void calc_postgres_original_score(
+    const List *cand_list,
+    PathRank *rank_arr,
+    const double *min_envelope,
+    const int sample_count
+) {
+    elog(ERROR, "`calc_postgres_original_score` not implemented.");
+}
+
+extern void calc_jointype_based_score(
+    const List *cand_list,
+    PathRank *rank_arr,
+    const double *min_envelope,
+    const int sample_count
+) {
+    elog(ERROR, "`calc_jointype_based_score` not implemented.");
 }
 
 /* Global strategy array */
-select_path_strategy select_path_strategy_funcs[7] = {
-    calc_worst_penalty,
-    calc_expected_penalty,
-    calc_worst_total_cost,
-    calc_expected_total_cost,
-    calc_worst_startup_cost,
-    calc_expected_startup_cost,
-    calc_robust_cover
+select_path_strategy select_path_strategy_funcs[10] = {
+    [0] = calc_worst_penalty,
+    [1] = calc_expected_penalty,
+    [2] = calc_worst_total_cost,
+    [3] = calc_expected_total_cost,
+    [4] = calc_worst_startup_cost,
+    [5] = calc_expected_startup_cost,
+    [6] = calc_robust_coverage,
+    [7] = calc_random_score,
+    [8] = calc_postgres_original_score,
+    [9] = calc_jointype_based_score
 };

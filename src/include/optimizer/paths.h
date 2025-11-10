@@ -19,8 +19,8 @@
 /* GUC Parameters */
 extern int add_path_limit;
 extern int retain_path_limit;
-extern int add_path_strategy_id;
-extern int retain_path_strategy_id;
+extern int main_objective_id;
+extern int retain_strategy_id;
 
 /*
  * allpaths.c

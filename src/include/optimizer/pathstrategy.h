@@ -65,7 +65,28 @@ extern void calc_expected_startup_cost(
     int sample_count
 );
 
-extern void calc_robust_cover(
+extern void calc_robust_coverage(
+    const List *cand_list,
+    PathRank *rank_arr,
+    const double *min_envelope,
+    int sample_count
+);
+
+extern void calc_random_score(
+    const List *cand_list,
+    PathRank *rank_arr,
+    const double *min_envelope,
+    int sample_count
+);
+
+extern void calc_postgres_original_score(
+    const List *cand_list,
+    PathRank *rank_arr,
+    const double *min_envelope,
+    int sample_count
+);
+
+extern void calc_jointype_based_score(
     const List *cand_list,
     PathRank *rank_arr,
     const double *min_envelope,
@@ -74,10 +95,10 @@ extern void calc_robust_cover(
 
 /*
  * Global array of scoring strategies.
- * Indexed [0..6].
+ * Indexed [0..9].
  *
  * Caller can use: select_path_strategy_funcs[i](...)
  */
-extern select_path_strategy select_path_strategy_funcs[7];
+extern select_path_strategy select_path_strategy_funcs[10];
 
 #endif // PATHSTRATEGY_H

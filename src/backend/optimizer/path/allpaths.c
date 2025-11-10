@@ -55,8 +55,8 @@
 
 int add_path_limit = 1;
 int retain_path_limit = 1;
-int add_path_strategy_id = 0;
-int retain_path_strategy_id = 0;
+int main_objective_id = 0;
+int retain_strategy_id = 0;
 
 /* Bitmask flags for pushdown_safety_info.unsafeFlags */
 #define UNSAFE_HAS_VOLATILE_FUNC		(1 << 0)
@@ -3444,20 +3444,20 @@ standard_join_search(PlannerInfo *root, const int levels_needed, List *initial_r
     root->join_rel_hash = NULL;
 
     /*
-     * Pick scoring strategy for the "add path" phase.
+     * Pick scoring strategy for the "main objective" phase.
      * This strategy ranks newly generated candidate paths before admitting them
      * into the main pathlist.
      */
     const select_path_strategy main_objective_func =
-            select_path_strategy_funcs[add_path_strategy_id];
+            select_path_strategy_funcs[main_objective_id];
 
     /*
-     * Pick scoring strategy for the "retain path" phase.
+     * Pick scoring strategy for the "retain strategy" phase.
      * This strategy ranks previously dropped paths to decide whether any
      * should be re-inserted into the pathlist.
      */
     const select_path_strategy retain_strategy_func =
-            select_path_strategy_funcs[retain_path_strategy_id];
+            select_path_strategy_funcs[retain_strategy_id];
 
     for (int lev = 2; lev <= levels_needed; lev++) {
         ListCell *lc;

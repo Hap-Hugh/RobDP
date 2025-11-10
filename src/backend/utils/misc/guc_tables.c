@@ -3569,24 +3569,24 @@ struct config_int ConfigureNamesInt[] =
 	},
 
 	{
-		{"add_path_strategy_id", PGC_USERSET, DEVELOPER_OPTIONS,
+		{"main_objective_id", PGC_USERSET, DEVELOPER_OPTIONS,
 			gettext_noop("Selects the scoring strategy used to evaluate candidate paths "
 				"before adding them to the pathlist."),
 			NULL
 		},
-		&add_path_strategy_id,
-		0, 0, 1,
+		&main_objective_id,
+		0, 0, 9,
 		NULL, NULL, NULL
 	},
 
 	{
-		{"retain_path_strategy_id", PGC_USERSET, DEVELOPER_OPTIONS,
+		{"retain_strategy_id", PGC_USERSET, DEVELOPER_OPTIONS,
 			gettext_noop("Selects the scoring strategy used to evaluate previously rejected paths "
 				"for possible reinsertion into the pathlist."),
 			NULL
 		},
-		&retain_path_strategy_id,
-		0, 2, 5,
+		&retain_strategy_id,
+		0, 0, 9,
 		NULL, NULL, NULL
 	},
 
