@@ -3448,16 +3448,16 @@ standard_join_search(PlannerInfo *root, const int levels_needed, List *initial_r
      * This strategy ranks newly generated candidate paths before admitting them
      * into the main pathlist.
      */
-    const path_score_strategy add_path_score_func =
-            path_score_strategies[add_path_strategy_id];
+    const select_path_strategy main_objective_func =
+            select_path_strategy_funcs[add_path_strategy_id];
 
     /*
      * Pick scoring strategy for the "retain path" phase.
      * This strategy ranks previously dropped paths to decide whether any
      * should be re-inserted into the pathlist.
      */
-    const path_score_strategy retain_path_score_func =
-            path_score_strategies[retain_path_strategy_id];
+    const select_path_strategy retain_strategy_func =
+            select_path_strategy_funcs[retain_path_strategy_id];
 
     for (int lev = 2; lev <= levels_needed; lev++) {
         ListCell *lc;
@@ -3483,60 +3483,131 @@ standard_join_search(PlannerInfo *root, const int levels_needed, List *initial_r
             RelOptInfo *rel = lfirst(lc);
             const int rel_index = foreach_current_index(lc);
 
-            /* --------------------------------------------------------------------
-             * Phase 1 (normal paths):
-             *   1. add_path_by_strategy(): pick top-K promising paths and append them
-             *      into rel->pathlist (based on `add_path_score_func`).
-             *   2. retain_path_by_strategy(): from paths we just *dropped*, try to
-             *      re-admit the next best subset (based on `retain_path_score_func`).
-             *   3. After path selection, sort final pathlist by total_cost ASC to
-             *      favor low-cost plans during subsequent DP join enumeration.
-             * -------------------------------------------------------------------- */
-            List *dropped_pathlist = add_path_by_strategy(
-                root, lev, rel_index,
-                add_path_score_func, /* penalty metric: add phase */
-                add_path_limit,
-                error_sample_count,
-                false /* is_partial = false */
+            const RelOptInfo *min_envelope_joinrel = (RelOptInfo *) list_nth(
+                root->join_rel_level_first[lev], rel_index
             );
-
-            dropped_pathlist = retain_path_by_strategy(
-                root, lev, rel_index,
-                dropped_pathlist,
-                retain_path_score_func, /* same metric: retain phase */
-                retain_path_limit,
-                error_sample_count,
-                false /* normal pathlist */
-            );
-
-            /* Sort selected normal paths by total cost (ascending) */
-            rel->pathlist = sort_pathlist_by_total_cost(rel->pathlist);
-
+            Assert(min_env_joinrel->min_score_sample != NULL);
+            const double *min_envelope_sample = min_envelope_joinrel->min_score_sample->sample;
 
             /* --------------------------------------------------------------------
-             * Phase 2 (partial paths):
-             *   Same logic as above, but operating on partial_pathlist.
-             *   Partial paths are usable only for parallel planning.
+             * Phase 1 (normal paths, two-pass admission):
+             *   1) Pass A: run select_path_by_strategy() on rel->pathlist using
+             *      main_objective_func; append up to add_path_limit winners into
+             *      kept_pathlist, and get dropped_pathlist (the losers).
+             *   2) Pass B: run select_path_by_strategy() on dropped_pathlist using
+             *      retain_strategy_func; append up to retain_path_limit winners into
+             *      kept_pathlist. (No global cap applied here.)
+             *   3) Sort the final kept_pathlist by total_cost ascending to favor
+             *      low-cost plans in subsequent DP enumeration.
+             * Notes:
+             *   - select_path_by_strategy() does NOT free its cand_list (const).
+             *     Caller frees any temporary lists created at this level.
+             *   - Pass B explicitly uses retain_strategy_func and retain_path_limit.
              * -------------------------------------------------------------------- */
-            List *dropped_partial_pathlist = add_path_by_strategy(
-                root, lev, rel_index,
-                add_path_score_func, /* penalty metric: add partial paths */
-                add_path_limit,
-                error_sample_count,
-                true /* is_partial = true */
-            );
+            {
+                List *kept_pathlist = NIL;
 
-            dropped_partial_pathlist = retain_path_by_strategy(
-                root, lev, rel_index,
-                dropped_partial_pathlist,
-                retain_path_score_func, /* same metric: retain phase */
-                retain_path_limit,
-                error_sample_count,
-                true /* partial pathlist */
-            );
+                /* Pass A: run on original cand list */
+                const List *cand_pathlist = rel->pathlist;
+                /* const: not freed inside `select_path_by_strategy`* */
+                const List *dropped_pathlist = select_path_by_strategy(
+                    cand_pathlist,
+                    &kept_pathlist,
+                    min_envelope_sample,
+                    main_objective_func, /* strategy A */
+                    add_path_limit,
+                    error_sample_count,
+                    true /* save score for kept */
+                );
 
-            /* Sort selected partial paths by total cost as well */
-            rel->partial_pathlist = sort_pathlist_by_total_cost(rel->partial_pathlist);
+                /* Pass B: only if capacity remains */
+                List *final_dropped = NIL;
+                if (retain_path_limit > 0 && dropped_pathlist != NIL) {
+                    final_dropped = select_path_by_strategy(
+                        dropped_pathlist,
+                        &kept_pathlist,
+                        min_envelope_sample,
+                        retain_strategy_func,
+                        retain_path_limit,
+                        error_sample_count,
+                        false
+                    );
+                }
+
+                /* rel->pathlist was never freed by select_* (takes const), free old cells now */
+                list_free(rel->pathlist);
+
+                /* Free temporary loser lists' cells (Path structs remain alive) */
+                if (dropped_pathlist != NIL)
+                    list_free((List *) dropped_pathlist);
+                if (final_dropped != NIL)
+                    list_free(final_dropped);
+
+                /* Install and sort */
+                rel->pathlist = kept_pathlist;
+                /* Sort selected normal paths by total cost (ascending) */
+                rel->pathlist = sort_pathlist_by_total_cost(rel->pathlist);
+            }
+
+            /* --------------------------------------------------------------------
+             * Phase 2 (partial paths, two-pass admission):
+             *   1) Pass A: run select_path_by_strategy() on rel->partial_pathlist
+             *      using main_objective_func; append up to add_partial_path_limit
+             *      winners into kept_partial_pathlist, and get dropped_partial_pathlist.
+             *   2) Pass B: run select_path_by_strategy() on dropped_partial_pathlist
+             *      using retain_partial_strategy_func; append up to
+             *      retain_partial_path_limit winners into kept_partial_pathlist.
+             *      (No global cap applied here.)
+             *   3) Sort the final kept_partial_pathlist by total_cost ascending to
+             *      favor low-cost plans during subsequent DP enumeration.
+             * Notes:
+             *   - select_path_by_strategy() does NOT free its cand_list (const).
+             *     Caller frees any temporary lists created at this level.
+             *   - Pass B explicitly uses retain_partial_strategy_func and
+             *     retain_partial_path_limit.
+             * -------------------------------------------------------------------- */
+            {
+                List *kept_partial_pathlist = NIL;
+                /* Pass A: run on original partial cand list (const: not freed inside select_*) */
+                const List *cand_partial_pathlist = rel->partial_pathlist;
+                const List *dropped_partial_pathlist = select_path_by_strategy(
+                    cand_partial_pathlist,
+                    &kept_partial_pathlist,
+                    min_envelope_sample,
+                    main_objective_func, /* strategy A */
+                    add_path_limit, /* first-pass limit for partial paths */
+                    error_sample_count,
+                    true /* save score for kept */
+                );
+
+                /* Pass B: always run with the specified retain strategy/limit (no global cap) */
+                List *final_partial_dropped = NIL;
+                if (retain_path_limit > 0 && dropped_partial_pathlist != NIL) {
+                    final_partial_dropped = select_path_by_strategy(
+                        dropped_partial_pathlist,
+                        &kept_partial_pathlist,
+                        min_envelope_sample,
+                        retain_strategy_func, /* second-pass strategy for partial */
+                        retain_path_limit, /* second-pass limit for partial */
+                        error_sample_count,
+                        false
+                    );
+                }
+
+                /* rel->partial_pathlist was never freed by select_* (takes const), free old cells now */
+                list_free(rel->partial_pathlist);
+
+                /* Free temporary loser lists' cells (Path structs remain alive) */
+                if (dropped_partial_pathlist != NIL)
+                    list_free((List *) dropped_partial_pathlist);
+                if (final_partial_dropped != NIL)
+                    list_free(final_partial_dropped);
+
+                /* Install and sort */
+                rel->partial_pathlist = kept_partial_pathlist;
+                /* Sort selected partial paths by total cost (ascending) */
+                rel->partial_pathlist = sort_pathlist_by_total_cost(rel->partial_pathlist);
+            }
 
             /* Create paths for partitionwise joins. */
             generate_partitionwise_join_paths(root, rel);

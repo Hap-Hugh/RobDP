@@ -13,26 +13,14 @@
 #include "nodes/pg_list.h"
 
 List *
-add_path_by_strategy(
-    const PlannerInfo *root,
-    int lev_index,
-    int rel_index,
-    path_score_strategy add_path_func,
-    int add_path_limit,
+select_path_by_strategy(
+    const List *cand_list,
+    List **kept_list_ptr,
+    const double *min_envelope,
+    select_path_strategy select_path_strategy_func,
+    int select_path_limit,
     int sample_count,
-    bool is_partial
-);
-
-List *
-retain_path_by_strategy(
-    const PlannerInfo *root,
-    int lev_index,
-    int rel_index,
-    List *cand_list,
-    path_score_strategy retain_path_func,
-    int retain_path_limit,
-    int sample_count,
-    bool is_partial
+    bool should_save_score
 );
 
 void

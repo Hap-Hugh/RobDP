@@ -20,12 +20,6 @@ typedef struct ErrorProfile ErrorProfile;
  * Helpers
  * --------------------------------------------------------------------------*/
 
-/* Per-candidate ranking info (only score is relevant here). */
-typedef struct PathRank {
-    Path *path;
-    double score; /* vs. per-type per-sample minima */
-} PathRank;
-
 /* --------- Fixed-size max-heap (size<=k) for PathRank indices by score ASC --
  * We keep the k *smallest* scores, so top of heap is the *largest* among kept.
  * Comparator: greater(a,b) if a should be closer to root in a MAX-heap.
@@ -96,111 +90,76 @@ rank_idx_maxheap_push_topk(int *heap, const int size, const int k, const int idx
 }
 
 /*
- * add_path_by_strategy
+ * select_path_by_strategy
  *
- * From the current pathlist (normal or partial), retain at most
- * add_path_limit paths by the score metric and discard the rest.
+ * From the given candidate list, keep at most `select_path_limit` Paths
+ * according to the provided scoring strategy. Winners are appended to
+ * `*kept_list_ptr` (which may already contain entries), and the function
+ * returns a List* of all pruned (not kept) Paths.
  *
- * Return value:
- *   - A List* containing all pruned paths (NOT kept)
- *   - If nothing is pruned, returns NIL.
+ * Contract:
+ *   - Lower score = better.
+ *   - `select_path_strategy_func` must:
+ *       * Fill `rank_arr[0..cand_count-1]` with {path, score} for each node in
+ *         `cand_list`, in the same iteration order.
+ *       * Assign DBL_MAX (or equivalent) to paths with zero effective samples.
+ *   - `min_envelope` and `sample_count` should already be prepared (e.g., clamped
+ *     to available dimensions) by the caller.
+ *
+ * Return:
+ *   - List* of pruned Paths (those NOT kept). If nothing is pruned, returns NIL.
  *
  * Notes:
- *   - The kept list is written back to the RelOptInfo in the same
- *     deterministic order. Paths themselves are not freed.
- *   - Requires score_sample_final to be set beforehand.
+ *   - Winners are NOT sorted here; order is deterministic but not guaranteed to
+ *     be strictly increasing by score. If a sorted order is required, the caller
+ *     should sort `*kept_list_ptr` afterward.
+ *   - If `should_save_score` is true, each kept Path gets its computed score
+ *     stored into `Path->score`. Losers’ scores are not modified.
+ *   - Existing entries in `*kept_list_ptr` are preserved; winners are appended.
+ *   - This function does NOT free `cand_list` (parameter is const). If the caller
+ *     needs to release list cells of `cand_list`, do it outside after the call.
  */
 List *
-add_path_by_strategy(
-    const PlannerInfo *root,
-    const int lev_index,
-    const int rel_index,
-    const path_score_strategy add_path_func,
-    const int add_path_limit,
-    int sample_count,
-    const bool is_partial
+select_path_by_strategy(
+    const List *cand_list,
+    List **kept_list_ptr,
+    const double *min_envelope,
+    const select_path_strategy select_path_strategy_func,
+    const int select_path_limit,
+    const int sample_count,
+    const bool should_save_score
 ) {
+    /*
+     * Policy note:
+     *   - If this stage is the main objective, set should_save_score = true to
+     *     expose the computed score on kept Paths for later phases.
+     *   - Otherwise (retain-only policy), leave scores as-is.
+     */
+
     /* Basic sanity */
+    Assert(kept_list_ptr != NULL);
     Assert(sample_count >= 1);
-    Assert(add_path_limit >= 1);
+    Assert(select_path_limit >= 1);
     Assert(sample_count <= DIST_MAX_SAMPLE);
 
-    /* Fetch rels for this level/index */
-    const RelOptInfo *joinrel_first =
-            (RelOptInfo *) list_nth(root->join_rel_level_first[lev_index], rel_index);
-    RelOptInfo *joinrel =
-            (RelOptInfo *) list_nth(root->join_rel_level[lev_index], rel_index);
-
-    /* Pick target candidate list */
-    List *cand_list = is_partial ? joinrel->partial_pathlist : joinrel->pathlist;
-
-    /* Nothing to do */
+    /* Early exit: no candidates; keep existing kept list untouched */
     const int cand_count = list_length(cand_list);
     if (cand_count <= 0) {
         return NIL;
     }
 
-    /*
-     * Fetch finalized per-sample baseline scores (global minima across
-     * partial + non-partial), already computed by calc_*_score functions.
-     */
-    Assert(joinrel_first->score_sample_final != NULL);
-    const Sample *score_sample = joinrel_first->min_score_sample;
-
-    Assert(score_sample->sample_count >= 0 &&
-        score_sample->sample_count <= DIST_MAX_SAMPLE);
-
-    /* Clamp to available baseline length */
-    if (sample_count > score_sample->sample_count) {
-        sample_count = score_sample->sample_count;
-    }
-
-    const double *min_global = score_sample->sample;
-
     /* --------------------------------------------------------------------
      * Phase 1: build PathRank array and compute scores via strategy.
-     *
-     * If a path has zero samples, assign a very large score.
+     * The strategy function fills rank_arr with (path, score).
      * -------------------------------------------------------------------- */
     PathRank *rank_arr = palloc(sizeof(PathRank) * cand_count);
-
-    int idx = 0;
-    ListCell *lc;
-    foreach(lc, cand_list) {
-        Path *path = lfirst(lc);
-        const Sample *startup_cost_sample = path->startup_cost_sample;
-        const Sample *total_cost_sample = path->total_cost_sample;
-
-        Assert(startup_cost_sample != NULL);
-        Assert(startup_cost_sample->sample_count >= 0 &&
-            startup_cost_sample->sample_count <= DIST_MAX_SAMPLE);
-
-        Assert(total_cost_sample != NULL);
-        Assert(total_cost_sample->sample_count >= 0 &&
-            total_cost_sample->sample_count <= DIST_MAX_SAMPLE);
-
-        int effective = Min(startup_cost_sample->sample_count, total_cost_sample->sample_count);
-        effective = Min(effective, sample_count);
-        Assert(effective >= 0);
-
-        double score_val;
-        if (effective == 0) {
-            /* No samples => automatically worst */
-            score_val = DBL_MAX;
-        } else {
-            score_val = add_path_func(startup_cost_sample, total_cost_sample, min_global, effective);
-        }
-
-        rank_arr[idx].path = path;
-        rank_arr[idx].score = score_val;
-        idx++;
-    }
-    Assert(idx == cand_count);
+    select_path_strategy_func(cand_list, rank_arr, min_envelope, sample_count);
 
     /* --------------------------------------------------------------------
-     * Phase 2: select the global top-k (smallest score) with a fixed MAX-heap.
+     * Phase 2: select global top-k (smallest score) using a fixed MAX-heap.
+     * Root of heap = worst among currently kept.
      * -------------------------------------------------------------------- */
-    const int k = Min(add_path_limit, cand_count);
+    const int k = Min(select_path_limit, cand_count);
 
     int *heap_idx = palloc(sizeof(int) * Max(1, k));
     int hsize = 0;
@@ -209,18 +168,17 @@ add_path_by_strategy(
         hsize = rank_idx_maxheap_push_topk(heap_idx, hsize, k, i, rank_arr);
     }
 
-    /* hsize should be k unless cand_count < k, but k = Min(limit, cand_count) */
+    /* hsize should equal k because k = min(limit, cand_count) */
     Assert(hsize == k);
 
     /* --------------------------------------------------------------------
-     * Phase 3: output winners (kept). Order not finalized here.
+     * Phase 3: materialize winners/losers (by index). Order not finalized here.
      * -------------------------------------------------------------------- */
     int *winners = palloc(sizeof(int) * k);
     for (int i = 0; i < k; i++) {
         winners[i] = heap_idx[i];
     }
 
-    /* Also compute losers (pruned) indices */
     const int losers_cnt = cand_count - k;
     int *losers = palloc(sizeof(int) * losers_cnt);
     if (losers_cnt > 0) {
@@ -236,20 +194,24 @@ add_path_by_strategy(
             }
         }
         Assert(writer == losers_cnt);
-
         pfree(selected);
     }
 
     /* --------------------------------------------------------------------
-     * Phase 4: rebuild lists: kept (write back) and dropped (return).
+     * Phase 4: append winners to kept list and build dropped list (return).
+     * Optionally expose per-path score for kept paths.
      * -------------------------------------------------------------------- */
-    List *kept_list = NIL;
+    List *kept_list = (*kept_list_ptr != NULL) ? *kept_list_ptr : NIL;
+
+    /* k = cand_count - losers_cnt. */
     for (int i = 0; i < k; i++) {
         const PathRank rank = rank_arr[winners[i]];
         Path *keep = rank.path;
-        /* Expose computed score on Path for later stages,
-         * and for the final output after the DP process. */
-        keep->score = rank.score;
+        if (should_save_score) {
+            /* Expose computed score on Path for later stages,
+             * and for the final output after the DP process. */
+            keep->score = rank.score;
+        }
         kept_list = lappend(kept_list, keep);
     }
 
@@ -258,225 +220,21 @@ add_path_by_strategy(
         for (int i = 0; i < losers_cnt; i++) {
             const PathRank rank = rank_arr[losers[i]];
             Path *drop = rank.path;
-            /* do not overwrite keep->score */
+            if (should_save_score) {
+                /* Expose computed score on Path for later stages,
+                 * and for the final output after the DP process. */
+                drop->score = rank.score;
+            }
             dropped_list = lappend(dropped_list, drop);
         }
     }
 
-    /* Free the old list cells; Paths are kept alive. */
-    list_free(cand_list);
-
-    /* Write back survivors */
-    if (is_partial) {
-        joinrel->partial_pathlist = kept_list;
-    } else {
-        joinrel->pathlist = kept_list;
-    }
+    /* Write back survivors (append result) */
+    *kept_list_ptr = kept_list;
 
     /* --------------------------------------------------------------------
-     * Phase 5: free temporaries and return pruned paths.
+     * Phase 5: cleanup and return pruned paths.
      * -------------------------------------------------------------------- */
-    pfree(rank_arr);
-    pfree(heap_idx);
-    pfree(winners);
-    pfree(losers);
-
-    return dropped_list;
-}
-
-/*
- * retain_path_by_strategy
- *
- * Choose up to `retain_path_limit` best Paths from `cand_list` according to
- * the user-provided scoring strategy `retain_path_func`, and append them into
- * the joinrel's pathlist (normal or partial depending on `is_partial`).
- *
- * This function does *not* overwrite existing paths in joinrel->pathlist /
- * partial_pathlist — it only appends the selected ones.
- *
- * The remaining (unselected) Paths from `cand_list` are returned as a new List.
- *
- * Memory / Ownership notes:
- *   - `cand_list` list cells are freed here (Path structs are NOT freed).
- *   - Returned list contains the leftover Path pointers.
- *   - `retain_path_func` computes a per-path score. Lower score = better.
- *
- * Preconditions:
- *   - score_sample_final was already computed for joinrel_first.
- *   - sample_count <= DIST_MAX_SAMPLE.
- *
- * Postconditions:
- *   - Top-k winners appended to joinrel->{pathlist | partial_pathlist}.
- *   - Returned List holds remaining paths.
- */
-List *
-retain_path_by_strategy(
-    const PlannerInfo *root,
-    const int lev_index,
-    const int rel_index,
-    List *cand_list,
-    const path_score_strategy retain_path_func,
-    const int retain_path_limit,
-    int sample_count,
-    const bool is_partial
-) {
-    /* If no candidates, nothing to retain; return immediately */
-    if (cand_list == NIL || retain_path_limit == 0) {
-        return cand_list;
-    }
-
-    /* Basic sanity checks */
-    Assert(sample_count >= 1);
-    Assert(retain_path_limit >= 1);
-    Assert(sample_count <= DIST_MAX_SAMPLE);
-    Assert(cand_list != NULL);
-
-    /* Fetch RelOptInfo for reading baseline and writing survivors */
-    const RelOptInfo *joinrel_first =
-            (RelOptInfo *) list_nth(root->join_rel_level_first[lev_index], rel_index);
-    RelOptInfo *joinrel =
-            (RelOptInfo *) list_nth(root->join_rel_level[lev_index], rel_index);
-
-    /* Count candidates */
-    const int cand_count = list_length(cand_list);
-    if (cand_count <= 0)
-        return NIL;
-
-    /*
-     * Get global min per-sample baseline from calc_*_score functions
-     * (this is needed for scoring).
-     */
-    Assert(joinrel_first->score_sample_final != NULL);
-    const Sample *score_sample = joinrel_first->min_score_sample;
-
-    Assert(score_sample->sample_count >= 0 &&
-        score_sample->sample_count <= DIST_MAX_SAMPLE);
-
-    /* Do not exceed available sample dimensions */
-    if (sample_count > score_sample->sample_count)
-        sample_count = score_sample->sample_count;
-
-    const double *min_global = score_sample->sample;
-
-    /* ----------------------------------------------------------------------
-     * Phase 1: compute score for each candidate path
-     * Using provided function retain_path_func (lower = better).
-     * Zero-sample paths get DBL_MAX score (worst).
-     * ---------------------------------------------------------------------- */
-    PathRank *rank_arr = palloc(sizeof(PathRank) * cand_count);
-
-    int idx = 0;
-    ListCell *lc;
-    foreach(lc, cand_list) {
-        Path *path = lfirst(lc);
-        const Sample *startup_cost_sample = path->startup_cost_sample;
-        const Sample *total_cost_sample = path->total_cost_sample;
-
-        Assert(startup_cost_sample != NULL);
-        Assert(startup_cost_sample->sample_count >= 0 &&
-            startup_cost_sample->sample_count <= DIST_MAX_SAMPLE);
-
-        Assert(total_cost_sample != NULL);
-        Assert(total_cost_sample->sample_count >= 0 &&
-            total_cost_sample->sample_count <= DIST_MAX_SAMPLE);
-
-        int effective = Min(startup_cost_sample->sample_count, total_cost_sample->sample_count);
-        effective = Min(effective, sample_count);
-        Assert(effective >= 0);
-
-        double score_val;
-        if (effective == 0) {
-            /* No samples => automatically worst */
-            score_val = DBL_MAX;
-        } else {
-            score_val = retain_path_func(startup_cost_sample, total_cost_sample, min_global, effective);
-        }
-
-        rank_arr[idx].path = path;
-        rank_arr[idx].score = score_val;
-        idx++;
-    }
-    Assert(idx == cand_count);
-
-    /* ----------------------------------------------------------------------
-     * Phase 2: select top-k (smallest score) via fixed MAX-heap
-     * Root of heap = worst among currently kept
-     * ---------------------------------------------------------------------- */
-    const int k = Min(retain_path_limit, cand_count);
-
-    int *heap_idx = palloc(sizeof(int) * Max(1, k));
-    int hsize = 0;
-
-    for (int i = 0; i < cand_count; i++) {
-        hsize = rank_idx_maxheap_push_topk(heap_idx, hsize, k, i, rank_arr);
-    }
-    Assert(hsize == k);
-
-    /* ----------------------------------------------------------------------
-     * Phase 3: indices of winners and losers
-     * We keep winners, drop losers (return them).
-     * ---------------------------------------------------------------------- */
-    int *winners = palloc(sizeof(int) * k);
-    for (int i = 0; i < k; i++)
-        winners[i] = heap_idx[i];
-
-    const int losers_cnt = cand_count - k;
-    int *losers = palloc(sizeof(int) * losers_cnt);
-
-    if (losers_cnt > 0) {
-        bool *selected = palloc0(sizeof(bool) * cand_count);
-        for (int i = 0; i < k; i++) {
-            selected[winners[i]] = true;
-        }
-
-        int writer = 0;
-        for (int i = 0; i < cand_count; i++) {
-            if (!selected[i])
-                losers[writer++] = i;
-        }
-        Assert(writer == losers_cnt);
-        pfree(selected);
-    }
-
-    /* ----------------------------------------------------------------------
-     * Phase 4: append winners to joinrel pathlists
-     * NOTE: score is **not** stored into Path
-     * ---------------------------------------------------------------------- */
-    if (is_partial) {
-        for (int i = 0; i < k; i++) {
-            const PathRank rank = rank_arr[winners[i]];
-            Path *keep = rank.path;
-            /* do not overwrite keep->score */
-            joinrel->partial_pathlist = lappend(joinrel->partial_pathlist, keep);
-        }
-    } else {
-        for (int i = 0; i < k; i++) {
-            const PathRank rank = rank_arr[winners[i]];
-            Path *keep = rank.path;
-            /* do not overwrite keep->score */
-            joinrel->pathlist = lappend(joinrel->pathlist, keep);
-        }
-    }
-
-    /* ----------------------------------------------------------------------
-     * Phase 5: return losers as new remaining candidate list
-     * ---------------------------------------------------------------------- */
-    List *dropped_list = NIL;
-    if (losers_cnt > 0) {
-        for (int i = 0; i < losers_cnt; i++) {
-            const PathRank rank = rank_arr[losers[i]];
-            Path *drop = rank.path;
-            /* do not overwrite keep->score */
-            dropped_list = lappend(dropped_list, drop);
-        }
-    }
-
-    /* old list cells freed; Path structs stay alive */
-    list_free(cand_list);
-
-    /* ----------------------------------------------------------------------
-     * Cleanup and return losers
-     * ---------------------------------------------------------------------- */
     pfree(rank_arr);
     pfree(heap_idx);
     pfree(winners);
