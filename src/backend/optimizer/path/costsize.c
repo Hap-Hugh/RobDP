@@ -3311,10 +3311,10 @@ void set_joinrel_size_estimates(
 
         /* Determine the inner relation's single-point row estimate. */
         double inner_rows_single_point;
-        if (outer_rel->relid > 0 && outer_rel->rows_sample->sample_count > 1) {
-            inner_rows_single_point = outer_rel->rows_sample->sample[root->round];
+        if (inner_rel->relid > 0 && inner_rel->rows_sample->sample_count > 1) {
+            inner_rows_single_point = inner_rel->rows_sample->sample[root->round];
         } else {
-            inner_rows_single_point = outer_rel->rows;
+            inner_rows_single_point = inner_rel->rows;
         }
 
         set_joinrel_rows_1p(
