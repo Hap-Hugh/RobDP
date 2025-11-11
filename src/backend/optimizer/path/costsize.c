@@ -3092,9 +3092,7 @@ void set_baserel_size_estimates(PlannerInfo *root, RelOptInfo *rel) {
 
     set_rel_width(root, rel);
 
-    if (enable_rows_dist) {
-        set_baserel_rows_sample(root, rel, est_sel);
-    }
+    set_baserel_rows_sample(root, rel, est_sel);
 }
 
 /*
@@ -3172,28 +3170,26 @@ void set_joinrel_size_estimates(
         restrictlist
     );
 
-    if (enable_rows_dist) {
-        /* Estimated selectivity for conditioning p(true_sel | est_sel=e0).
-         * Notes: we assume that the join type is always JOIN_INNER. */
-        const double sel_est = clauselist_selectivity(
-            root,
-            restrictlist,
-            0,
-            sjinfo->jointype,
-            sjinfo
-        );
+    /* Estimated selectivity for conditioning p(true_sel | est_sel=e0).
+     * Notes: we assume that the join type is always JOIN_INNER. */
+    const double sel_est = clauselist_selectivity(
+        root,
+        restrictlist,
+        0,
+        sjinfo->jointype,
+        sjinfo
+    );
 
-        set_joinrel_rows_sample(
-            root, rel, outer_rel, inner_rel, restrictlist, sel_est
-        );
+    set_joinrel_rows_sample(
+        root, rel, outer_rel, inner_rel, restrictlist, sel_est
+    );
 
-        if (root->pass == 1) {
-            /* Overwrite: we only need rows at a particular sample point. */
-            Assert(rel->rows_sample != NULL);
-            if (rel->rows_sample->sample_count != 1) {
-                Assert(rel->rows_sample->sample_count == error_sample_count);
-                rel->rows = rel->rows_sample->sample[root->round];
-            }
+    if (root->pass == 1) {
+        /* Overwrite: we only need rows at a particular sample point. */
+        Assert(rel->rows_sample != NULL);
+        if (rel->rows_sample->sample_count != 1) {
+            Assert(rel->rows_sample->sample_count == error_sample_count);
+            rel->rows = rel->rows_sample->sample[root->round];
         }
     }
 }

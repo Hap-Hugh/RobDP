@@ -281,7 +281,26 @@ void set_joinrel_rows_sample(
 ) {
     /* 0. Prepare fallback rows estimation result.
      * Note: we don't use `joinrel->rows`, which has been clamped already. */
-    const double rows_fallback = sel_est * outer_rel->rows * inner_rel->rows;
+    double rows_fallback;
+    if (root->pass == 1) {
+        /* Determine the outer relation's single-point row estimate. */
+        double outer_rows_single_point;
+        if (outer_rel->relid > 0 && outer_rel->rows_sample->sample_count > 1) {
+            outer_rows_single_point = outer_rel->rows_sample->sample[root->round];
+        } else {
+            outer_rows_single_point = outer_rel->rows;
+        }
+        /* Determine the inner relation's single-point row estimate. */
+        double inner_rows_single_point;
+        if (inner_rel->relid > 0 && inner_rel->rows_sample->sample_count > 1) {
+            inner_rows_single_point = inner_rel->rows_sample->sample[root->round];
+        } else {
+            inner_rows_single_point = inner_rel->rows;
+        }
+        rows_fallback = sel_est * outer_rows_single_point * inner_rows_single_point;
+    } else {
+        rows_fallback = sel_est * outer_rel->rows * inner_rel->rows;
+    }
 
     /* 1. Resolve relation aliases (original alias and a standard fallback). */
     // FIXME: We assume that the first `rinfo` we found `can_join`.
@@ -347,7 +366,7 @@ void set_joinrel_rows_sample(
         }
     }
     // TODO: Check whether we have a sane alias with its fallback version.
-   //  elog(LOG, "[joinrel %s] considering relation rows sample.", alias);
+    // elog(LOG, "[joinrel %s] considering relation rows sample.", alias);
 
     /* 2. Allocate an error profile holder and try to populate it from cache. */
     ErrorProfile *ep;
