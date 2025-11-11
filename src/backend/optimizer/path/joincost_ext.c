@@ -51,7 +51,7 @@ double get_path_rows_1p(
      * If `sample_count == 1`, the rows_sample is a single-point structure
      * equal to the mean; in this case returning the scalar `rows` is correct.
      */
-    if (parent->rows_sample->sample_count > 1)
+    if (path->rows_sample->sample_count > 1)
         return path->rows_sample->sample[round];
 
     return path->rows;

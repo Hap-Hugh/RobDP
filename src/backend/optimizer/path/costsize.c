@@ -3357,31 +3357,57 @@ double get_parameterized_joinrel_size(
     SpecialJoinInfo *sjinfo,
     List *restrict_clauses
 ) {
-    double nrows;
-
-    /*
-     * Estimate the number of rows returned by the parameterized join as the
-     * sizes of the input paths times the selectivity of the clauses that have
-     * ended up at this join node.
-     *
-     * As with set_joinrel_size_estimates, the rowcount estimate could depend
-     * on the pair of input paths provided, though ideally we'd get the same
-     * estimate for any pair with the same parameterization.
-     */
-    nrows = calc_joinrel_size_estimate(
-        root,
-        rel,
-        outer_path->parent,
-        inner_path->parent,
-        outer_path->rows,
-        inner_path->rows,
-        sjinfo,
-        restrict_clauses
-    );
-    /* For safety, make sure result is not more than the base estimate */
-    if (nrows > rel->rows)
-        nrows = rel->rows;
-    return nrows;
+    if (root->pass == 1) {
+        /*
+         * Estimate the number of rows returned by the parameterized join as the
+         * sizes of the input paths times the selectivity of the clauses that have
+         * ended up at this join node.
+         *
+         * As with set_joinrel_size_estimates, the rowcount estimate could depend
+         * on the pair of input paths provided, though ideally we'd get the same
+         * estimate for any pair with the same parameterization.
+         */
+        double nrows = calc_joinrel_size_estimate(
+            root,
+            rel,
+            outer_path->parent,
+            inner_path->parent,
+            get_path_rows_1p(outer_path, root->round),
+            get_path_rows_1p(inner_path, root->round),
+            sjinfo,
+            restrict_clauses
+        );
+        /* For safety, make sure result is not more than the base estimate */
+        if (nrows > rel->rows)
+            nrows = rel->rows;
+        return nrows;
+    }
+    if (root->pass == 2) {
+        /*
+         * Estimate the number of rows returned by the parameterized join as the
+         * sizes of the input paths times the selectivity of the clauses that have
+         * ended up at this join node.
+         *
+         * As with set_joinrel_size_estimates, the rowcount estimate could depend
+         * on the pair of input paths provided, though ideally we'd get the same
+         * estimate for any pair with the same parameterization.
+         */
+        double nrows = calc_joinrel_size_estimate(
+            root,
+            rel,
+            outer_path->parent,
+            inner_path->parent,
+            outer_path->rows,
+            inner_path->rows,
+            sjinfo,
+            restrict_clauses
+        );
+        /* For safety, make sure result is not more than the base estimate */
+        if (nrows > rel->rows)
+            nrows = rel->rows;
+        return nrows;
+    }
+    elog(ERROR, "bad pass number");
 }
 
 /*
