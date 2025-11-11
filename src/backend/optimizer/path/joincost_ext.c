@@ -28,6 +28,33 @@
 
 
 /* ==== ==== ==== ==== ==== ==== JOIN COST HELPERS ==== ==== ==== ==== ==== ==== */
+double get_path_rows_1p(
+    const Path *path,
+    const int round
+) {
+    /*
+     * 1-pass DP row retrieval.
+     *
+     * For joinrels (`relid == 0`), every path row estimate is already a
+     * single scalar value. No per-round sampling applies here, so we just
+     * return `path->rows`.
+     */
+    if (path->parent->relid == 0)
+        return path->rows;
+    /*
+     * Baserel case: rows or rows_sample may carry multi-point uncertainty.
+     *
+     * If `sample_count > 1`, the baserel has an error profile, and the
+     * correct row estimate for this DP round is taken from the sample vector.
+     *
+     * If `sample_count == 1`, the rows_sample is a single-point structure
+     * equal to the mean; in this case returning the scalar `rows` is correct.
+     */
+    if (path->rows_sample->sample_count > 1)
+        return path->rows_sample->sample[round];
+
+    return path->rows;
+}
 
 /*
  * Estimate the fraction of the work that each worker will do given the
