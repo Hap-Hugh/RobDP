@@ -32,7 +32,6 @@ double get_path_rows_1p(
     const Path *path,
     const int round
 ) {
-    const RelOptInfo *parent = path->parent;
     /*
      * 1-pass DP row retrieval.
      *
@@ -40,7 +39,7 @@ double get_path_rows_1p(
      * single scalar value. No per-round sampling applies here, so we just
      * return `path->rows`.
      */
-    if (parent->relid == 0)
+    if (path->parent->relid == 0)
         return path->rows;
     /*
      * Baserel case: rows or rows_sample may carry multi-point uncertainty.
