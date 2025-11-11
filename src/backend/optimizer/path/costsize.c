@@ -3145,6 +3145,60 @@ void set_baserel_size_estimates(PlannerInfo *root, RelOptInfo *rel) {
      */
     const double rows_fallback = sel_est * rel->tuples;
     set_baserel_rows(root, rel, sel_est, rows_fallback);
+    /*
+     * Additional considerations regarding baserel rows and downstream effects.
+     *
+     * We set `rows` for baserels here, and `rows` is always the mean value.
+     * That part is straightforward. However, this decision has implications
+     * and risks that need to be made explicit:
+     *
+     * 1. Impact on later joinrels
+     *
+     *    1.1 In 1-pass DP:
+     *        When an error profile exists, we use the correct per-round value
+     *        from rows_sample. When no profile exists, we fall back to `rows`
+     *        (the mean). This behaves as expected.
+     *
+     *    1.2 In 2-pass DP:
+     *        We always use `rows` (the mean), which is the correct behavior.
+     *
+     * 2. Interaction with path creation
+     *
+     *    PostgreSQL assigns path-level row estimates when the path is created:
+     *
+     *    - For non-parameterized paths:
+     *          path->rows        comes from parent_rel->rows
+     *          path->rows_sample comes from parent_rel->rows_sample
+     *
+     *    2.1 Paths created on baserels:
+     *          Both rows and rows_sample inherit directly from the baserel.
+     *          Parameterized paths use ppi_rows and ppi_rows_sample, but
+     *          currently we cannot adjust those. Even rows_sample degenerates
+     *          to a single-point sample derived from ppi_rows. This is mainly
+     *          for compatibility with 2-pass DP and the rest of PG’s code.
+     *
+     *    2.2 Paths created on joinrels (join paths, gather paths, etc.):
+     *          All such paths inherit rows and rows_sample from the joinrel,
+     *          which means the correctness of joinrel->rows[_sample] is
+     *          crucial.
+     *
+     * 3. Impact on join cost models
+     *
+     *    In PG’s join costing, the final cost of a join path depends on the
+     *    row estimates of its outer and inner child paths.
+     *
+     *    3.1 In 1-pass DP:
+     *          We must obtain the inner and outer rows for the *current*
+     *          sample round. Special handling is required here.
+     *
+     *    3.2 In 2-pass DP:
+     *          We simply use the mean row estimates (inner_rel->rows,
+     *          outer_rel->rows), which is correct.
+     *
+     * In short: baserel rows being stored as a mean is fine, but paths inherit
+     * these values directly, and join costing depends on them. This is why
+     * row-sample handling for joinrels and 1-pass DP must be done carefully.
+     */
 }
 
 /*

@@ -28,6 +28,34 @@
 
 
 /* ==== ==== ==== ==== ==== ==== JOIN COST HELPERS ==== ==== ==== ==== ==== ==== */
+double get_path_rows_1p(
+    const Path *path,
+    const int round
+) {
+    const RelOptInfo *parent = path->parent;
+    /*
+     * 1-pass DP row retrieval.
+     *
+     * For joinrels (`relid == 0`), every path row estimate is already a
+     * single scalar value. No per-round sampling applies here, so we just
+     * return `path->rows`.
+     */
+    if (parent->relid == 0)
+        return path->rows;
+    /*
+     * Baserel case: rows or rows_sample may carry multi-point uncertainty.
+     *
+     * If `sample_count > 1`, the baserel has an error profile, and the
+     * correct row estimate for this DP round is taken from the sample vector.
+     *
+     * If `sample_count == 1`, the rows_sample is a single-point structure
+     * equal to the mean; in this case returning the scalar `rows` is correct.
+     */
+    if (parent->rows_sample->sample_count > 1)
+        return path->rows_sample->sample[round];
+
+    return path->rows;
+}
 
 /*
  * Estimate the fraction of the work that each worker will do given the
@@ -678,12 +706,12 @@ void final_cost_nestloop_1p(
      * In single-sample mode (sample_count == 1) or non-scan paths,
      * fall back to the planner's deterministic row estimate.
      */
-    double outer_path_rows = outer_path->rows;
+    double outer_path_rows = get_path_rows_1p(outer_path, root->round);
     /*
      * Same logic for inner path. Use sampled rows only for scan paths
      * when running in multi-sample mode.
      */
-    double inner_path_rows = inner_path->rows;
+    double inner_path_rows = get_path_rows_1p(inner_path, root->round);
 
     Cost startup_cost = workspace->startup_cost;
     Cost run_cost = workspace->run_cost;
@@ -1068,7 +1096,7 @@ void final_cost_mergejoin_1p(
      * In single-sample mode (sample_count == 1) or non-scan paths,
      * fall back to the planner's deterministic row estimate.
      */
-    double inner_path_rows = inner_path->rows;
+    double inner_path_rows = get_path_rows_1p(inner_path, root->round);
 
     List *mergeclauses = path->path_mergeclauses;
     List *innersortkeys = path->innersortkeys;
@@ -1440,12 +1468,12 @@ void final_cost_hashjoin_1p(
      * In single-sample mode (sample_count == 1) or non-scan paths,
      * fall back to the planner's deterministic row estimate.
      */
-    const double outer_path_rows = outer_path->rows;
+    const double outer_path_rows = get_path_rows_1p(outer_path, root->round);
     /*
      * Same logic for inner path. Use sampled rows only for scan paths
      * when running in multi-sample mode.
      */
-    const double inner_path_rows = inner_path->rows;
+    const double inner_path_rows = get_path_rows_1p(inner_path, root->round);
 
     double inner_path_rows_total = workspace->inner_rows_total;
     List *hashclauses = path->path_hashclauses;

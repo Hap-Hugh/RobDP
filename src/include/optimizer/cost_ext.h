@@ -58,6 +58,11 @@ extern void cost_index_2p(
 
 /* ==== ==== ==== ==== ==== ==== JOIN COST HELPERS ==== ==== ==== ==== ==== ==== */
 
+extern double get_path_rows_1p(
+    const Path *path,
+    int round
+);
+
 extern double get_parallel_divisor(
     const Path *path
 );
