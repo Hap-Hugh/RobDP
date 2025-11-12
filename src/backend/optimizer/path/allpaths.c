@@ -3266,6 +3266,127 @@ make_rel_from_joinlist(PlannerInfo *root, List *joinlist) {
 }
 
 /*
+ * Log, for every Path in both pathlist and partial_pathlist of final_rel_paths:
+ *  - Per-sample difference between each Path's total_cost_sample (x)
+ *    and final_rel_min->min_score_sample (y), printed as "x - y = z".
+ *  - Per-path statistics (min, max, mean) for:
+ *      (a) the original total_cost_sample values (x), and
+ *      (b) the per-sample differences (z = x - y).
+ *
+ * The caller provides 'sample_count' and guarantees:
+ *   sample_count <= path->total_cost_sample->sample_count
+ *   sample_count <= final_rel_min->min_score_sample->sample_count
+ *
+ * Safety:
+ *  - Null checks for both RelOptInfo pointers, min_score_sample, each Path,
+ *    and each Path's total_cost_sample.
+ *  - If sample_count <= 0, return early.
+ */
+static void
+LogRelPathCostSamplesAdjusted(
+    const RelOptInfo *final_rel_paths,
+    const RelOptInfo *final_rel_min,
+    const int sample_count
+) {
+    const Sample *minS;
+    List *lists[2];
+    const char *list_names[2];
+
+    if (final_rel_paths == NULL) {
+        elog(LOG, "LogRelPathCostSamplesAdjusted: final_rel_paths is NULL");
+        return;
+    }
+    if (final_rel_min == NULL) {
+        elog(LOG, "LogRelPathCostSamplesAdjusted: final_rel_min is NULL");
+        return;
+    }
+    if (sample_count <= 0) {
+        elog(LOG, "LogRelPathCostSamplesAdjusted: sample_count <= 0 (%d)", sample_count);
+        return;
+    }
+
+    minS = final_rel_min->min_score_sample;
+    if (minS == NULL) {
+        elog(LOG, "LogRelPathCostSamplesAdjusted: final_rel_min->min_score_sample is NULL");
+        return;
+    }
+
+    lists[0] = final_rel_paths->pathlist;
+    lists[1] = final_rel_paths->partial_pathlist;
+    list_names[0] = "pathlist";
+    list_names[1] = "partial_pathlist";
+
+    for (int li = 0; li < 2; li++) {
+        List *lst = lists[li];
+        const char *lname = list_names[li];
+        ListCell *lc;
+
+        elog(LOG, "---- Logging adjusted total_cost_sample for %s (count=%d) ----",
+             lname, sample_count);
+
+        foreach(lc, lst) {
+            Path *path = (Path *) lfirst(lc);
+
+            if (path == NULL) {
+                elog(LOG, "%s: encountered NULL Path, skipping", lname);
+                continue;
+            }
+            if (path->total_cost_sample == NULL) {
+                elog(LOG, "%s: Path %p total_cost_sample is NULL, skipping",
+                     lname, (void *) path);
+                continue;
+            }
+
+            const Sample *xs = path->total_cost_sample;
+
+            /* Initialize stats using the first sample */
+            double x0 = xs->sample[0];
+            double y0 = minS->sample[0];
+            double z0 = x0 - y0;
+
+            double min_total = x0, max_total = x0, sum_total = x0;
+            double min_diff = z0, max_diff = z0, sum_diff = z0;
+
+            /* x - y = z for sample[0] */
+            elog(LOG, "%s: Path %p sample[0]: %f - %f = %f",
+                 lname, (void *) path, x0, y0, z0);
+
+            for (int i = 1; i < sample_count; i++) {
+                double x = xs->sample[i];
+                double y = minS->sample[i];
+                double z = x - y;
+
+                /* x - y = z */
+                elog(LOG, "%s: Path %p sample[%d]: %f - %f = %f",
+                     lname, (void *) path, i, x, y, z);
+
+                /* total stats */
+                if (x < min_total) min_total = x;
+                if (x > max_total) max_total = x;
+                sum_total += x;
+
+                /* diff stats */
+                if (z < min_diff) min_diff = z;
+                if (z > max_diff) max_diff = z;
+                sum_diff += z;
+            }
+
+            /* Means and summaries */
+            {
+                double mean_total = sum_total / (double) sample_count;
+                double mean_diff = sum_diff / (double) sample_count;
+
+                elog(LOG, "%s: Path %p total_cost_sample stats: min=%f, max=%f, mean=%f",
+                     lname, (void *) path, min_total, max_total, mean_total);
+
+                elog(LOG, "%s: Path %p (x - y) diff stats:    min=%f, max=%f, mean=%f",
+                     lname, (void *) path, min_diff, max_diff, mean_diff);
+            }
+        }
+    }
+}
+
+/*
  * standard_join_search
  *	  Find possible joinpaths for a query by successively finding ways
  *	  to join component relations into join relations.
@@ -3534,6 +3655,11 @@ standard_join_search(PlannerInfo *root, const int levels_needed, List *initial_r
                 error_sample_count,
                 true /* partial pathlist */
             );
+
+            if (lev == levels_needed) {
+                const RelOptInfo *min_rel = list_nth(min_envelope[lev], rel_index);
+                LogRelPathCostSamplesAdjusted(rel, min_rel, error_sample_count);
+            }
 
             /* Sort selected partial paths by total cost as well */
             rel->partial_pathlist = sort_pathlist_by_total_cost(rel->partial_pathlist);
