@@ -258,7 +258,9 @@ add_path_by_strategy(
         for (int i = 0; i < losers_cnt; i++) {
             const PathRank rank = rank_arr[losers[i]];
             Path *drop = rank.path;
-            /* do not overwrite keep->score */
+            /* Expose computed score on Path for later stages,
+             * and for the final output after the DP process. */
+            drop->score = rank.score;
             dropped_list = lappend(dropped_list, drop);
         }
     }
