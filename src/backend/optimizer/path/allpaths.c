@@ -3265,50 +3265,57 @@ make_rel_from_joinlist(PlannerInfo *root, List *joinlist) {
     }
 }
 
-/*
- * Log, for every Path in both pathlist and partial_pathlist of final_rel_paths:
- *  - Per-sample difference between each Path's total_cost_sample (x)
- *    and final_rel_min->min_score_sample (y), printed as "x - y = z".
- *  - Per-path statistics (min, max, mean) for:
- *      (a) the original total_cost_sample values (x), and
- *      (b) the per-sample differences (z = x - y).
- *
- * The caller provides 'sample_count' and guarantees:
- *   sample_count <= path->total_cost_sample->sample_count
- *   sample_count <= final_rel_min->min_score_sample->sample_count
- *
- * Safety:
- *  - Null checks for both RelOptInfo pointers, min_score_sample, each Path,
- *    and each Path's total_cost_sample.
- *  - If sample_count <= 0, return early.
- */
+/* Minimal printf-to-file helper; falls back to elog(LOG, ...) when fp == NULL. */
+static void
+logf_or_elog(FILE *fp, const char *fmt, ...) {
+    va_list args;
+
+    va_start(args, fmt);
+    if (fp != NULL) {
+        vfprintf(fp, fmt, args);
+        fputc('\n', fp);
+    } else {
+        // Do nothing.
+    }
+    va_end(args);
+}
+
 static void
 LogRelPathCostSamplesAdjusted(
     const RelOptInfo *final_rel_paths,
     const RelOptInfo *final_rel_min,
     const int sample_count
 ) {
-    const Sample *minS;
     List *lists[2];
     const char *list_names[2];
+    FILE *fp = NULL;
 
+    /* Try to open the debug file if GUC is set and non-empty */
+    if (score_filename && score_filename[0] != '\0') {
+        fp = AllocateFile(score_filename, "a");
+        if (fp == NULL)
+            elog(WARNING, "LogRelPathCostSamplesAdjusted: could not open debug file \"%s\"",
+             score_filename);
+    }
+
+    /* Basic argument checks */
     if (final_rel_paths == NULL) {
-        elog(LOG, "LogRelPathCostSamplesAdjusted: final_rel_paths is NULL");
-        return;
+        logf_or_elog(fp, "LogRelPathCostSamplesAdjusted: final_rel_paths is NULL");
+        goto done;
     }
     if (final_rel_min == NULL) {
-        elog(LOG, "LogRelPathCostSamplesAdjusted: final_rel_min is NULL");
-        return;
+        logf_or_elog(fp, "LogRelPathCostSamplesAdjusted: final_rel_min is NULL");
+        goto done;
     }
     if (sample_count <= 0) {
-        elog(LOG, "LogRelPathCostSamplesAdjusted: sample_count <= 0 (%d)", sample_count);
-        return;
+        logf_or_elog(fp, "LogRelPathCostSamplesAdjusted: sample_count <= 0 (%d)", sample_count);
+        goto done;
     }
 
-    minS = final_rel_min->min_score_sample;
+    const Sample *minS = final_rel_min->min_score_sample;
     if (minS == NULL) {
-        elog(LOG, "LogRelPathCostSamplesAdjusted: final_rel_min->min_score_sample is NULL");
-        return;
+        logf_or_elog(fp, "LogRelPathCostSamplesAdjusted: final_rel_min->min_score_sample is NULL");
+        goto done;
     }
 
     lists[0] = final_rel_paths->pathlist;
@@ -3321,25 +3328,25 @@ LogRelPathCostSamplesAdjusted(
         const char *lname = list_names[li];
         ListCell *lc;
 
-        elog(LOG, "---- Logging adjusted total_cost_sample for %s (count=%d) ----",
-             lname, sample_count);
+        logf_or_elog(fp, "---- Logging adjusted total_cost_sample for %s (count=%d) ----",
+                     lname, sample_count);
 
         foreach(lc, lst) {
             Path *path = (Path *) lfirst(lc);
 
             if (path == NULL) {
-                elog(LOG, "%s: encountered NULL Path, skipping", lname);
+                logf_or_elog(fp, "%s: encountered NULL Path, skipping", lname);
                 continue;
             }
             if (path->total_cost_sample == NULL) {
-                elog(LOG, "%s: Path %p total_cost_sample is NULL, skipping",
-                     lname, (void *) path);
+                logf_or_elog(fp, "%s: Path %p total_cost_sample is NULL, skipping",
+                             lname, (void *) path);
                 continue;
             }
 
             const Sample *xs = path->total_cost_sample;
 
-            /* Initialize stats using the first sample */
+            /* Initialize stats using sample[0] */
             double x0 = xs->sample[0];
             double y0 = minS->sample[0];
             double z0 = x0 - y0;
@@ -3348,8 +3355,8 @@ LogRelPathCostSamplesAdjusted(
             double min_diff = z0, max_diff = z0, sum_diff = z0;
 
             /* x - y = z for sample[0] */
-            elog(LOG, "%s: Path %p sample[0]: %f - %f = %f",
-                 lname, (void *) path, x0, y0, z0);
+            logf_or_elog(fp, "%s: Path %p sample[0]: %f - %f = %f",
+                         lname, (void *) path, x0, y0, z0);
 
             for (int i = 1; i < sample_count; i++) {
                 double x = xs->sample[i];
@@ -3357,8 +3364,8 @@ LogRelPathCostSamplesAdjusted(
                 double z = x - y;
 
                 /* x - y = z */
-                elog(LOG, "%s: Path %p sample[%d]: %f - %f = %f",
-                     lname, (void *) path, i, x, y, z);
+                logf_or_elog(fp, "%s: Path %p sample[%d]: %f - %f = %f",
+                             lname, (void *) path, i, x, y, z);
 
                 /* total stats */
                 if (x < min_total) min_total = x;
@@ -3376,13 +3383,21 @@ LogRelPathCostSamplesAdjusted(
                 double mean_total = sum_total / (double) sample_count;
                 double mean_diff = sum_diff / (double) sample_count;
 
-                elog(LOG, "%s: Path %p total_cost_sample stats: min=%f, max=%f, mean=%f",
-                     lname, (void *) path, min_total, max_total, mean_total);
+                logf_or_elog(fp,
+                             "%s: Path %p total_cost_sample stats: min=%f, max=%f, mean=%f",
+                             lname, (void *) path, min_total, max_total, mean_total);
 
-                elog(LOG, "%s: Path %p (x - y) diff stats:    min=%f, max=%f, mean=%f",
-                     lname, (void *) path, min_diff, max_diff, mean_diff);
+                logf_or_elog(fp,
+                             "%s: Path %p (x - y) diff stats:    min=%f, max=%f, mean=%f",
+                             lname, (void *) path, min_diff, max_diff, mean_diff);
             }
         }
+    }
+
+done:
+    if (fp != NULL) {
+        fflush(fp);
+        FreeFile(fp);
     }
 }
 
@@ -3656,11 +3671,6 @@ standard_join_search(PlannerInfo *root, const int levels_needed, List *initial_r
                 true /* partial pathlist */
             );
 
-            if (lev == levels_needed) {
-                const RelOptInfo *min_rel = list_nth(min_envelope[lev], rel_index);
-                LogRelPathCostSamplesAdjusted(rel, min_rel, error_sample_count);
-            }
-
             /* Sort selected partial paths by total cost as well */
             rel->partial_pathlist = sort_pathlist_by_total_cost(rel->partial_pathlist);
 
@@ -3694,22 +3704,6 @@ standard_join_search(PlannerInfo *root, const int levels_needed, List *initial_r
     Assert(list_length(root->join_rel_level[levels_needed]) == 1);
 
     final_rel = (RelOptInfo *) linitial(root->join_rel_level[levels_needed]);
-
-    // foreach(lc_final, final_rel->pathlist) {
-    //     const Path *path = lfirst(lc_final);
-    //     elog(LOG, "[2-pass] [final rel] [path %d] [pathtype %d] "
-    //          "[startup cost %.3f] [total cost %.3f] [score %.3f]",
-    //          foreach_current_index(lc_final), path->pathtype,
-    //          path->startup_cost, path->total_cost, path->score);
-    // }
-    //
-    // foreach(lc_final, final_rel->partial_pathlist) {
-    //     const Path *path = lfirst(lc_final);
-    //     elog(LOG, "[2-pass] [final rel] [partial path %d] [pathtype %d] "
-    //          "[startup cost %.3f] [total cost %.3f] [score %.3f]",
-    //          foreach_current_index(lc_final), path->pathtype,
-    //          path->startup_cost, path->total_cost, path->score);
-    // }
 
     root->pass = 3;
     root->join_rel_level = NULL;
