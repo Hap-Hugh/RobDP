@@ -258,21 +258,38 @@ double calc_expected_penalty_impl(
     return expected_penalty / (double) effective;
 }
 
-/* Compute standard deviation over the first `effective` samples. */
-static double compute_std_total_cost_sample(
+/*
+ * Compute standard deviation of penalty over the first `effective` samples.
+ *
+ * Penalty is measured relative to the global minimum vector:
+ *
+ *   penalty(j) = (v(j) > min_envelope(j) * PENALTY_TOLERANCE_FACTOR)
+ *                  ? (v(j) - min_envelope(j))
+ *                  : 0.0
+ */
+static double compute_std_penalty_sample(
     const Sample *total_cost_sample,
+    const double *min_envelope,
     const int effective
 ) {
     if (effective <= 1)
         return 0.0;
 
-    /* Welford's online algorithm */
+    Assert(total_cost_sample != NULL);
+    Assert(min_envelope != NULL);
+
+    /* Welford's online algorithm over penalty(j) */
     double mean = 0.0;
     double M2 = 0.0;
     int n = 0;
 
     for (int i = 0; i < effective; ++i) {
-        const double x = total_cost_sample->sample[i];
+        const double cur_thresh = min_envelope[i] * PENALTY_TOLERANCE_FACTOR;
+        const double cur_sample = total_cost_sample->sample[i];
+        const double penalty =
+                (cur_sample > cur_thresh) ? (cur_sample - min_envelope[i]) : 0.0;
+
+        const double x = penalty;
         n += 1;
         const double delta = x - mean;
         mean += delta / n;
@@ -289,7 +306,7 @@ static double compute_std_total_cost_sample(
  * calc_worst_penalty_with_std_impl
  *
  * Compute the worst (maximum) penalty among samples, then add the STD of the
- * total_cost_sample across the same `effective` samples.
+ * penalty across the same `effective` samples.
  *
  * Penalty is measured relative to the global minimum vector:
  *
@@ -298,7 +315,7 @@ static double compute_std_total_cost_sample(
  *                  : 0.0
  *
  * Final score:
- *   return max_j penalty(j)  +  std(total_cost_sample[0..effective-1])
+ *   return max_j penalty(j)  +  std(penalty[0..effective-1])
  *
  * Zero penalty means the path is comparable to the best observed path; the
  * additional STD term rewards stability (lower variance).
@@ -326,19 +343,20 @@ double calc_worst_penalty_with_std_impl(
             worst_penalty = cur_penalty;
     }
 
-    /* Add STD of total_cost_sample */
-    const double std_total = compute_std_total_cost_sample(total_cost_sample, effective);
-    return worst_penalty + std_total;
+    /* Add STD of penalty */
+    const double std_penalty =
+            compute_std_penalty_sample(total_cost_sample, min_envelope, effective);
+    return worst_penalty + std_penalty;
 }
 
 /*
  * calc_expected_penalty_with_std_impl
  *
  * Compute the mean penalty across samples, then add the STD of the
- * total_cost_sample across the same `effective` samples.
+ * penalty across the same `effective` samples.
  *
  * Final score:
- *   return mean_j penalty(j) + std(total_cost_sample[0..effective-1])
+ *   return mean_j penalty(j) + std(penalty[0..effective-1])
  */
 double calc_expected_penalty_with_std_impl(
     const Sample *startup_cost_sample, /* unused */
@@ -361,9 +379,10 @@ double calc_expected_penalty_with_std_impl(
 
     const double mean_penalty = sum_penalty / (double) effective;
 
-    /* Add STD of total_cost_sample */
-    const double std_total = compute_std_total_cost_sample(total_cost_sample, effective);
-    return mean_penalty + std_total;
+    /* Add STD of penalty */
+    const double std_penalty =
+            compute_std_penalty_sample(total_cost_sample, min_envelope, effective);
+    return mean_penalty + std_penalty;
 }
 
 /*
