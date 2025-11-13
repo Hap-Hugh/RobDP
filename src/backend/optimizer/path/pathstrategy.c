@@ -1,6 +1,7 @@
 //
 // Created by Xuan Chen on 2025/10/31.
 // Modified by Xuan Chen on 2025/11/9.
+// Modified by Xuan Chen on 2025/11/12.
 //
 
 #define PENALTY_TOLERANCE_FACTOR 1.2
@@ -52,6 +53,20 @@ static double calc_worst_startup_cost_impl(
 );
 
 static double calc_expected_startup_cost_impl(
+    const Sample *startup_cost_sample,
+    const Sample *total_cost_sample,
+    const double *min_envelope,
+    int effective
+);
+
+static double calc_worst_penalty_with_std_impl(
+    const Sample *startup_cost_sample,
+    const Sample *total_cost_sample,
+    const double *min_envelope,
+    int effective
+);
+
+static double calc_expected_penalty_with_std_impl(
     const Sample *startup_cost_sample,
     const Sample *total_cost_sample,
     const double *min_envelope,
@@ -241,6 +256,114 @@ double calc_expected_penalty_impl(
                 (cur_sample > cur_thresh) ? (cur_sample - min_envelope[i]) : 0.0;
     }
     return expected_penalty / (double) effective;
+}
+
+/* Compute standard deviation over the first `effective` samples. */
+static double compute_std_total_cost_sample(
+    const Sample *total_cost_sample,
+    const int effective
+) {
+    if (effective <= 1)
+        return 0.0;
+
+    /* Welford's online algorithm */
+    double mean = 0.0;
+    double M2 = 0.0;
+    int n = 0;
+
+    for (int i = 0; i < effective; ++i) {
+        const double x = total_cost_sample->sample[i];
+        n += 1;
+        const double delta = x - mean;
+        mean += delta / n;
+        const double delta2 = x - mean;
+        M2 += delta * delta2;
+    }
+
+    /* Population standard deviation over `effective` elements */
+    const double variance = M2 / (double) effective;
+    return sqrt(variance);
+}
+
+/*
+ * calc_worst_penalty_with_std_impl
+ *
+ * Compute the worst (maximum) penalty among samples, then add the STD of the
+ * total_cost_sample across the same `effective` samples.
+ *
+ * Penalty is measured relative to the global minimum vector:
+ *
+ *   penalty(j) = (v(j) > min_envelope(j) * PENALTY_TOLERANCE_FACTOR)
+ *                  ? (v(j) - min_envelope(j))
+ *                  : 0.0
+ *
+ * Final score:
+ *   return max_j penalty(j)  +  std(total_cost_sample[0..effective-1])
+ *
+ * Zero penalty means the path is comparable to the best observed path; the
+ * additional STD term rewards stability (lower variance).
+ */
+double calc_worst_penalty_with_std_impl(
+    const Sample *startup_cost_sample, /* unused */
+    const Sample *total_cost_sample,
+    const double *min_envelope,
+    const int effective
+) {
+    /* Score >= 0 always (penalty >= 0, std >= 0) */
+    double worst_penalty = 0.0;
+
+    Assert(total_cost_sample != NULL);
+    Assert(min_envelope != NULL);
+    Assert(effective > 0);
+
+    for (int i = 0; i < effective; ++i) {
+        const double cur_thresh = min_envelope[i] * PENALTY_TOLERANCE_FACTOR;
+        const double cur_sample = total_cost_sample->sample[i];
+        const double cur_penalty =
+                (cur_sample > cur_thresh) ? (cur_sample - min_envelope[i]) : 0.0;
+
+        if (cur_penalty > worst_penalty)
+            worst_penalty = cur_penalty;
+    }
+
+    /* Add STD of total_cost_sample */
+    const double std_total = compute_std_total_cost_sample(total_cost_sample, effective);
+    return worst_penalty + std_total;
+}
+
+/*
+ * calc_expected_penalty_with_std_impl
+ *
+ * Compute the mean penalty across samples, then add the STD of the
+ * total_cost_sample across the same `effective` samples.
+ *
+ * Final score:
+ *   return mean_j penalty(j) + std(total_cost_sample[0..effective-1])
+ */
+double calc_expected_penalty_with_std_impl(
+    const Sample *startup_cost_sample, /* unused */
+    const Sample *total_cost_sample,
+    const double *min_envelope,
+    const int effective
+) {
+    double sum_penalty = 0.0;
+
+    Assert(total_cost_sample != NULL);
+    Assert(min_envelope != NULL);
+    Assert(effective > 0);
+
+    for (int i = 0; i < effective; ++i) {
+        const double cur_thresh = min_envelope[i] * PENALTY_TOLERANCE_FACTOR;
+        const double cur_sample = total_cost_sample->sample[i];
+        sum_penalty +=
+                (cur_sample > cur_thresh) ? (cur_sample - min_envelope[i]) : 0.0;
+    }
+
+    const double mean_penalty = sum_penalty / (double) effective;
+
+    /* Add STD of total_cost_sample */
+    const double std_total = compute_std_total_cost_sample(total_cost_sample, effective);
+    return mean_penalty + std_total;
 }
 
 /*
@@ -645,8 +768,30 @@ extern void calc_jointype_based_score(
     elog(ERROR, "`calc_jointype_based_score` not implemented.");
 }
 
+extern void calc_worst_penalty_with_std(
+    const List *cand_list,
+    PathRank *rank_arr,
+    const double *min_envelope,
+    const int sample_count
+) {
+    basic_select_path_strategy_helper(
+        cand_list, rank_arr, min_envelope, sample_count, calc_worst_penalty_with_std_impl
+    );
+}
+
+extern void calc_expected_penalty_with_std(
+    const List *cand_list,
+    PathRank *rank_arr,
+    const double *min_envelope,
+    const int sample_count
+) {
+    basic_select_path_strategy_helper(
+        cand_list, rank_arr, min_envelope, sample_count, calc_expected_penalty_with_std_impl
+    );
+}
+
 /* Global strategy array */
-select_path_strategy select_path_strategy_funcs[10] = {
+path_strategy path_strategy_funcs[12] = {
     [0] = calc_worst_penalty,
     [1] = calc_expected_penalty,
     [2] = calc_worst_total_cost,
@@ -656,5 +801,7 @@ select_path_strategy select_path_strategy_funcs[10] = {
     [6] = calc_robust_coverage,
     [7] = calc_random_score,
     [8] = calc_postgres_original_score,
-    [9] = calc_jointype_based_score
+    [9] = calc_jointype_based_score,
+    [10] = calc_worst_penalty_with_std,
+    [11] = calc_expected_penalty_with_std,
 };

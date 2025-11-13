@@ -99,7 +99,7 @@ rank_idx_maxheap_push_topk(int *heap, const int size, const int k, const int idx
  *
  * Contract:
  *   - Lower score = better.
- *   - `select_path_strategy_func` must:
+ *   - `path_strategy_func` must:
  *       * Fill `rank_arr[0..cand_count-1]` with {path, score} for each node in
  *         `cand_list`, in the same iteration order.
  *       * Assign DBL_MAX (or equivalent) to paths with zero effective samples.
@@ -124,7 +124,7 @@ select_path_by_strategy(
     const List *cand_list,
     List **kept_list_ptr,
     const double *min_envelope,
-    const select_path_strategy select_path_strategy_func,
+    const path_strategy path_strategy_func,
     const int select_path_limit,
     const int sample_count,
     const bool should_save_score
@@ -153,7 +153,7 @@ select_path_by_strategy(
      * The strategy function fills rank_arr with (path, score).
      * -------------------------------------------------------------------- */
     PathRank *rank_arr = palloc(sizeof(PathRank) * cand_count);
-    select_path_strategy_func(cand_list, rank_arr, min_envelope, sample_count);
+    path_strategy_func(cand_list, rank_arr, min_envelope, sample_count);
 
     /* --------------------------------------------------------------------
      * Phase 2: select global top-k (smallest score) using a fixed MAX-heap.
@@ -241,6 +241,97 @@ select_path_by_strategy(
     pfree(losers);
 
     return dropped_list;
+}
+
+/*
+ * set_path_score
+ *
+ * Purpose:
+ *   Compute a score for every Path in `cand_list` using the provided strategy
+ *   function, and store the result into `path->score`.
+ *
+ * What this function DOES:
+ *   - Allocates a temporary PathRank array sized to `cand_count`.
+ *   - Invokes `path_strategy_func(cand_list, rank_arr, min_envelope, sample_count)`.
+ *     The strategy fills rank_arr[0..cand_count-1] with (path, score) pairs
+ *     that correspond to the iteration order of `cand_list`.
+ *   - Writes `rank_arr[i].score` back into the associated `Path` via `path->score`.
+ *   - Frees the temporary array and returns.
+ *
+ * What this function DOES NOT do:
+ *   - It does NOT select or prune candidates.
+ *   - It does NOT sort winners or losers.
+ *   - It does NOT modify list topology (no cells are freed or appended).
+ *
+ * Contract & Assumptions:
+ *   - Lower score means better.
+ *   - The strategy must assign a finite score for valid candidates and should
+ *     assign DBL_MAX (or equivalent “worst”) to paths with zero effective samples.
+ *   - `min_envelope` and `sample_count` have already been prepared/clamped by caller.
+ *   - `sample_count >= 1` and `sample_count <= DIST_MAX_SAMPLE`.
+ *
+ * External invariants (referenced but not changed here):
+ *   - `kept_list_ptr` and `select_path_limit` are asserted for sanity only.
+ *     They are not read for control-flow in this routine and are presumed
+ *     to be defined in the surrounding module.
+ *
+ * Inputs:
+ *   - cand_list:     list of Path* to be scored.
+ *   - min_envelope:  baseline (per-sample) array needed by the scoring strategy.
+ *   - path_strategy_func: callback that computes path scores.
+ *   - sample_count:  number of samples the strategy should consider.
+ *
+ * Side effects:
+ *   - Each Path in cand_list receives its computed score in `Path->score`.
+ *
+ * Return:
+ *   - void
+ *
+ * Error handling:
+ *   - Early return if cand_list is empty.
+ *   - Asserts enforce basic preconditions in assertions-enabled builds.
+ */
+void
+set_path_score(
+    const List *cand_list,
+    const double *min_envelope,
+    const path_strategy path_strategy_func,
+    const int sample_count
+) {
+    /* --- Sanity checks on global/contextual invariants (not used for control flow) --- */
+    Assert(kept_list_ptr != NULL);
+    Assert(sample_count >= 1);
+    Assert(select_path_limit >= 1);
+    Assert(sample_count <= DIST_MAX_SAMPLE);
+
+    /* --- Early exit: nothing to score --- */
+    const int cand_count = list_length(cand_list);
+    if (cand_count <= 0) {
+        return;
+    }
+
+    /* --------------------------------------------------------------------
+     * Phase 1: allocate rank array & run strategy
+     *
+     * The strategy fills `rank_arr` with (path, score) for each element of
+     * `cand_list` in the same traversal order.
+     * -------------------------------------------------------------------- */
+    PathRank *rank_arr = palloc(sizeof(PathRank) * cand_count);
+    path_strategy_func(cand_list, rank_arr, min_envelope, sample_count);
+
+    /* --------------------------------------------------------------------
+     * Phase 2: persist scores onto Path objects
+     *
+     * We only write scores back; selection/pruning is not handled here.
+     * -------------------------------------------------------------------- */
+    for (int i = 0; i < cand_count; i++) {
+        const PathRank rank = rank_arr[i];
+        Path *path = rank.path;
+        path->score = rank.score;
+    }
+
+    /* --- Phase 3: cleanup temporary workspace --- */
+    pfree(rank_arr);
 }
 
 /*

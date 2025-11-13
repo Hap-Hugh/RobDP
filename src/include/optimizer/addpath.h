@@ -17,10 +17,18 @@ select_path_by_strategy(
     const List *cand_list,
     List **kept_list_ptr,
     const double *min_envelope,
-    select_path_strategy select_path_strategy_func,
+    path_strategy path_strategy_func,
     int select_path_limit,
     int sample_count,
     bool should_save_score
+);
+
+void
+set_path_score(
+    const List *cand_list,
+    const double *min_envelope,
+    path_strategy path_strategy_func,
+    int sample_count
 );
 
 void

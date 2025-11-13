@@ -3575,7 +3575,7 @@ struct config_int ConfigureNamesInt[] =
 			NULL
 		},
 		&main_objective_id,
-		0, 0, 9,
+		0, 0, 11,
 		NULL, NULL, NULL
 	},
 
@@ -3586,7 +3586,19 @@ struct config_int ConfigureNamesInt[] =
 			NULL
 		},
 		&retain_strategy_id,
-		0, 0, 9,
+		0, 0, 11,
+		NULL, NULL, NULL
+	},
+
+	{
+	    {
+	    	"final_score_id", PGC_USERSET, DEVELOPER_OPTIONS,
+			gettext_noop( "Selects which scoring strategy is used in the retain phase "
+				"to evaluate previously rejected paths for possible reinsertion into the pathlist."),
+			NULL
+		},
+		&final_score_id,
+		0, 0, 1,
 		NULL, NULL, NULL
 	},
 

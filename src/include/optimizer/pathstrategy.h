@@ -18,7 +18,7 @@ typedef struct PathRank {
     double score; /* vs. per-type per-sample minima */
 } PathRank;
 
-typedef void (*select_path_strategy)(
+typedef void (*path_strategy)(
     const List *cand_list,
     PathRank *rank_arr,
     const double *min_envelope,
@@ -95,12 +95,26 @@ extern void calc_jointype_based_score(
     int sample_count
 );
 
+extern void calc_worst_penalty_with_std(
+    const List *cand_list,
+    PathRank *rank_arr,
+    const double *min_envelope,
+    int sample_count
+);
+
+extern void calc_expected_penalty_with_std(
+    const List *cand_list,
+    PathRank *rank_arr,
+    const double *min_envelope,
+    int sample_count
+);
+
 /*
  * Global array of scoring strategies.
- * Indexed [0..9].
+ * Indexed [0..11].
  *
- * Caller can use: select_path_strategy_funcs[i](...)
+ * Caller can use: path_strategy_funcs[i](...)
  */
-extern select_path_strategy select_path_strategy_funcs[10];
+extern path_strategy path_strategy_funcs[12];
 
 #endif // PATHSTRATEGY_H

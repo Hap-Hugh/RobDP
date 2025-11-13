@@ -57,6 +57,7 @@ int add_path_limit = 1;
 int retain_path_limit = 1;
 int main_objective_id = 0;
 int retain_strategy_id = 0;
+int final_score_id = 0;
 
 /* Bitmask flags for pushdown_safety_info.unsafeFlags */
 #define UNSAFE_HAS_VOLATILE_FUNC		(1 << 0)
@@ -3448,16 +3449,28 @@ standard_join_search(PlannerInfo *root, const int levels_needed, List *initial_r
      * This strategy ranks newly generated candidate paths before admitting them
      * into the main pathlist.
      */
-    const select_path_strategy main_objective_func =
-            select_path_strategy_funcs[main_objective_id];
+    const path_strategy main_objective_func =
+            path_strategy_funcs[main_objective_id];
 
     /*
      * Pick scoring strategy for the "retain strategy" phase.
      * This strategy ranks previously dropped paths to decide whether any
      * should be re-inserted into the pathlist.
      */
-    const select_path_strategy retain_strategy_func =
-            select_path_strategy_funcs[retain_strategy_id];
+    const path_strategy retain_strategy_func =
+            path_strategy_funcs[retain_strategy_id];
+
+    /*
+     * Select the scoring strategy for the "retain" phase.
+     *
+     * In this phase, we evaluate previously discarded Paths to determine
+     * whether any should be reinserted into the current pathlist.
+     *
+     * `final_score_func` points to the scoring function chosen by
+     * `final_score_id` from the path_strategy_funcs array.
+     */
+    const path_strategy final_score_func =
+            path_strategy_funcs[final_score_id];
 
     for (int lev = 2; lev <= levels_needed; lev++) {
         ListCell *lc;
@@ -3607,6 +3620,21 @@ standard_join_search(PlannerInfo *root, const int levels_needed, List *initial_r
                 rel->partial_pathlist = kept_partial_pathlist;
                 /* Sort selected partial paths by total cost (ascending) */
                 rel->partial_pathlist = sort_pathlist_by_total_cost(rel->partial_pathlist);
+            }
+
+            if (lev == levels_needed) {
+                set_path_score(
+                    rel->pathlist,
+                    min_envelope_sample,
+                    final_score_func,
+                    error_sample_count
+                );
+                set_path_score(
+                    rel->partial_pathlist,
+                    min_envelope_sample,
+                    final_score_func,
+                    error_sample_count
+                );
             }
 
             /* Create paths for partitionwise joins. */
