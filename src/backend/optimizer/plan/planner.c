@@ -74,6 +74,7 @@ int debug_parallel_query = DEBUG_PARALLEL_OFF;
 bool parallel_leader_participation = true;
 
 char *score_filename = NULL;
+char *rows_sample_filename = NULL;
 
 /* Hook for plugins to get control in planner() */
 planner_hook_type planner_hook = NULL;

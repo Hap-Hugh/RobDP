@@ -3267,6 +3267,180 @@ make_rel_from_joinlist(PlannerInfo *root, List *joinlist) {
 }
 
 /*
+ * Build a human-readable relation name from relids.
+ *
+ * For base relations, use the alias if present, otherwise eref->aliasname,
+ * otherwise the catalog relname. For join relations, concatenate all member
+ * names with '='. Example: "a=b=c1=d".
+ */
+static char *
+BuildRelationSampleName(PlannerInfo *root, const RelOptInfo *rel) {
+    StringInfoData buf;
+    bool first = true;
+    int member = -1;
+    int rtindex;
+    Bitmapset *relids;
+    RangeTblEntry *rte;
+    const char *name;
+
+    if (root == NULL || rel == NULL || rel->relids == NULL)
+        return NULL;
+
+    relids = rel->relids;
+
+    initStringInfo(&buf);
+
+    /*
+     * Iterate over all member RT indexes in relids.
+     * For base rels, there will be only one; for join rels, there are many.
+     */
+    while ((rtindex = bms_next_member(relids, member)) >= 0) {
+        member = rtindex;
+
+        /* simple_rte_array is 1-based for RT index */
+        if (rtindex <= 0 || rtindex >= root->simple_rel_array_size)
+            continue;
+
+        rte = root->simple_rte_array[rtindex];
+        if (rte == NULL)
+            continue;
+
+        /* Determine name/alias for this RTE */
+        if (rte->alias && rte->alias->aliasname)
+            name = rte->alias->aliasname;
+        else if (rte->eref && rte->eref->aliasname)
+            name = rte->eref->aliasname;
+        else if (OidIsValid(rte->relid))
+            name = get_rel_name(rte->relid);
+        else
+            name = psprintf("r%d", rtindex);
+
+        if (!first)
+            appendStringInfoChar(&buf, '=');
+
+        appendStringInfoString(&buf, name);
+        first = false;
+    }
+
+    if (buf.len == 0)
+        return NULL;
+
+    /* buf.data is palloc'ed and owned by caller */
+    return buf.data;
+}
+
+/*
+ * DumpOneRelationSample
+ *
+ * Helper: dump a single RelOptInfo's rows_sample into the given file.
+ *
+ * Output format (one line per relation):
+ *
+ *   <relname>\t<sample0>,<sample1>,...,<sampleN>\n
+ */
+static void
+DumpOneRelationSample(FILE *file, PlannerInfo *root, const RelOptInfo *rel) {
+    struct Sample *s;
+    char *relname;
+    int i;
+
+    if (rel == NULL)
+        return;
+
+    if (rel->rows_sample == NULL)
+        return;
+
+    relname = BuildRelationSampleName(root, rel);
+    if (relname == NULL)
+        return;
+
+    s = rel->rows_sample;
+
+    /* relname then samples on the same line */
+    fprintf(file, "%s", relname);
+
+    if (s->sample_count > 0) {
+        fprintf(file, "\t");
+        for (i = 0; i < s->sample_count; i++) {
+            if (i > 0)
+                fprintf(file, ",");
+
+            fprintf(file, "%g", s->sample[i]);
+        }
+    }
+
+    fprintf(file, "\n");
+}
+
+/*
+ * DumpAllRelationSamples
+ *
+ * Drop-in function to print all available rows_sample for relations in the
+ * given PlannerInfo.
+ *
+ * It assumes that join search has already been performed, so:
+ *   - Base relations can be found via root->simple_rel_array.
+ *   - Join relations can be found via root->join_rel_level[lev] for lev>=2.
+ *
+ * For every RelOptInfo that has rows_sample != NULL, we append one line to
+ * the file specified by rows_sample_filename:
+ *
+ *   <relname>\t<sample0>,<sample1>,...,<sampleN>\n
+ *
+ * where:
+ *   - For base relations, relname is the alias or relation name.
+ *   - For join relations, relname is all member names joined by '='
+ *     (e.g., "a=b=c1=d").
+ */
+static void
+DumpAllRelationSamples(PlannerInfo *root, int levels_needed) {
+    FILE *file;
+    int i;
+    int lev;
+
+    /* If GUC not set, do nothing */
+    if (rows_sample_filename == NULL || rows_sample_filename[0] == '\0')
+        return;
+
+    if (root == NULL)
+        return;
+
+    /* Open the output file once in append mode */
+    file = AllocateFile(rows_sample_filename, "a");
+    if (file == NULL) {
+        elog(WARNING, "could not open rows_sample_filename \"%s\" for appending",
+             rows_sample_filename);
+        return;
+    }
+
+    /* 1) Dump base relations (simple_rel_array) */
+    for (i = 1; i < root->simple_rel_array_size; i++) {
+        RelOptInfo *rel = root->simple_rel_array[i];
+
+        if (rel == NULL)
+            continue;
+
+        DumpOneRelationSample(file, root, rel);
+    }
+
+    /*
+     * 2) Dump join relations from join_rel_level[lev].
+     *    We assume join search has already populated these lists.
+     */
+    for (lev = 2; lev <= levels_needed; lev++) {
+        ListCell *lc;
+
+        foreach(lc, root->join_rel_level[lev]) {
+            RelOptInfo *rel = (RelOptInfo *) lfirst(lc);
+
+            DumpOneRelationSample(file, root, rel);
+        }
+    }
+
+    FreeFile(file);
+}
+
+/*
  * standard_join_search
  *	  Find possible joinpaths for a query by successively finding ways
  *	  to join component relations into join relations.
@@ -3667,6 +3841,8 @@ standard_join_search(PlannerInfo *root, const int levels_needed, List *initial_r
     Assert(list_length(root->join_rel_level[levels_needed]) == 1);
 
     final_rel = (RelOptInfo *) linitial(root->join_rel_level[levels_needed]);
+
+    DumpAllRelationSamples(root, levels_needed);
 
     // foreach(lc_final, final_rel->pathlist) {
     //     const Path *path = lfirst(lc_final);

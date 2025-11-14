@@ -4677,6 +4677,16 @@ struct config_string ConfigureNamesString[] =
 		NULL, NULL, NULL
 	},
 
+	{
+	    {"rows_sample_filename", PGC_USERSET, DEVELOPER_OPTIONS,
+			gettext_noop("Set the output filename for relation row samples."),
+			NULL
+		},
+		&rows_sample_filename,
+		"/opt/rows_sample/default.txt",
+		NULL, NULL, NULL
+	},
+
 	/* End-of-list marker */
 	{
 		{NULL, 0, 0, NULL, NULL}, NULL, NULL, NULL, NULL, NULL

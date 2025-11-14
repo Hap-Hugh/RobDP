@@ -22,6 +22,7 @@ extern int retain_path_limit;
 extern int main_objective_id;
 extern int retain_strategy_id;
 extern int final_score_id;
+extern char *rows_sample_filename;
 
 /*
  * allpaths.c
