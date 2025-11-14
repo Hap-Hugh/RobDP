@@ -3598,7 +3598,7 @@ struct config_int ConfigureNamesInt[] =
 			NULL
 		},
 		&final_score_id,
-		0, 0, 1,
+		0, 0, 11,
 		NULL, NULL, NULL
 	},
 
