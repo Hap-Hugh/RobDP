@@ -376,27 +376,10 @@ calc_score_from_pathlist(
 }
 
 /*
- * calc_minimum_envelope
- *
- * Accumulate per-round scalar scores for each joinrel into the first snapshot.
- * Each element of saved_join_rel_levels is a List** holding per-level joinrels
- * for one sampling round. We walk levels [2..levels_needed] in lockstep and, for
- * each joinrel, store this round's scalar score into min_rel->min_score_sample.
- *
- * Notes/Assumptions:
- * - The first snapshot acts as the accumulator (updated in-place and returned).
- * - Sample storage uses an embedded fixed-size array inside `Sample`
- *   (e.g., double sample[DIST_MAX_SAMPLE];), so no extra allocation is needed
- *   for the array itself; we only palloc the `Sample` header once at round 0.
- * - List orders match across rounds so `forboth` walks 1:1; if lengths differ,
- *   `forboth` stops at the shorter list.
- * - This routine records the per-round scalar value:
- *        Min(cur_rel->min_score, cur_rel->partial_min_score)
- *   into the sample slot for `round`. Any later elementwise-min over rounds
- *   (i.e., a true "minimum envelope") is expected to be performed elsewhere.
+ * calc_zero_envelope
  */
 List **
-calc_minimum_envelope(
+calc_zero_envelope(
     List *saved_join_rel_levels,
     const int sample_count,
     const int levels_needed
@@ -419,7 +402,6 @@ calc_minimum_envelope(
              * If lengths differ, forboth stops at the shorter list.
              */
             forboth(lc1, cur_saved_join_rel_level[lev], lc2, min_envelope[lev]) {
-                const RelOptInfo *cur_rel = lfirst(lc1);
                 RelOptInfo *min_rel = lfirst(lc2);
                 if (round == 0) {
                     /*
@@ -431,12 +413,8 @@ calc_minimum_envelope(
                     min_rel->min_score_sample = palloc(sizeof(Sample));
                     min_rel->min_score_sample->sample_count = sample_count;
                 }
-                /* Current round's scalar score for this joinrel */
-                const double cur_rel_score = Min(
-                    cur_rel->min_score, cur_rel->partial_min_score
-                );
-                /* Store into the embedded sample array at index = round */
-                min_rel->min_score_sample->sample[round] = cur_rel_score;
+                /* Set all values in minimum envelope to 0.0 */
+                min_rel->min_score_sample->sample[round] = 0.0;
             }
         }
     }

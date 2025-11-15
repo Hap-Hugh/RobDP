@@ -3407,10 +3407,10 @@ standard_join_search(PlannerInfo *root, const int levels_needed, List *initial_r
     /* Ensure we have exactly `round` saved snapshots before reduction */
     Assert(round == list_length(saved_join_rel_levels));
     /*
-     * Compute the minimum-envelope across all saved join_rel snapshots.
+     * Compute the zero-envelope across all saved join_rel snapshots.
      * The first snapshot is updated in-place and returned.
      */
-    List **min_envelope = calc_minimum_envelope(
+    List **min_envelope = calc_zero_envelope(
         saved_join_rel_levels,
         error_sample_count,
         levels_needed

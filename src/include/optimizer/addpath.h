@@ -37,7 +37,7 @@ calc_score_from_pathlist(
 );
 
 List **
-calc_minimum_envelope(
+calc_zero_envelope(
     List *saved_join_rel_levels,
     int sample_count,
     int levels_needed
