@@ -109,12 +109,19 @@ extern void calc_expected_penalty_with_std(
     int sample_count
 );
 
+extern void calc_4th_worst_penalty(
+    const List *cand_list,
+    PathRank *rank_arr,
+    const double *min_envelope,
+    int sample_count
+);
+
 /*
  * Global array of scoring strategies.
- * Indexed [0..11].
+ * Indexed [0..12].
  *
  * Caller can use: path_strategy_funcs[i](...)
  */
-extern path_strategy path_strategy_funcs[12];
+extern path_strategy path_strategy_funcs[13];
 
 #endif // PATHSTRATEGY_H

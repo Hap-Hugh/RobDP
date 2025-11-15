@@ -3461,11 +3461,7 @@ standard_join_search(PlannerInfo *root, const int levels_needed, List *initial_r
             path_strategy_funcs[retain_strategy_id];
 
     /*
-     * Select the scoring strategy for the "retain" phase.
-     *
-     * In this phase, we evaluate previously discarded Paths to determine
-     * whether any should be reinserted into the current pathlist.
-     *
+     * Select the scoring strategy for the "main objective" phase.
      * `final_score_func` points to the scoring function chosen by
      * `final_score_id` from the path_strategy_funcs array.
      */

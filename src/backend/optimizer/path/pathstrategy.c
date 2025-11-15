@@ -73,6 +73,13 @@ static double calc_expected_penalty_with_std_impl(
     int effective
 );
 
+static double calc_4th_worst_penalty_impl(
+    const Sample *startup_cost_sample,
+    const Sample *total_cost_sample,
+    const double *min_envelope,
+    int effective
+);
+
 static void basic_select_path_strategy_helper(
     const List *cand_list,
     PathRank *rank_arr,
@@ -383,6 +390,83 @@ double calc_expected_penalty_with_std_impl(
     const double std_penalty =
             compute_std_penalty_sample(total_cost_sample, min_envelope, effective);
     return mean_penalty + std_penalty;
+}
+
+/*
+ * calc_4th_worst_penalty_impl
+ *
+ * Compute the 4th worst (4th largest) penalty among samples.
+ *
+ * Penalty is measured relative to the global minimum vector:
+ *
+ *   penalty(j) = (v(j) > min_envelope(j) * PENALTY_TOLERANCE_FACTOR)
+ *                  ? (v(j) - min_envelope(j))
+ *                  : 0.0
+ *
+ * We track the top 4 penalties in descending order while scanning.
+ * If fewer than 4 samples exist, we return the smallest among the
+ * collected penalties (i.e., the "Nth worst" where N = effective).
+ */
+double calc_4th_worst_penalty_impl(
+    const Sample *startup_cost_sample, /* unused */
+    const Sample *total_cost_sample,
+    const double *min_envelope,
+    const int effective
+) {
+    /* Keep the top 4 penalties in descending order:
+     * top4[0] = worst (largest)
+     * top4[3] = 4th worst
+     */
+    double top4[4] = {0.0, 0.0, 0.0, 0.0};
+    int seen = 0; /* number of inserted samples, capped at 4 */
+
+    Assert(total_cost_sample != NULL);
+    Assert(min_envelope != NULL);
+    Assert(effective > 0);
+
+    for (int i = 0; i < effective; ++i) {
+        const double thresh = min_envelope[i] * PENALTY_TOLERANCE_FACTOR;
+        const double val = total_cost_sample->sample[i];
+        const double pen = (val > thresh) ? (val - min_envelope[i]) : 0.0;
+
+        /* If we already have 4 penalties and this one is not better,
+         * it cannot enter the top 4 list.
+         */
+        if (seen >= 4 && pen <= top4[3]) {
+            continue;
+        }
+
+        /* Insert penalty into the descending list */
+        if (pen > top4[0]) {
+            top4[3] = top4[2];
+            top4[2] = top4[1];
+            top4[1] = top4[0];
+            top4[0] = pen;
+        } else if (pen > top4[1]) {
+            top4[3] = top4[2];
+            top4[2] = top4[1];
+            top4[1] = pen;
+        } else if (pen > top4[2]) {
+            top4[3] = top4[2];
+            top4[2] = pen;
+        } else {
+            /* pen goes into 4th position */
+            top4[3] = pen;
+        }
+
+        if (seen < 4) {
+            seen++;
+        }
+    }
+
+    /* If we processed >= 4 samples, return the 4th worst.
+     * Otherwise return the last valid one (i.e., "seen-th worst").
+     */
+    if (seen >= 4) {
+        return top4[3];
+    }
+    return top4[seen - 1];
+    /* seen >= 1 because effective > 0 */
 }
 
 /*
@@ -809,8 +893,19 @@ extern void calc_expected_penalty_with_std(
     );
 }
 
+extern void calc_4th_worst_penalty(
+    const List *cand_list,
+    PathRank *rank_arr,
+    const double *min_envelope,
+    const int sample_count
+) {
+    basic_select_path_strategy_helper(
+        cand_list, rank_arr, min_envelope, sample_count, calc_4th_worst_penalty_impl
+    );
+}
+
 /* Global strategy array */
-path_strategy path_strategy_funcs[12] = {
+path_strategy path_strategy_funcs[13] = {
     [0] = calc_worst_penalty,
     [1] = calc_expected_penalty,
     [2] = calc_worst_total_cost,
@@ -823,4 +918,5 @@ path_strategy path_strategy_funcs[12] = {
     [9] = calc_jointype_based_score,
     [10] = calc_worst_penalty_with_std,
     [11] = calc_expected_penalty_with_std,
+    [12] = calc_4th_worst_penalty,
 };
