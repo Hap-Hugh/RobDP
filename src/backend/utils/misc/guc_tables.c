@@ -3602,6 +3602,41 @@ struct config_int ConfigureNamesInt[] =
 		NULL, NULL, NULL
 	},
 
+	{
+	    {
+		    "retain_prune_mode", PGC_USERSET, DEVELOPER_OPTIONS,
+	    	gettext_noop("Sets the pruning mode for before retaining."),
+			NULL
+		},
+		&retain_prune_mode,
+		0, 0, 1,
+		NULL, NULL, NULL
+	},
+
+	{
+	    {
+		    "bucket_total_limit", PGC_USERSET, DEVELOPER_OPTIONS,
+			gettext_noop("Sets the maximum number of total-cost-best paths "
+			"retained per bucket in path pruning."),
+			NULL
+		},
+		&bucket_total_limit,
+		1, 1, 64,
+		NULL, NULL, NULL
+	},
+
+	{
+	    {
+		    "bucket_startup_limit", PGC_USERSET, DEVELOPER_OPTIONS,
+			gettext_noop("Sets the maximum number of startup-cost-best paths "
+			"retained per bucket in path pruning."),
+			NULL
+		},
+		&bucket_startup_limit,
+		0, 0, 64,
+		NULL, NULL, NULL
+	},
+
 	/* End-of-list marker */
 	{
 		{NULL, 0, 0, NULL, NULL}, NULL, 0, 0, 0, NULL, NULL, NULL
