@@ -569,13 +569,257 @@ double calc_expected_startup_cost_impl(
     return expected_startup_cost / (double) effective;
 }
 
+static bool covers_under_eps(
+    const double path_cost,
+    const double opt_cost,
+    const double eps
+) {
+    if (opt_cost == 0.0) {
+        return path_cost == 0.0; /* exact match when optimum is 0 */
+    }
+    return path_cost <= opt_cost * (1.0 + eps);
+}
+
+/*
+ * Helper to fetch the "cost" at sample index s for a given Path.
+ *
+ * Assumptions per your constraints:
+ *   - sample_count > 1
+ *   - path->rows_sample != NULL
+ *
+ * Rules implemented:
+ *   - If samp->sample_count == sample_count: return samp->sample[s].
+ *   - If samp->sample_count == 1:           treat as constant across all s; return samp->sample[0].
+ *   - Otherwise: return false (caller may choose to skip this (path,s) pair).
+ *
+ * Returns true on success and writes *out_cost; otherwise false.
+ */
+static bool fetch_cost_at(
+    const Path *path,
+    const int s,
+    const int sample_count,
+    double *out_cost
+) {
+    const Sample *samp = path->rows_sample;
+
+    /* Expected by the caller */
+    if (samp == NULL)
+        return false;
+
+    if (samp->sample_count == sample_count) {
+        /* Per-sample vector */
+        *out_cost = samp->sample[s];
+        return true;
+    }
+    if (samp->sample_count == 1) {
+        /* Constant across all s */
+        *out_cost = samp->sample[0];
+        return true;
+    }
+    /* Incompatible shape (should not happen) */
+    return false;
+}
+
+/*
+ * calc_robust_coverage
+ *
+ * Greedy robust coverage with scoring:
+ *   - Compute per-sample optimum cost opt[s] across all candidates.
+ *   - While uncovered samples remain:
+ *       pick the candidate with the largest *new* coverage under eps,
+ *       assign it an increasing score: 0.0, 1.0, 2.0, ...
+ *       mark newly covered samples as covered.
+ *   - Any remaining candidates (providing no new coverage) receive
+ *     trailing scores in the order we encounter them.
+ *
+ * Inputs:
+ *   - cand_list: List* of Path*; each Path has rows_sample != NULL
+ *   - rank_arr : preallocated array of length nplans; we fill .path and .score
+ *   - min_envelope: unused
+ *   - sample_count: > 1
+ *
+ * Outputs (via rank_arr):
+ *   - rank_arr[i].path = i-th candidate Path
+ *   - rank_arr[i].score: smaller is "better" (picked earlier by greedy)
+ *
+ * Logging (LOG level):
+ *   - After computing opt[s], we log a brief summary.
+ *   - Each greedy pick logs: pick index, plan index, gain, cumulative coverage.
+ *   - Final summary logs total coverage and #picks.
+ */
 extern void calc_robust_coverage(
     const List *cand_list,
     PathRank *rank_arr,
     const double *min_envelope /* unused */,
     const int sample_count
 ) {
-    elog(ERROR, "`calc_robust_coverage` cannot be used here.");
+    const int nplans = list_length((List *) cand_list);
+    const double eps = ROBUST_EPS_DEFAULT;
+
+    (void) min_envelope; /* explicitly unused */
+
+    if (nplans <= 0) {
+        elog(LOG, "[robust_cover] No candidates.");
+        return;
+    }
+
+    /* --- Materialize candidates into an indexable array (avoid repeated list_nth) --- */
+    Path **paths = (Path **) palloc(sizeof(Path *) * nplans);
+    {
+        int i = 0;
+        ListCell *lc;
+        foreach(lc, (List *) cand_list)
+            paths[i++] = (Path *) lfirst(lc);
+    }
+
+    /* --- Working arrays --- */
+    double *opt = (double *) palloc(sizeof(double) * sample_count);
+    bool *uncovered = (bool *) palloc(sizeof(bool) * sample_count);
+    bool *selected = (bool *) palloc0(sizeof(bool) * nplans); /* init false */
+
+    for (int s = 0; s < sample_count; s++) {
+        opt[s] = DBL_MAX;
+        uncovered[s] = true;
+    }
+
+    /* --- 1) Compute per-sample minima opt[s] across all candidates --- */
+    for (int i = 0; i < nplans; i++) {
+        const Path *path = paths[i];
+
+        for (int s = 0; s < sample_count; s++) {
+            double v;
+            if (!fetch_cost_at(path, s, sample_count, &v))
+                elog(ERROR, "[robust_cover] candidate %d has incompatible rows_sample shape.", i);
+
+            if (v < opt[s])
+                opt[s] = v;
+        }
+    }
+
+    /* Log a brief statistic about opt[] for sanity (min/max over s). */
+    {
+        double mn = DBL_MAX, mx = -DBL_MAX;
+        for (int s = 0; s < sample_count; s++) {
+            if (opt[s] < mn) mn = opt[s];
+            if (opt[s] > mx) mx = opt[s];
+        }
+        elog(LOG, "[robust_cover] opt computed over %d samples: min=%.6g max=%.6g", sample_count, mn, mx);
+    }
+
+    /* --- Initialize rank_arr with path pointers and a large default score --- */
+    for (int i = 0; i < nplans; i++) {
+        rank_arr[i].path = paths[i];
+        rank_arr[i].score = (double) nplans + 1.0; /* sentinel (worst) */
+    }
+
+    /* --- 2) Greedy selection loop --- */
+    int covered_total = 0; /* # of covered samples so far */
+    int rank_cursor = 0; /* next score to assign: 0,1,2,... */
+    int picked = 0; /* # of candidates actually improving coverage */
+
+    while (covered_total < sample_count) {
+        int best_plan = -1;
+        int best_gain = 0;
+
+        /* Find candidate with maximum new coverage */
+        for (int i = 0; i < nplans; i++) {
+            if (selected[i])
+                continue;
+
+            const Path *path = paths[i];
+
+            int gain = 0;
+            for (int s = 0; s < sample_count; s++) {
+                if (!uncovered[s])
+                    continue;
+
+                double v;
+                if (!fetch_cost_at(path, s, sample_count, &v))
+                    continue;
+
+                if (covers_under_eps(v, opt[s], eps))
+                    gain++;
+            }
+
+            if (gain > best_gain) {
+                best_gain = gain;
+                best_plan = i;
+            }
+        }
+
+        if (best_plan < 0 || best_gain == 0) {
+            elog(LOG, "[robust_cover] No more gains (best_gain=%d). Stopping greedy.", best_gain);
+            break;
+        }
+
+        /* Commit best_plan of this round */
+        {
+            const Path *path = paths[best_plan];
+
+            /* earlier picks get lower score */
+            rank_arr[best_plan].score = (double) rank_cursor;
+            selected[best_plan] = true;
+            picked++;
+            rank_cursor++;
+
+            /* mark newly covered samples */
+            int newly = 0;
+            for (int s = 0; s < sample_count; s++) {
+                if (!uncovered[s])
+                    continue;
+
+                double v;
+                if (!fetch_cost_at(path, s, sample_count, &v))
+                    continue;
+
+                if (covers_under_eps(v, opt[s], eps)) {
+                    uncovered[s] = false;
+                    newly++;
+                }
+            }
+            covered_total += newly;
+
+            const double cov_pct = (sample_count > 0)
+                                       ? (100.0 * (double) covered_total / (double) sample_count)
+                                       : 0.0;
+
+            elog(LOG,
+                 "[robust_cover] Pick #%d: plan_idx=%d, gain=%d, covered=%d/%d (%.1f%%)",
+                 rank_cursor /* 1-based in logs */,
+                 best_plan, newly, covered_total, sample_count, cov_pct);
+        }
+    }
+
+    /* --- 3) Assign trailing scores to the rest (no new coverage) --- */
+    for (int i = 0; i < nplans; i++) {
+        if (!selected[i]) {
+            rank_arr[i].score = (double) rank_cursor;
+            rank_cursor++;
+        }
+    }
+
+    /* Final coverage log */
+    {
+        int still_uncovered = 0;
+        for (int s = 0; s < sample_count; s++)
+            if (uncovered[s]) still_uncovered++;
+
+        const int covered = sample_count - still_uncovered;
+        const double cov_pct
+                = (sample_count > 0)
+                      ? (100.0 * (double) covered / (double) sample_count)
+                      : 0.0;
+
+        elog(LOG,
+             "[robust_cover] Final: picked=%d/%d, covered=%d/%d (%.1f%%)",
+             picked, nplans, covered, sample_count, cov_pct);
+    }
+
+    /* --- cleanup --- */
+    pfree(paths);
+    pfree(opt);
+    pfree(uncovered);
+    pfree(selected);
 }
 
 static unsigned int rng_state = 123456789u;
