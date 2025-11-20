@@ -90,7 +90,208 @@ rank_idx_maxheap_push_topk(int *heap, const int size, const int k, const int idx
 }
 
 /*
- * select_path_by_strategy
+ * CoverPathRank
+ *
+ * Composite ranking for robust coverage selection:
+ *   - cover_rank:
+ *       Integral rank from robust coverage (calc_robust_coverage), where
+ *       smaller = picked earlier by the greedy coverage algorithm.
+ *   - mep:
+ *       Minimum expected penalty, as produced by calc_expected_penalty.
+ *
+ * Sorting rule:
+ *   - Primary key:  cover_rank (descending).
+ *   - Secondary:    mep (ascending).
+ */
+typedef struct CoverPathRank {
+    Path *path;
+    int cover_rank; /* primary key: greedy coverage rank (0,1,2,...) */
+    double mep; /* secondary key: minimum expected penalty */
+} CoverPathRank;
+
+/*
+ * Comparator for CoverPathRank used by qsort().
+ *
+ * Order:
+ *   1) cover_rank ascending (larger = better)
+ *   2) mep descending (smaller = better)
+ */
+static int
+compare_cover_path_rank(const void *a, const void *b) {
+    const CoverPathRank *ra = a;
+    const CoverPathRank *rb = b;
+
+    if (ra->cover_rank < rb->cover_rank)
+        return 1;
+    if (ra->cover_rank > rb->cover_rank)
+        return -1;
+
+    /* Secondary: mep ascending (smaller = better) */
+    if (ra->mep < rb->mep)
+        return -1;
+    if (ra->mep > rb->mep)
+        return 1;
+
+    return 0;
+}
+
+/*
+ * select_path_by_robust_coverage
+ *
+ * From the given candidate list, keep at most `select_path_limit` Paths
+ * using a combined ranking:
+ *
+ *   - Primary:  cover_rank ascending (larger = better).
+ *   - Secondary: mep descending (smaller = better).
+ *
+ * Winners (top-k after sorting by the above rule) are appended to
+ * `*kept_list_ptr` (which may already contain entries), and the function
+ * returns a List* of all pruned (not kept) Paths.
+ *
+ * Contract:
+ *   - `calc_robust_coverage` must:
+ *       * Fill a PathRank array with .path and .score for each candidate.
+ *       * .score is an integer-like rank: 0.0, 1.0, 2.0, ...
+ *   - `calc_expected_penalty` must:
+ *       * Fill a PathRank array with .path and .score (MEP) for each candidate.
+ *       * Lower MEP = better (semantically).
+ *   - `min_envelope` and `sample_count` should already be prepared by caller.
+ *
+ * Score exposure:
+ *   - If `should_save_score` is true, we store the cover rank for both kept
+ *     and dropped paths.
+ *
+ * Return:
+ *   - List* of pruned Paths (those NOT kept). If nothing is pruned, returns NIL.
+ *
+ * Notes:
+ *   - Winners are NOT sorted by Path->score; they follow the sorted combined
+ *     order described above.
+ *   - Existing entries in `*kept_list_ptr` are preserved; winners are appended.
+ *   - This function does NOT free list cells of `cand_list` (parameter is const).
+ *     If the caller needs to release list cells of `cand_list`, do it outside
+ *     after the call.
+ */
+List *
+select_path_by_robust_coverage(
+    const List *cand_list,
+    List **kept_list_ptr,
+    const double *min_envelope,
+    const int select_path_limit,
+    const int sample_count,
+    const bool should_save_score
+) {
+    /* Basic sanity checks */
+    Assert(kept_list_ptr != NULL);
+    Assert(sample_count >= 1);
+    Assert(select_path_limit >= 1);
+    Assert(sample_count <= DIST_MAX_SAMPLE);
+
+    const int cand_count = list_length(cand_list);
+
+    /* Early exit: no candidates; keep existing kept list untouched */
+    if (cand_count <= 0) {
+        return NIL;
+    }
+
+    /* Clamp limit to number of candidates */
+    const int k = Min(select_path_limit, cand_count);
+
+    /* --------------------------------------------------------------------
+    * Phase 1: compute robust coverage rank and minimum expected penalty.
+    *
+    * We use two temporary PathRank arrays:
+    *   - cover_arr: scores from calc_robust_coverage (0, 1, 2, ...).
+    *   - mep_arr: scores from calc_expected_penalty (double).
+    *
+    * Then we merge them into a single CoverPathRank array.
+    * -------------------------------------------------------------------- */
+    PathRank *cover_arr = palloc(sizeof(PathRank) * cand_count);
+    PathRank *mep_arr = palloc(sizeof(PathRank) * cand_count);
+
+    /* Robust coverage ranking */
+    calc_robust_coverage(cand_list, cover_arr, min_envelope, sample_count);
+
+    /* Minimum expected penalty (MEP) */
+    calc_expected_penalty(cand_list, mep_arr, min_envelope, sample_count);
+
+    /* Build composite ranking array */
+    CoverPathRank *rank_arr = palloc(sizeof(CoverPathRank) * cand_count);
+
+    for (int i = 0; i < cand_count; ++i) {
+        /*
+         * Both calc_robust_coverage and calc_expected_penalty must iterate
+         * cand_list in the same order, so their i-th entries refer to the
+         * same Path*.
+         */
+        Path *path_cover = cover_arr[i].path;
+        const Path *path_mep = mep_arr[i].path;
+
+        /* Sanity: they should match; if not, something is inconsistent. */
+        if (path_cover != path_mep) {
+            elog(ERROR, "inconsistent paths when selecting paths by robust coverages");
+        }
+        Assert(path_cover == path_mep);
+
+        rank_arr[i].path = path_cover;
+        rank_arr[i].cover_rank = (int) cover_arr[i].score; /* score is integer-like */
+        rank_arr[i].mep = mep_arr[i].score; /* minimum expected penalty */
+    }
+
+    /* Temporary arrays no longer needed */
+    pfree(cover_arr);
+    pfree(mep_arr);
+
+    /* --------------------------------------------------------------------
+     * Phase 2: sort by (cover_rank DESC, mep ASC) and split into winners/losers.
+     * -------------------------------------------------------------------- */
+    qsort(rank_arr, cand_count, sizeof(CoverPathRank), compare_cover_path_rank);
+
+    /* Winners: first k entries; losers: remaining entries */
+    List *kept_list = (*kept_list_ptr != NULL) ? *kept_list_ptr : NIL;
+    List *dropped_list = NIL;
+
+    /* Append winners */
+    for (int i = 0; i < k; i++) {
+        const CoverPathRank *cover_rank = &rank_arr[i];
+        Path *keep = cover_rank->path;
+
+        if (should_save_score) {
+            /*
+             * Expose cover rank as Path->score, so later stages can see a scalar
+             * expectation-based penalty for this Path.
+             */
+            keep->score = cover_rank->cover_rank;
+        }
+
+        kept_list = lappend(kept_list, keep);
+    }
+    /* Build dropped list (if any) */
+    for (int i = k; i < cand_count; i++) {
+        const CoverPathRank *cover_rank = &rank_arr[i];
+        Path *drop = cover_rank->path;
+
+        if (should_save_score) {
+            /* Same convention for losers: expose cover rank into Path->score. */
+            drop->score = cover_rank->cover_rank;
+        }
+
+        dropped_list = lappend(dropped_list, drop);
+    }
+
+    /* Write back survivors (append result) */
+    *kept_list_ptr = kept_list;
+
+    /* --------------------------------------------------------------------
+     * Phase 3: cleanup and return pruned paths.
+     * -------------------------------------------------------------------- */
+    pfree(rank_arr);
+
+    return dropped_list;
+}
+
+/*
+ * select_path_by_strategy_dispatch
  *
  * From the given candidate list, keep at most `select_path_limit` Paths
  * according to the provided scoring strategy. Winners are appended to
@@ -120,7 +321,7 @@ rank_idx_maxheap_push_topk(int *heap, const int size, const int k, const int idx
  *     needs to release list cells of `cand_list`, do it outside after the call.
  */
 List *
-select_path_by_strategy(
+select_path_by_strategy_dispatch(
     const List *cand_list,
     List **kept_list_ptr,
     const double *min_envelope,
@@ -146,6 +347,17 @@ select_path_by_strategy(
     const int cand_count = list_length(cand_list);
     if (cand_count <= 0) {
         return NIL;
+    }
+
+    if (path_strategy_func == calc_robust_coverage) {
+        return select_path_by_robust_coverage(
+            cand_list,
+            kept_list_ptr,
+            min_envelope,
+            select_path_limit,
+            sample_count,
+            should_save_score
+        );
     }
 
     /* --------------------------------------------------------------------

@@ -13,7 +13,17 @@
 #include "nodes/pg_list.h"
 
 List *
-select_path_by_strategy(
+select_path_by_robust_coverage(
+    const List *cand_list,
+    List **kept_list_ptr,
+    const double *min_envelope,
+    int select_path_limit,
+    int sample_count,
+    bool should_save_score
+);
+
+List *
+select_path_by_strategy_dispatch(
     const List *cand_list,
     List **kept_list_ptr,
     const double *min_envelope,

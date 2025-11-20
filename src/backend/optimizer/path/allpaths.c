@@ -3500,16 +3500,16 @@ standard_join_search(PlannerInfo *root, const int levels_needed, List *initial_r
 
             /* --------------------------------------------------------------------
              * Phase 1 (normal paths, two-pass admission):
-             *   1) Pass A: run select_path_by_strategy() on rel->pathlist using
+             *   1) Pass A: run select_path_by_strategy_dispatch() on rel->pathlist using
              *      main_objective_func; append up to add_path_limit winners into
              *      kept_pathlist, and get dropped_pathlist (the losers).
-             *   2) Pass B: run select_path_by_strategy() on dropped_pathlist using
+             *   2) Pass B: run select_path_by_strategy_dispatch() on dropped_pathlist using
              *      retain_strategy_func; append up to retain_path_limit winners into
              *      kept_pathlist. (No global cap applied here.)
              *   3) Sort the final kept_pathlist by total_cost ascending to favor
              *      low-cost plans in subsequent DP enumeration.
              * Notes:
-             *   - select_path_by_strategy() does NOT free its cand_list (const).
+             *   - select_path_by_strategy_dispatch() does NOT free its cand_list (const).
              *     Caller frees any temporary lists created at this level.
              *   - Pass B explicitly uses retain_strategy_func and retain_path_limit.
              * -------------------------------------------------------------------- */
@@ -3519,8 +3519,8 @@ standard_join_search(PlannerInfo *root, const int levels_needed, List *initial_r
                 /* Pass A: run on original cand list */
                 const List *cand_pathlist = rel->pathlist;
 
-                /* const: not freed inside `select_path_by_strategy`* */
-                const List *dropped_pathlist = select_path_by_strategy(
+                /* const: not freed inside `select_path_by_strategy_dispatch`* */
+                const List *dropped_pathlist = select_path_by_strategy_dispatch(
                     cand_pathlist,
                     &kept_pathlist,
                     min_envelope_sample,
@@ -3533,7 +3533,7 @@ standard_join_search(PlannerInfo *root, const int levels_needed, List *initial_r
                 /* Pass B: only if capacity remains */
                 List *final_dropped = NIL;
                 if (retain_path_limit > 0 && dropped_pathlist != NIL) {
-                    final_dropped = select_path_by_strategy(
+                    final_dropped = select_path_by_strategy_dispatch(
                         dropped_pathlist,
                         &kept_pathlist,
                         min_envelope_sample,
@@ -3561,17 +3561,17 @@ standard_join_search(PlannerInfo *root, const int levels_needed, List *initial_r
 
             /* --------------------------------------------------------------------
              * Phase 2 (partial paths, two-pass admission):
-             *   1) Pass A: run select_path_by_strategy() on rel->partial_pathlist
+             *   1) Pass A: run select_path_by_strategy_dispatch() on rel->partial_pathlist
              *      using main_objective_func; append up to add_partial_path_limit
              *      winners into kept_partial_pathlist, and get dropped_partial_pathlist.
-             *   2) Pass B: run select_path_by_strategy() on dropped_partial_pathlist
+             *   2) Pass B: run select_path_by_strategy_dispatch() on dropped_partial_pathlist
              *      using retain_partial_strategy_func; append up to
              *      retain_partial_path_limit winners into kept_partial_pathlist.
              *      (No global cap applied here.)
              *   3) Sort the final kept_partial_pathlist by total_cost ascending to
              *      favor low-cost plans during subsequent DP enumeration.
              * Notes:
-             *   - select_path_by_strategy() does NOT free its cand_list (const).
+             *   - select_path_by_strategy_dispatch() does NOT free its cand_list (const).
              *     Caller frees any temporary lists created at this level.
              *   - Pass B explicitly uses retain_partial_strategy_func and
              *     retain_partial_path_limit.
@@ -3582,7 +3582,7 @@ standard_join_search(PlannerInfo *root, const int levels_needed, List *initial_r
                 /* Pass A: run on original partial cand list (const: not freed inside select_*) */
                 const List *cand_partial_pathlist = rel->partial_pathlist;
 
-                const List *dropped_partial_pathlist = select_path_by_strategy(
+                const List *dropped_partial_pathlist = select_path_by_strategy_dispatch(
                     cand_partial_pathlist,
                     &kept_partial_pathlist,
                     min_envelope_sample,
@@ -3595,7 +3595,7 @@ standard_join_search(PlannerInfo *root, const int levels_needed, List *initial_r
                 /* Pass B: always run with the specified retain strategy/limit (no global cap) */
                 List *final_partial_dropped = NIL;
                 if (retain_path_limit > 0 && dropped_partial_pathlist != NIL) {
-                    final_partial_dropped = select_path_by_strategy(
+                    final_partial_dropped = select_path_by_strategy_dispatch(
                         dropped_partial_pathlist,
                         &kept_partial_pathlist,
                         min_envelope_sample,
