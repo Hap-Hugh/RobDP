@@ -244,6 +244,239 @@ select_path_by_strategy(
 }
 
 /*
+ * select_multi_path_by_strategy
+ *
+ * From the given candidate list, keep at most `select_path_limit` Paths
+ * using multiple scoring strategies and a round-robin selection policy.
+ * Winners are appended to `*kept_list_ptr` (which may already contain entries),
+ * and the function returns a List* of all pruned (not kept) Paths.
+ *
+ * Contract (per-strategy):
+ *   - Lower score = better.
+ *   - Each strategy function must:
+ *       * Fill rank_arr[0..cand_count-1] with {path, score} for each node in
+ *         `cand_list`, in the same iteration order.
+ *       * Assign DBL_MAX (or equivalent) to paths with zero effective samples.
+ *   - `min_envelope` and `sample_count` should already be prepared (e.g., clamped
+ *     to available dimensions) by the caller.
+ *
+ * Multi-strategy policy:
+ *   - We build four PathRank arrays:
+ *       1) calc_worst_penalty()
+ *       2) calc_expected_penalty()
+ *       3) calc_expected_total_cost()
+ *       4) calc_expected_penalty_with_std()
+ *   - Selection is done in round-robin order over these four strategies:
+ *       strategy 0 -> 1 -> 2 -> 3 -> 0 -> ...
+ *   - For each strategy in turn, we pick the *best* (lowest score) path
+ *     not yet selected according to that strategy. Selected paths are
+ *     never picked again by later strategies.
+ *   - The process stops when either:
+ *       * We have selected `select_path_limit` paths, or
+ *       * A full round over all strategies fails to select any new path
+ *         (e.g., all remaining have DBL_MAX scores).
+ *
+ * Score exposure:
+ *   - If `should_save_score` is true, we store the score from
+ *     calc_expected_total_cost() into Path->score for both kept and dropped
+ *     paths. This gives a single consistent scalar per Path, even though
+ *     the selection itself is multi-strategy and round-robin.
+ *
+ * Return:
+ *   - List* of pruned Paths (those NOT kept). If nothing is pruned, returns NIL.
+ *
+ * Notes:
+ *   - Winners are NOT sorted here; order is deterministic but not guaranteed to
+ *     be strictly increasing by score. If a sorted order is required, the caller
+ *     should sort `*kept_list_ptr` afterward.
+ *   - Existing entries in `*kept_list_ptr` are preserved; winners are appended.
+ *   - This function does NOT free list cells of `cand_list` (parameter is const).
+ *     If the caller needs to release list cells of `cand_list`, do it outside
+ *     after the call.
+ */
+List *
+select_multi_path_by_strategy(
+    const List *cand_list,
+    List **kept_list_ptr,
+    const double *min_envelope,
+    const int select_path_limit,
+    const int sample_count,
+    const bool should_save_score
+) {
+    /* Basic sanity */
+    Assert(kept_list_ptr != NULL);
+    Assert(sample_count >= 1);
+    Assert(select_path_limit >= 1);
+    Assert(sample_count <= DIST_MAX_SAMPLE);
+
+    /* Early exit: no candidates; keep existing kept list untouched */
+    const int cand_count = list_length(cand_list);
+    if (cand_count <= 0) {
+        return NIL;
+    }
+
+    /* --------------------------------------------------------------------
+     * Phase 1: build four PathRank arrays and compute scores via strategies.
+     * Each strategy sees the same cand_list in the same iteration order.
+     * -------------------------------------------------------------------- */
+    PathRank *rank_worst = palloc(sizeof(PathRank) * cand_count);
+    PathRank *rank_exp_penalty = palloc(sizeof(PathRank) * cand_count);
+    PathRank *rank_total_cost = palloc(sizeof(PathRank) * cand_count);
+    PathRank *rank_exp_penalty_std = palloc(sizeof(PathRank) * cand_count);
+
+    /* Strategy 0: worst penalty */
+    calc_worst_penalty(cand_list, rank_worst, min_envelope, sample_count);
+
+    /* Strategy 1: expected penalty */
+    calc_expected_penalty(cand_list, rank_exp_penalty, min_envelope, sample_count);
+
+    /* Strategy 2: expected total cost (also used for Path->score exposure) */
+    calc_expected_total_cost(cand_list, rank_total_cost, min_envelope, sample_count);
+
+    /* Strategy 3: expected penalty with standard deviation */
+    calc_expected_penalty_with_std(cand_list, rank_exp_penalty_std, min_envelope, sample_count);
+
+    /* Convenience array for iterating strategies in a loop. */
+    PathRank *strategies[4] = {
+        rank_worst,
+        rank_exp_penalty,
+        rank_total_cost,
+        rank_exp_penalty_std
+    };
+
+    /* --------------------------------------------------------------------
+     * Phase 2: round-robin top-k selection across the four strategies.
+     *
+     * For each strategy in turn, pick the best (lowest-score) path that:
+     *   - has not been selected yet, and
+     *   - has a finite score (< DBL_MAX) in that strategy.
+     *
+     * Once a path is selected by any strategy, it is marked and excluded
+     * from further consideration by all strategies.
+     * -------------------------------------------------------------------- */
+    const int k_target = Min(select_path_limit, cand_count);
+    /* Mark which candidate indices are already selected as winners. */
+    bool *selected = palloc0(sizeof(bool) * cand_count);
+
+    /* Store indices of winning candidates (into [0 .. winners_cnt-1]). */
+    int *winners = palloc(sizeof(int) * k_target);
+    int winners_cnt = 0;
+
+    while (winners_cnt < k_target) {
+        bool progress_this_round = false;
+
+        for (int s = 0; s < 4 && winners_cnt < k_target; s++) {
+            int best_idx = -1;
+            double best_score = DBL_MAX;
+
+            /*
+             * Scan all candidates for this strategy, choosing the
+             * lowest-score candidate not yet selected.
+             *
+             * Complexity note:
+             *   - This is O(4 * k_target * cand_count), which is
+             *     acceptable for moderate cand_count. If cand_count becomes
+             *     large, consider pre-sorting per-strategy arrays instead.
+             */
+            for (int i = 0; i < cand_count; i++) {
+                if (selected[i])
+                    continue;
+
+                const double score = strategies[s][i].score;
+
+                if (score < best_score) {
+                    best_score = score;
+                    best_idx = i;
+                }
+            }
+
+            /* If we found a candidate with a valid score, select it. */
+            if (best_idx >= 0 && best_score < DBL_MAX) {
+                selected[best_idx] = true;
+                winners[winners_cnt++] = best_idx;
+                progress_this_round = true;
+            }
+        }
+
+        /*
+         * If a full round over all strategies failed to pick any new path,
+         * we stop. Remaining candidates are considered losers.
+         */
+        if (!progress_this_round)
+            break;
+    }
+
+    /* Number of losers: all candidates that were not selected. */
+    const int losers_cnt = cand_count - winners_cnt;
+    int *losers = palloc(sizeof(int) * Max(0, losers_cnt));
+
+    if (losers_cnt > 0) {
+        int writer = 0;
+        for (int i = 0; i < cand_count; i++) {
+            if (!selected[i]) {
+                losers[writer++] = i;
+            }
+        }
+        Assert(writer == losers_cnt);
+    }
+
+    /* --------------------------------------------------------------------
+     * Phase 3: append winners to kept list and build dropped list (return).
+     *
+     * NOTE:
+     *   - For Path->score we expose calc_expected_total_cost()'s score, so
+     *     that each Path has a single, comparable scalar, even though the
+     *     selection was driven by multiple strategies.
+     * -------------------------------------------------------------------- */
+    List *kept_list = (*kept_list_ptr != NULL) ? *kept_list_ptr : NIL;
+
+    /* Append winners (in round-robin order) */
+    for (int i = 0; i < winners_cnt; i++) {
+        const int idx = winners[i];
+        const PathRank rank = rank_total_cost[idx]; /* canonical score source */
+
+        Path *keep = rank.path;
+        if (should_save_score) {
+            /* Expose expected total cost on Path for later stages. */
+            keep->score = rank.score;
+        }
+        kept_list = lappend(kept_list, keep);
+    }
+
+    List *dropped_list = NIL;
+    if (losers_cnt > 0) {
+        for (int i = 0; i < losers_cnt; i++) {
+            const int idx = losers[i];
+            const PathRank rank = rank_total_cost[idx]; /* same canonical source */
+
+            Path *drop = rank.path;
+            if (should_save_score) {
+                /* Expose expected total cost on Path for later stages. */
+                drop->score = rank.score;
+            }
+            dropped_list = lappend(dropped_list, drop);
+        }
+    }
+
+    /* Write back survivors (append result) */
+    *kept_list_ptr = kept_list;
+
+    /* --------------------------------------------------------------------
+     * Phase 4: cleanup and return pruned paths.
+     * -------------------------------------------------------------------- */
+    pfree(rank_worst);
+    pfree(rank_exp_penalty);
+    pfree(rank_total_cost);
+    pfree(rank_exp_penalty_std);
+
+    pfree(selected);
+    pfree(winners);
+    pfree(losers);
+
+    return dropped_list;
+}
+
+/*
  * set_path_score
  *
  * Purpose:

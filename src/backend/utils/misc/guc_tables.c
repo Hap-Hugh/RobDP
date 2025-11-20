@@ -3580,17 +3580,6 @@ struct config_int ConfigureNamesInt[] =
 	},
 
 	{
-		{"retain_strategy_id", PGC_USERSET, DEVELOPER_OPTIONS,
-			gettext_noop("Selects the scoring strategy used to evaluate previously rejected paths "
-				"for possible reinsertion into the pathlist."),
-			NULL
-		},
-		&retain_strategy_id,
-		0, 0, 12,
-		NULL, NULL, NULL
-	},
-
-	{
 	    {
 	    	"final_score_id", PGC_USERSET, DEVELOPER_OPTIONS,
 			gettext_noop( "Selects which scoring strategy is used in the retain phase "
@@ -3599,41 +3588,6 @@ struct config_int ConfigureNamesInt[] =
 		},
 		&final_score_id,
 		0, 0, 12,
-		NULL, NULL, NULL
-	},
-
-	{
-	    {
-		    "retain_prune_mode", PGC_USERSET, DEVELOPER_OPTIONS,
-	    	gettext_noop("Sets the pruning mode for before retaining."),
-			NULL
-		},
-		&retain_prune_mode,
-		0, 0, 1,
-		NULL, NULL, NULL
-	},
-
-	{
-	    {
-		    "bucket_total_limit", PGC_USERSET, DEVELOPER_OPTIONS,
-			gettext_noop("Sets the maximum number of total-cost-best paths "
-			"retained per bucket in path pruning."),
-			NULL
-		},
-		&bucket_total_limit,
-		1, 1, 64,
-		NULL, NULL, NULL
-	},
-
-	{
-	    {
-		    "bucket_startup_limit", PGC_USERSET, DEVELOPER_OPTIONS,
-			gettext_noop("Sets the maximum number of startup-cost-best paths "
-			"retained per bucket in path pruning."),
-			NULL
-		},
-		&bucket_startup_limit,
-		0, 0, 64,
 		NULL, NULL, NULL
 	},
 

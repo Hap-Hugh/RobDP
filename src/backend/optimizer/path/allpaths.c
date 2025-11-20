@@ -45,7 +45,6 @@
 #include "optimizer/planner.h"
 #include "optimizer/restrictinfo.h"
 #include "optimizer/tlist.h"
-#include "optimizer/retention_ext.h"
 #include "parser/parse_clause.h"
 #include "parser/parsetree.h"
 #include "partitioning/partbounds.h"
@@ -57,11 +56,7 @@
 int add_path_limit = 1;
 int retain_path_limit = 1;
 int main_objective_id = 0;
-int retain_strategy_id = 0;
 int final_score_id = 0;
-int bucket_total_limit = 1;
-int bucket_startup_limit = 0;
-int retain_prune_mode = 0;
 
 /* Bitmask flags for pushdown_safety_info.unsafeFlags */
 #define UNSAFE_HAS_VOLATILE_FUNC		(1 << 0)
@@ -3457,14 +3452,6 @@ standard_join_search(PlannerInfo *root, const int levels_needed, List *initial_r
             path_strategy_funcs[main_objective_id];
 
     /*
-     * Pick scoring strategy for the "retain strategy" phase.
-     * This strategy ranks previously dropped paths to decide whether any
-     * should be re-inserted into the pathlist.
-     */
-    const path_strategy retain_strategy_func =
-            path_strategy_funcs[retain_strategy_id];
-
-    /*
      * Select the scoring strategy for the "main objective" phase.
      * `final_score_func` points to the scoring function chosen by
      * `final_score_id` from the path_strategy_funcs array.
@@ -3521,16 +3508,7 @@ standard_join_search(PlannerInfo *root, const int levels_needed, List *initial_r
                 List *kept_pathlist = NIL;
 
                 /* Pass A: run on original cand list */
-                List *cand_pathlist = rel->pathlist;
-
-                if (retain_prune_mode == 1) {
-                    prune_pathlist_by_bucket(
-                        &cand_pathlist,
-                        false,
-                        bucket_total_limit,
-                        bucket_startup_limit
-                    );
-                }
+                const List *cand_pathlist = rel->pathlist;
 
                 /* const: not freed inside `select_path_by_strategy`* */
                 const List *dropped_pathlist = select_path_by_strategy(
@@ -3546,11 +3524,10 @@ standard_join_search(PlannerInfo *root, const int levels_needed, List *initial_r
                 /* Pass B: only if capacity remains */
                 List *final_dropped = NIL;
                 if (retain_path_limit > 0 && dropped_pathlist != NIL) {
-                    final_dropped = select_path_by_strategy(
+                    final_dropped = select_multi_path_by_strategy(
                         dropped_pathlist,
                         &kept_pathlist,
                         min_envelope_sample,
-                        retain_strategy_func,
                         retain_path_limit,
                         error_sample_count,
                         false
@@ -3593,16 +3570,7 @@ standard_join_search(PlannerInfo *root, const int levels_needed, List *initial_r
                 List *kept_partial_pathlist = NIL;
 
                 /* Pass A: run on original partial cand list (const: not freed inside select_*) */
-                List *cand_partial_pathlist = rel->partial_pathlist;
-
-                if (retain_prune_mode == 1) {
-                    prune_pathlist_by_bucket(
-                        &cand_partial_pathlist,
-                        true,
-                        bucket_total_limit,
-                        bucket_startup_limit
-                    );
-                }
+                const List *cand_partial_pathlist = rel->partial_pathlist;
 
                 const List *dropped_partial_pathlist = select_path_by_strategy(
                     cand_partial_pathlist,
@@ -3617,11 +3585,10 @@ standard_join_search(PlannerInfo *root, const int levels_needed, List *initial_r
                 /* Pass B: always run with the specified retain strategy/limit (no global cap) */
                 List *final_partial_dropped = NIL;
                 if (retain_path_limit > 0 && dropped_partial_pathlist != NIL) {
-                    final_partial_dropped = select_path_by_strategy(
+                    final_partial_dropped = select_multi_path_by_strategy(
                         dropped_partial_pathlist,
                         &kept_partial_pathlist,
                         min_envelope_sample,
-                        retain_strategy_func, /* second-pass strategy for partial */
                         retain_path_limit, /* second-pass limit for partial */
                         error_sample_count,
                         false

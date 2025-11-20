@@ -23,6 +23,16 @@ select_path_by_strategy(
     bool should_save_score
 );
 
+List *
+select_multi_path_by_strategy(
+    const List *cand_list,
+    List **kept_list_ptr,
+    const double *min_envelope,
+    int select_path_limit,
+    int sample_count,
+    bool should_save_score
+);
+
 void
 set_path_score(
     const List *cand_list,

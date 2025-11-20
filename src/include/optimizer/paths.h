@@ -20,11 +20,7 @@
 extern int add_path_limit;
 extern int retain_path_limit;
 extern int main_objective_id;
-extern int retain_strategy_id;
 extern int final_score_id;
-extern int bucket_total_limit;
-extern int bucket_startup_limit;
-extern int retain_prune_mode;
 
 /*
  * allpaths.c
