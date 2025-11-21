@@ -128,7 +128,7 @@ static void discretize_kde_by_sampling(
 /* ---------------- Build thresholds + params + dists ---------------- */
 
 /* Build per-bin distributions and store thresholds/params into ep. */
-void make_error_sample(ErrorProfile *ep) {
+void make_error_sample(ErrorProfile *ep, const int ep_idx) {
     Assert(ep != NULL);
     Assert(ep->sample_count > 0);
     Assert(error_bin_count >= 1 && error_bin_count <= EP_MAX_BIN);
@@ -188,7 +188,10 @@ void make_error_sample(ErrorProfile *ep) {
         ep->error_sample[b].sample_count = 0; /* reset */
         if (error_sample_count > 0 && count > 0) {
             /* decorrelate bins a bit */
-            unsigned int bin_seed = error_sample_seed ^ (0x9E3779B9u * (unsigned int) b);
+            unsigned int bin_seed =
+                    error_sample_seed ^
+                    (0x9E3779B9u * (unsigned int) b) ^
+                    (0x7F4A7C15u * (unsigned int) ep_idx);
             discretize_kde_by_sampling(
                 x, count, h,
                 error_sample_count,

@@ -20,7 +20,7 @@ typedef ErrorProfile ErrorProfile;
 
 /* ------------------------------- KDE Estimation ------------------------------- */
 void make_error_sample(
-    ErrorProfile *ep
+    ErrorProfile *ep, int ep_idx
 );
 
 /* ------------------------------- Sampling ------------------------------- */
