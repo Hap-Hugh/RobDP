@@ -717,8 +717,6 @@ extern void calc_robust_coverage(
 
     /* --- 2) Greedy selection loop (for coverage set selection + logging) --- */
     int covered_total = 0; /* # of covered samples so far */
-    int pick_index = 0; /* 0-based index of picks for logging */
-    int picked = 0; /* # of candidates actually improving coverage */
 
     while (covered_total < sample_count) {
         int best_plan = -1;
@@ -760,8 +758,6 @@ extern void calc_robust_coverage(
             const Path *path = paths[best_plan];
 
             selected[best_plan] = true;
-            picked++;
-            pick_index++;
 
             /* mark newly covered samples */
             int newly = 0;
@@ -779,16 +775,6 @@ extern void calc_robust_coverage(
                 }
             }
             covered_total += newly;
-
-            const double cov_pct =
-                    (sample_count > 0)
-                        ? (100.0 * (double) covered_total / (double) sample_count)
-                        : 0.0;
-
-            elog(LOG,
-                 "[robust_cover] Pick #%d: plan_idx=%d, gain=%d, covered=%d/%d (%.1f%%)",
-                 pick_index, /* 1-based in logs */
-                 best_plan, newly, covered_total, sample_count, cov_pct);
         }
     }
 
@@ -808,23 +794,6 @@ extern void calc_robust_coverage(
 
         /* score = coverage count (# covered samples) */
         rank_arr[i].score = (double) coverage;
-    }
-
-    /* Final coverage log (based on greedy result) */
-    {
-        int still_uncovered = 0;
-        for (int s = 0; s < sample_count; s++)
-            if (uncovered[s]) still_uncovered++;
-
-        const int covered = sample_count - still_uncovered;
-        const double cov_pct =
-                (sample_count > 0)
-                    ? (100.0 * (double) covered / (double) sample_count)
-                    : 0.0;
-
-        elog(LOG,
-             "[robust_cover] Final: picked=%d/%d, covered=%d/%d (%.1f%%)",
-             picked, nplans, covered, sample_count, cov_pct);
     }
 
     /* --- cleanup --- */

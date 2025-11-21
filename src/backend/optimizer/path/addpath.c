@@ -113,8 +113,8 @@ typedef struct CoverPathRank {
  * Comparator for CoverPathRank used by qsort().
  *
  * Order:
- *   1) cover_rank ascending (larger = better)
- *   2) mep descending (smaller = better)
+ *   1) cover_rank descending (larger = better)
+ *   2) mep ascending (smaller = better)
  */
 static int
 compare_cover_path_rank(const void *a, const void *b) {
@@ -141,8 +141,8 @@ compare_cover_path_rank(const void *a, const void *b) {
  * From the given candidate list, keep at most `select_path_limit` Paths
  * using a combined ranking:
  *
- *   - Primary:  cover_rank ascending (larger = better).
- *   - Secondary: mep descending (smaller = better).
+ *   - Primary:  cover_rank descending (larger = better, more coverage).
+ *   - Secondary: mep   ascending (smaller = better, lower expected penalty).
  *
  * Winners (top-k after sorting by the above rule) are appended to
  * `*kept_list_ptr` (which may already contain entries), and the function
@@ -151,11 +151,10 @@ compare_cover_path_rank(const void *a, const void *b) {
  * Contract:
  *   - `calc_robust_coverage` must:
  *       * Fill a PathRank array with .path and .score for each candidate.
- *       * .score is an integer-like rank: 0.0, 1.0, 2.0, ...
+ *       * .score is an integer-like *coverage amount* (e.g., #covered samples).
  *   - `calc_expected_penalty` must:
  *       * Fill a PathRank array with .path and .score (MEP) for each candidate.
- *       * Lower MEP = better (semantically).
- *   - `min_envelope` and `sample_count` should already be prepared by caller.
+ *       * Lower MEP = better.
  *
  * Score exposure:
  *   - If `should_save_score` is true, we store the cover rank for both kept
