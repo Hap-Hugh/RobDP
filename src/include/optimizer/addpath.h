@@ -12,7 +12,7 @@
 #include "optimizer/sample.h"
 #include "nodes/pg_list.h"
 
-List *
+extern List *
 select_path_by_strategy_dispatch(
     const List *cand_list,
     List **kept_list_ptr,

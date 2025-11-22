@@ -195,17 +195,7 @@ select_path_by_retention_set(
     const int sample_count,
     const bool should_save_score
 ) {
-    /* Basic sanity */
-    Assert(kept_list_ptr != NULL);
-    Assert(sample_count >= 1);
-    Assert(select_path_limit >= 1);
-    Assert(sample_count <= DIST_MAX_SAMPLE);
-
-    /* Early exit: no candidates; keep existing kept list untouched */
     const int cand_count = list_length(cand_list);
-    if (cand_count <= 0) {
-        return NIL;
-    }
 
     /* --------------------------------------------------------------------
      * Phase 1: build four PathRank arrays and compute scores via strategies.
@@ -413,18 +403,7 @@ select_path_by_robust_coverage(
     const int sample_count,
     const bool should_save_score
 ) {
-    /* Basic sanity checks */
-    Assert(kept_list_ptr != NULL);
-    Assert(sample_count >= 1);
-    Assert(select_path_limit >= 1);
-    Assert(sample_count <= DIST_MAX_SAMPLE);
-
     const int cand_count = list_length(cand_list);
-
-    /* Early exit: no candidates; keep existing kept list untouched */
-    if (cand_count <= 0) {
-        return NIL;
-    }
 
     /* Clamp limit to number of candidates */
     const int k = Min(select_path_limit, cand_count);
@@ -523,7 +502,7 @@ select_path_by_robust_coverage(
 }
 
 /*
- * select_path_by_strategy_dispatch
+ * select_path_by_strategy_basic
  *
  * From the given candidate list, keep at most `select_path_limit` Paths
  * according to the provided scoring strategy. Winners are appended to
@@ -552,8 +531,8 @@ select_path_by_robust_coverage(
  *   - This function does NOT free `cand_list` (parameter is const). If the caller
  *     needs to release list cells of `cand_list`, do it outside after the call.
  */
-List *
-select_path_by_strategy_dispatch(
+static List *
+select_path_by_strategy_basic(
     const List *cand_list,
     List **kept_list_ptr,
     const double *min_envelope,
@@ -562,45 +541,7 @@ select_path_by_strategy_dispatch(
     const int sample_count,
     const bool should_save_score
 ) {
-    /*
-     * Policy note:
-     *   - If this stage is the main objective, set should_save_score = true to
-     *     expose the computed score on kept Paths for later phases.
-     *   - Otherwise (retain-only policy), leave scores as-is.
-     */
-
-    /* Basic sanity */
-    Assert(kept_list_ptr != NULL);
-    Assert(sample_count >= 1);
-    Assert(select_path_limit >= 1);
-    Assert(sample_count <= DIST_MAX_SAMPLE);
-
-    /* Early exit: no candidates; keep existing kept list untouched */
     const int cand_count = list_length(cand_list);
-    if (cand_count <= 0) {
-        return NIL;
-    }
-
-    if (path_strategy_func == calc_robust_coverage) {
-        return select_path_by_robust_coverage(
-            cand_list,
-            kept_list_ptr,
-            min_envelope,
-            select_path_limit,
-            sample_count,
-            should_save_score
-        );
-    }
-    if (path_strategy_func == calc_retention_set) {
-        return select_path_by_retention_set(
-            cand_list,
-            kept_list_ptr,
-            min_envelope,
-            select_path_limit,
-            sample_count,
-            should_save_score
-        );
-    }
 
     /* --------------------------------------------------------------------
      * Phase 1: build PathRank array and compute scores via strategy.
@@ -695,6 +636,77 @@ select_path_by_strategy_dispatch(
     pfree(losers);
 
     return dropped_list;
+}
+
+/*
+ * select_path_by_strategy_dispatch
+ *
+ * From the given candidate list, keep at most `select_path_limit` Paths
+ * according to the provided scoring strategy. Winners are appended to
+ * `*kept_list_ptr` (which may already contain entries), and the function
+ * returns a List* of all pruned (not kept) Paths.
+
+ * Return:
+ *   - List* of pruned Paths (those NOT kept). If nothing is pruned, returns NIL.
+ */
+List *
+select_path_by_strategy_dispatch(
+    const List *cand_list,
+    List **kept_list_ptr,
+    const double *min_envelope,
+    const path_strategy path_strategy_func,
+    const int select_path_limit,
+    const int sample_count,
+    const bool should_save_score
+) {
+    /*
+     * Policy note:
+     *   - If this stage is the main objective, set should_save_score = true to
+     *     expose the computed score on kept Paths for later phases.
+     *   - Otherwise (retain-only policy), leave scores as-is.
+     */
+
+    /* Basic sanity */
+    Assert(kept_list_ptr != NULL);
+    Assert(sample_count >= 1);
+    Assert(select_path_limit >= 1);
+    Assert(sample_count <= DIST_MAX_SAMPLE);
+
+    /* Early exit: no candidates; keep existing kept list untouched */
+    const int cand_count = list_length(cand_list);
+    if (cand_count <= 0) {
+        return NIL;
+    }
+
+    if (path_strategy_func == calc_robust_coverage) {
+        return select_path_by_robust_coverage(
+            cand_list,
+            kept_list_ptr,
+            min_envelope,
+            select_path_limit,
+            sample_count,
+            should_save_score
+        );
+    }
+    if (path_strategy_func == calc_retention_set) {
+        return select_path_by_retention_set(
+            cand_list,
+            kept_list_ptr,
+            min_envelope,
+            select_path_limit,
+            sample_count,
+            should_save_score
+        );
+    }
+    return select_path_by_strategy_basic(
+        cand_list,
+        kept_list_ptr,
+        min_envelope,
+        path_strategy_func,
+        select_path_limit,
+        sample_count,
+        should_save_score
+    );
 }
 
 /*
