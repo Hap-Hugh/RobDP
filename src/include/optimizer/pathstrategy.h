@@ -116,12 +116,19 @@ extern void calc_4th_worst_penalty(
     int sample_count
 );
 
+extern void calc_plan_similarity(
+    const List *cand_list,
+    PathRank *rank_arr,
+    const double *min_envelope,
+    int sample_count
+);
+
 /*
  * Global array of scoring strategies.
- * Indexed [0..12].
+ * Indexed [0..13].
  *
  * Caller can use: path_strategy_funcs[i](...)
  */
-extern path_strategy path_strategy_funcs[13];
+extern path_strategy path_strategy_funcs[14];
 
 #endif // PATHSTRATEGY_H

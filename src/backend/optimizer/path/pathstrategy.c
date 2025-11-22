@@ -600,7 +600,7 @@ static bool fetch_cost_at(
     const int sample_count,
     double *out_cost
 ) {
-    const Sample *samp = path->rows_sample;
+    const Sample *samp = path->total_cost_sample;
 
     /* Expected by the caller */
     if (samp == NULL)
@@ -690,7 +690,7 @@ extern void calc_robust_coverage(
         for (int s = 0; s < sample_count; s++) {
             double v;
             if (!fetch_cost_at(path, s, sample_count, &v))
-                elog(ERROR, "[robust_cover] candidate %d has incompatible rows_sample shape.", i);
+                elog(ERROR, "[robust_cover] candidate %d has incompatible total_cost_sample shape.", i);
 
             if (v < opt[s])
                 opt[s] = v;
@@ -886,8 +886,17 @@ extern void calc_4th_worst_penalty(
     );
 }
 
+extern void calc_plan_similarity(
+    const List *cand_list,
+    PathRank *rank_arr,
+    const double *min_envelope,
+    const int sample_count
+) {
+    elog(ERROR, "`calc_plan_similarity` not implemented.");
+}
+
 /* Global strategy array */
-path_strategy path_strategy_funcs[13] = {
+path_strategy path_strategy_funcs[14] = {
     [0] = calc_worst_penalty,
     [1] = calc_expected_penalty,
     [2] = calc_worst_total_cost,
@@ -901,4 +910,5 @@ path_strategy path_strategy_funcs[13] = {
     [10] = calc_worst_penalty_with_std,
     [11] = calc_expected_penalty_with_std,
     [12] = calc_4th_worst_penalty,
+    [13] = calc_plan_similarity,
 };
