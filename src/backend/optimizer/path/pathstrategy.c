@@ -886,15 +886,6 @@ extern void calc_4th_worst_penalty(
     );
 }
 
-extern void calc_plan_similarity(
-    const List *cand_list,
-    PathRank *rank_arr,
-    const double *min_envelope,
-    const int sample_count
-) {
-    elog(ERROR, "`calc_plan_similarity` not implemented.");
-}
-
 /* Global strategy array */
 path_strategy path_strategy_funcs[14] = {
     [0] = calc_worst_penalty,

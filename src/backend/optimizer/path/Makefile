@@ -26,5 +26,6 @@ OBJS = \
 	tidpath.o \
 	addpath.o \
 	pathstrategy.o \
+	pathstrategy_ext.o \
 
 include $(top_srcdir)/src/backend/common.mk
