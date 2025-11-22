@@ -123,12 +123,19 @@ extern void calc_plan_similarity(
     int sample_count
 );
 
+extern void calc_retention_set(
+    const List *cand_list,
+    PathRank *rank_arr,
+    const double *min_envelope,
+    int sample_count
+);
+
 /*
  * Global array of scoring strategies.
- * Indexed [0..13].
+ * Indexed [0..14].
  *
  * Caller can use: path_strategy_funcs[i](...)
  */
-extern path_strategy path_strategy_funcs[14];
+extern path_strategy path_strategy_funcs[15];
 
 #endif // PATHSTRATEGY_H
