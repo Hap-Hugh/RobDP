@@ -3575,7 +3575,7 @@ struct config_int ConfigureNamesInt[] =
 			NULL
 		},
 		&main_objective_id,
-		0, 0, 14,
+		0, 0, 16,
 		NULL, NULL, NULL
 	},
 
@@ -3586,7 +3586,7 @@ struct config_int ConfigureNamesInt[] =
 			NULL
 		},
 		&retain_strategy_id,
-		0, 0, 14,
+		0, 0, 16,
 		NULL, NULL, NULL
 	},
 
@@ -3598,7 +3598,7 @@ struct config_int ConfigureNamesInt[] =
 			NULL
 		},
 		&final_score_id,
-		0, 0, 14,
+		0, 0, 16,
 		NULL, NULL, NULL
 	},
 
