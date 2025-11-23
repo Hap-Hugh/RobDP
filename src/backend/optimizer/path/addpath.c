@@ -678,6 +678,16 @@ select_path_by_strategy_dispatch(
         return NIL;
     }
 
+    if (path_strategy_func == calc_jointype_based_score) {
+        return select_path_by_retention_set(
+            cand_list,
+            kept_list_ptr,
+            min_envelope,
+            select_path_limit,
+            sample_count,
+            should_save_score
+        );
+    }
     if (path_strategy_func == calc_robust_coverage) {
         return select_path_by_robust_coverage(
             cand_list,
