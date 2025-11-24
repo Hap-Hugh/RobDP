@@ -841,7 +841,7 @@ extern void calc_postgres_original_score(
     const double *min_envelope,
     const int sample_count
 ) {
-    elog(ERROR, "`calc_postgres_original_score` not implemented.");
+    elog(ERROR, "`calc_postgres_original_score` is not implemented.");
 }
 
 extern void calc_jointype_based_score(
@@ -850,7 +850,7 @@ extern void calc_jointype_based_score(
     const double *min_envelope,
     const int sample_count
 ) {
-    elog(ERROR, "`calc_jointype_based_score` cannot be called in this way.");
+    elog(ERROR, "`calc_jointype_based_score` is not implemented.");
 }
 
 extern void calc_worst_penalty_with_std(
@@ -895,8 +895,26 @@ extern void calc_retention_set(
     elog(ERROR, "`calc_retention_set` cannot be called in this way.");
 }
 
+extern void calc_jointype_based_mep(
+    const List *cand_list,
+    PathRank *rank_arr,
+    const double *min_envelope,
+    const int sample_count
+) {
+    elog(ERROR, "`calc_jointype_based_mep` cannot be called in this way.");
+}
+
+extern void calc_jointype_based_mec(
+    const List *cand_list,
+    PathRank *rank_arr,
+    const double *min_envelope,
+    const int sample_count
+) {
+    elog(ERROR, "`calc_jointype_based_mec` cannot be called in this way.");
+}
+
 /* Global strategy array */
-path_strategy path_strategy_funcs[15] = {
+path_strategy path_strategy_funcs[17] = {
     [0] = calc_worst_penalty,
     [1] = calc_expected_penalty,
     [2] = calc_worst_total_cost,
@@ -912,4 +930,6 @@ path_strategy path_strategy_funcs[15] = {
     [12] = calc_4th_worst_penalty,
     [13] = calc_plan_similarity,
     [14] = calc_retention_set,
+    [15] = calc_jointype_based_mep,
+    [16] = calc_jointype_based_mec,
 };

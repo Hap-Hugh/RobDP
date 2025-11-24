@@ -130,12 +130,26 @@ extern void calc_retention_set(
     int sample_count
 );
 
+extern void calc_jointype_based_mep(
+    const List *cand_list,
+    PathRank *rank_arr,
+    const double *min_envelope,
+    int sample_count
+);
+
+extern void calc_jointype_based_mec(
+    const List *cand_list,
+    PathRank *rank_arr,
+    const double *min_envelope,
+    int sample_count
+);
+
 /*
  * Global array of scoring strategies.
  * Indexed [0..14].
  *
  * Caller can use: path_strategy_funcs[i](...)
  */
-extern path_strategy path_strategy_funcs[15];
+extern path_strategy path_strategy_funcs[17];
 
 #endif // PATHSTRATEGY_H

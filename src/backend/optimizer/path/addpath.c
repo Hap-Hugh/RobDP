@@ -4,6 +4,7 @@
 // Modified by Xuan Chen on 2025/10/29.
 // Modified by Xuan Chen on 2025/10/31.
 // Modified by Xuan Chen on 2025/11/1.
+// Modified by Xuan Chen on 2025/11/23.
 //
 
 #include "optimizer/addpath.h"
@@ -359,6 +360,191 @@ select_path_by_retention_set(
 }
 
 /*
+ * select_path_by_jointype_based_score
+ *
+ * From the given candidate list, keep at most `select_path_limit` Paths
+ * using a single jointype-based scoring strategy (calc_jointype_based_mep).
+ *
+ * Contract of calc_jointype_based_mep (same as calc_expected_penalty style):
+ *   - Lower score = better.
+ *   - It fills rank_arr[0..cand_count-1] in the same iteration order
+ *     as `cand_list`.
+ *   - Paths with zero effective samples must get score = DBL_MAX (or equivalent).
+ *
+ * Selection policy:
+ *   - First we compute a single PathRank array using calc_jointype_based_mep().
+ *   - Then we repeatedly pick the *best* (lowest-score) path that has not yet
+ *     been selected:
+ *       * On each iteration we scan all candidates and find the minimum score
+ *         among the not-yet-selected ones.
+ *       * If the best remaining score is DBL_MAX (i.e., no valid candidate
+ *         is left), we stop early.
+ *   - We stop when:
+ *       * We have selected `select_path_limit` paths, or
+ *       * No more candidates with finite scores remain.
+ *
+ * Score exposure:
+ *   - If `should_save_score` is true, we store the score from
+ *     calc_jointype_based_mep() into Path->score for both kept and dropped
+ *     paths. This gives a single, consistent scalar per Path.
+ *
+ * Return:
+ *   - List* of pruned Paths (those NOT kept). If nothing is pruned, returns NIL.
+ *
+ * Notes:
+ *   - Winners are NOT sorted here; order is deterministically the order in
+ *     which we pick the best candidate on each iteration. If the caller
+ *     requires sorting, it should sort `*kept_list_ptr` afterward.
+ *   - Existing entries in `*kept_list_ptr` are preserved; winners are appended.
+ *   - This function does NOT free list cells of `cand_list` (parameter is const).
+ *     If the caller needs to release list cells of `cand_list`, do it outside
+ *     after the call.
+ */
+static List *
+select_path_by_jointype_based_score(
+    const List *cand_list,
+    List **kept_list_ptr,
+    const double *min_envelope,
+    const path_strategy path_strategy_func,
+    const int select_path_limit,
+    const int sample_count,
+    const bool should_save_score
+) {
+    const int cand_count = list_length(cand_list);
+
+    /* Trivial cases: nothing to do. */
+    if (cand_count == 0 || select_path_limit <= 0)
+        return NIL;
+
+    /* --------------------------------------------------------------------
+     * Phase 1: compute jointype-based scores for all candidates.
+     *
+     * calc_jointype_based_mep() is expected to behave like
+     * calc_expected_penalty():
+     *   - Fills rank_jointype[0..cand_count-1] with {path, score}.
+     *   - Assigns DBL_MAX to paths with no effective samples.
+     * -------------------------------------------------------------------- */
+    PathRank *rank_jointype = palloc(sizeof(PathRank) * cand_count);
+
+    path_strategy_func(cand_list, rank_jointype, min_envelope, sample_count);
+
+    /* --------------------------------------------------------------------
+     * Phase 2: iterative top-k selection (one winner per iteration).
+     *
+     * We repeatedly scan the rank array and pick the best remaining path
+     * (lowest score) that has not been selected yet. Once picked, that
+     * index is marked and skipped on subsequent iterations.
+     * -------------------------------------------------------------------- */
+    const int k_target = Min(select_path_limit, cand_count);
+
+    /* Mark which candidate indices are already selected as winners. */
+    bool *selected = palloc0(sizeof(bool) * cand_count);
+
+    /* Store indices of winning candidates. */
+    int *winners = palloc(sizeof(int) * k_target);
+    int winners_cnt = 0;
+
+    while (winners_cnt < k_target) {
+        int best_idx = -1;
+        double best_score = DBL_MAX;
+
+        /*
+         * Scan all candidates and pick the lowest-score one
+         * among those not yet selected.
+         */
+        for (int i = 0; i < cand_count; i++) {
+            if (selected[i])
+                continue;
+
+            const double score = rank_jointype[i].score;
+
+            if (score < best_score) {
+                best_score = score;
+                best_idx = i;
+            }
+        }
+
+        /*
+         * If we did not find any candidate with a finite score,
+         * we stop – remaining candidates are considered losers.
+         */
+        if (best_idx < 0 || best_score >= DBL_MAX)
+            break;
+
+        selected[best_idx] = true;
+        winners[winners_cnt++] = best_idx;
+    }
+
+    /* Compute losers: all candidates that were never selected. */
+    const int losers_cnt = cand_count - winners_cnt;
+    int *losers = palloc(sizeof(int) * Max(0, losers_cnt));
+
+    if (losers_cnt > 0) {
+        int writer = 0;
+
+        for (int i = 0; i < cand_count; i++) {
+            if (!selected[i]) {
+                losers[writer++] = i;
+            }
+        }
+        Assert(writer == losers_cnt);
+    }
+
+    /* --------------------------------------------------------------------
+     * Phase 3: append winners to kept list and build dropped list.
+     *
+     * NOTE:
+     *   - For Path->score we expose calc_jointype_based_mep()'s score, so
+     *     that each Path has a single, comparable scalar.
+     * -------------------------------------------------------------------- */
+    List *kept_list = (*kept_list_ptr != NULL) ? *kept_list_ptr : NIL;
+
+    /* Append winners in the order we selected them. */
+    for (int i = 0; i < winners_cnt; i++) {
+        const int idx = winners[i];
+        const PathRank rank = rank_jointype[idx];
+
+        Path *keep = rank.path;
+
+        if (should_save_score) {
+            /* Expose jointype-based MEP score on Path for later stages. */
+            keep->score = rank.score;
+        }
+        kept_list = lappend(kept_list, keep);
+    }
+
+    List *dropped_list = NIL;
+
+    if (losers_cnt > 0) {
+        for (int i = 0; i < losers_cnt; i++) {
+            const int idx = losers[i];
+            const PathRank rank = rank_jointype[idx];
+
+            Path *drop = rank.path;
+
+            if (should_save_score) {
+                /* Expose jointype-based MEP score on Path for later stages. */
+                drop->score = rank.score;
+            }
+            dropped_list = lappend(dropped_list, drop);
+        }
+    }
+
+    /* Write back survivors (append result). */
+    *kept_list_ptr = kept_list;
+
+    /* --------------------------------------------------------------------
+     * Phase 4: cleanup and return pruned paths.
+     * -------------------------------------------------------------------- */
+    pfree(rank_jointype);
+    pfree(selected);
+    pfree(winners);
+    pfree(losers);
+
+    return dropped_list;
+}
+
+/*
  * select_path_by_robust_coverage
  *
  * From the given candidate list, keep at most `select_path_limit` Paths
@@ -678,11 +864,23 @@ select_path_by_strategy_dispatch(
         return NIL;
     }
 
-    if (path_strategy_func == calc_jointype_based_score) {
-        return select_path_by_retention_set(
+    if (path_strategy_func == calc_jointype_based_mep) {
+        return select_path_by_jointype_based_score(
             cand_list,
             kept_list_ptr,
             min_envelope,
+            calc_expected_penalty,
+            select_path_limit,
+            sample_count,
+            should_save_score
+        );
+    }
+    if (path_strategy_func == calc_jointype_based_mec) {
+        return select_path_by_jointype_based_score(
+            cand_list,
+            kept_list_ptr,
+            min_envelope,
+            calc_expected_total_cost,
             select_path_limit,
             sample_count,
             should_save_score
@@ -793,7 +991,13 @@ set_path_score(
      * `cand_list` in the same traversal order.
      * -------------------------------------------------------------------- */
     PathRank *rank_arr = palloc(sizeof(PathRank) * cand_count);
-    path_strategy_func(cand_list, rank_arr, min_envelope, sample_count);
+    if (path_strategy_func == calc_jointype_based_mep) {
+        calc_expected_penalty(cand_list, rank_arr, min_envelope, sample_count);
+    } else if (path_strategy_func == calc_jointype_based_mec) {
+        calc_expected_total_cost(cand_list, rank_arr, min_envelope, sample_count);
+    } else {
+        path_strategy_func(cand_list, rank_arr, min_envelope, sample_count);
+    }
 
     /* --------------------------------------------------------------------
      * Phase 2: persist scores onto Path objects
