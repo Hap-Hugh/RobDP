@@ -29,40 +29,15 @@
 
 #include "nodes/pg_list.h"
 #include "lib/stringinfo.h"
+#include "optimizer/paths.h"
 #include "utils/elog.h"
 #include "utils/memutils.h"
 #include "optimizer/pathstrategy.h"
 
-/*
- * Number of centers (R) to select. In a real implementation this would
- * typically be defined as a GUC; here we declare it as an extern so
- * you can define it elsewhere.
- */
-static int plan_similarity_k = 5;
-
 /* ----------------------------------------------------------------
- * Internal helpers: random int, KL, JS, etc.
+ * Internal helpers: KL, JS, etc.
  * ----------------------------------------------------------------
  */
-
-/*
- * Return a random integer in [lo, hi], inclusive.
- * Replace this with whatever RNG you prefer in PostgreSQL
- * (e.g., pg_prng_uint64_range) if you need strict determinism.
- */
-static int
-random_int_between(int lo, int hi) {
-    long r;
-
-    Assert(lo <= hi);
-
-    if (lo == hi)
-        return lo;
-
-    /* simple wrapper; you can improve this if needed */
-    r = random(); /* uses libc random(), seeded elsewhere */
-    return lo + (int) (r % (hi - lo + 1));
-}
 
 /*
  * Compute KL(p || q) where p and q are raw non-negative vectors
@@ -76,24 +51,24 @@ random_int_between(int lo, int hi) {
  */
 static double
 kl_divergence(const double *p, const double *q, int sample_count) {
-    const double EPS = 1e-10;
     double sum_p = 0.0;
     double sum_q = 0.0;
     double kl = 0.0;
-    int i;
 
     /* 1) Compute sums */
-    for (i = 0; i < sample_count; i++) {
+    for (int i = 0; i < sample_count; ++i) {
         sum_p += p[i];
         sum_q += q[i];
     }
 
     /* Guard against degenerate all-zero vectors */
-    if (sum_p <= 0.0 || sum_q <= 0.0)
+    if (sum_p <= 0.0 || sum_q <= 0.0) {
         return 0.0;
+    }
 
     /* 2) Normalize, add epsilon, and accumulate KL */
-    for (i = 0; i < sample_count; i++) {
+    for (int i = 0; i < sample_count; ++i) {
+        const double EPS = 1e-10;
         double pi = p[i] / sum_p;
         double qi = q[i] / sum_q;
 
@@ -120,25 +95,20 @@ kl_divergence(const double *p, const double *q, int sample_count) {
  */
 static double
 js_distance(const double *p, const double *q, int sample_count) {
-    double *m;
-    double js_div;
-    double result;
-    int i;
-
-    m = (double *) palloc(sizeof(double) * sample_count);
+    double *m = palloc(sizeof(double) * sample_count);
 
     /* Compute mixture distribution m = 0.5 * (p + q) */
-    for (i = 0; i < sample_count; i++)
+    for (int i = 0; i < sample_count; i++)
         m[i] = 0.5 * (p[i] + q[i]);
 
-    js_div = 0.5 * kl_divergence(p, m, sample_count)
-             + 0.5 * kl_divergence(q, m, sample_count);
+    double js_div = 0.5 * kl_divergence(p, m, sample_count)
+                    + 0.5 * kl_divergence(q, m, sample_count);
 
-    if (js_div < 0.0)
+    if (js_div < 0.0) {
         js_div = 0.0;
+    }
 
-    result = sqrt(js_div);
-
+    const double result = sqrt(js_div);
     pfree(m);
 
     return result;
@@ -175,14 +145,12 @@ calc_plan_similarity(
     const double *min_envelope, /* unused for JS-based similarity */
     const int sample_count
 ) {
-    int cand_count;
-    int i, k;
     ListCell *lc;
-    Path **path_array; /* indexable view of cand_list */
-    double **cost_matrix; /* [cand_count][sample_count] */
-    int *centers; /* indices of selected center plans */
-    double *min_dist; /* per-plan distance to nearest center */
-    int num_centers; /* R: number of centers we want */
+    /* indexable view of cand_list */
+    /* [cand_count][sample_count] */
+    /* indices of selected center plans */
+    /* per-plan distance to nearest center */
+    /* R: number of centers we want */
 
     (void) min_envelope; /* silence unused-variable warning for now */
 
@@ -191,14 +159,14 @@ calc_plan_similarity(
      * ----------------------------------------------------------
      */
 
-    cand_count = list_length((List *) cand_list);
+    const int cand_count = list_length((List *) cand_list);
     if (cand_count <= 0) {
         elog(LOG, "calc_plan_similarity: empty candidate list");
         return;
     }
 
     /* Determine number of centers R; clamp to [1, cand_count]. */
-    num_centers = plan_similarity_k;
+    int num_centers = retain_path_limit;
     if (num_centers <= 0)
         num_centers = 1;
     if (num_centers > cand_count)
@@ -214,11 +182,11 @@ calc_plan_similarity(
      * ----------------------------------------------------------
      */
 
-    path_array = (Path **) palloc(sizeof(Path *) * cand_count);
+    Path **path_array = palloc(sizeof(Path *) * cand_count);
 
-    i = 0;
+    int i = 0;
     foreach(lc, cand_list) {
-        Path *path = (Path *) lfirst(lc);
+        Path *path = lfirst(lc);
 
         path_array[i] = path;
         rank_arr[i].path = path;
@@ -237,10 +205,10 @@ calc_plan_similarity(
      * entries. Adjust Path->samples access as needed.
      */
 
-    cost_matrix = (double **) palloc(sizeof(double *) * cand_count);
+    double **cost_matrix = palloc(sizeof(double *) * cand_count);
 
     for (i = 0; i < cand_count; i++) {
-        Sample *sm = path_array[i]->total_cost_sample;
+        const Sample *sm = path_array[i]->total_cost_sample;
         int sc;
 
         if (sm == NULL)
@@ -259,9 +227,10 @@ calc_plan_similarity(
          * Case 2: only 1 sample → broadcast that single value
          */
         else if (sm->sample_count == 1) {
-            double v = sm->sample[0];
-            for (sc = 0; sc < sample_count; sc++)
+            const double v = sm->sample[0];
+            for (sc = 0; sc < sample_count; sc++) {
                 cost_matrix[i][sc] = v;
+            }
 
             elog(LOG,
                  "calc_plan_similarity: path %d only has 1 sample; broadcasting to %d slots",
@@ -283,44 +252,46 @@ calc_plan_similarity(
      *    (this mirrors k_center_greedy(costCollection, R, JS_distance))
      * ----------------------------------------------------------
      */
+    int *centers = palloc(sizeof(int) * num_centers);
+    double *min_dist = palloc(sizeof(double) * cand_count);
 
-    centers = (int *) palloc(sizeof(int) * num_centers);
-    min_dist = (double *) palloc(sizeof(double) * cand_count);
-
-    /* 3.1 Initialize: pick the first center randomly
-     * (Python behavior when first_plan=None).
-     */
-    {
-        int first_center;
-
-        first_center = random_int_between(0, cand_count - 1);
-        centers[0] = first_center;
-
-        for (i = 0; i < cand_count; i++)
-            min_dist[i] = DBL_MAX;
-
-        elog(LOG, "calc_plan_similarity: first center is candidate %d", first_center);
+    /* 3.1 Initialize: pick the first center based on the minimum expected total cost. */
+    int first_center = -1;
+    Cost min_total_cost = DBL_MAX;
+    for (int idx = 0; idx < cand_count; ++idx) {
+        const Path *cur_path = path_array[idx];
+        const Cost cur_total_cost = cur_path->total_cost;
+        if (cur_total_cost < min_total_cost) {
+            min_total_cost = cur_total_cost;
+            first_center = idx;
+        }
     }
+    centers[0] = first_center;
+
+    for (int idx = 0; idx < cand_count; ++idx) {
+        min_dist[idx] = DBL_MAX;
+    }
+    elog(LOG, "calc_plan_similarity: first center is candidate %d", first_center);
 
     /* 3.2 Iteratively select the remaining centers */
-    for (k = 1; k < num_centers; k++) {
-        int last_center = centers[k - 1];
+    for (int k = 1; k < num_centers; k++) {
+        const int last_center = centers[k - 1];
         int farthest_idx = -1;
         double farthest_dist = -1.0;
 
         /* Update each candidate's distance to the nearest selected center */
-        for (i = 0; i < cand_count; i++) {
-            double d;
+        for (int idx = 0; idx < cand_count; idx++) {
+            const double dist = js_distance(
+                cost_matrix[idx], cost_matrix[last_center], sample_count
+            );
 
-            d = js_distance(cost_matrix[i], cost_matrix[last_center], sample_count);
-
-            if (d < min_dist[i])
-                min_dist[i] = d;
+            if (dist < min_dist[idx])
+                min_dist[idx] = dist;
 
             /* Track the point farthest from its closest center */
-            if (min_dist[i] > farthest_dist) {
-                farthest_dist = min_dist[i];
-                farthest_idx = i;
+            if (min_dist[idx] > farthest_dist) {
+                farthest_dist = min_dist[idx];
+                farthest_idx = idx;
             }
         }
 
@@ -349,12 +320,13 @@ calc_plan_similarity(
      */
 
     /* Default: all non-centers */
-    for (i = 0; i < cand_count; i++)
-        rank_arr[i].score = 0.0;
+    for (int idx = 0; idx < cand_count; idx++) {
+        rank_arr[idx].score = 0.0;
+    }
 
     /* Mark selected centers */
-    for (k = 0; k < num_centers; k++) {
-        int center_idx = centers[k];
+    for (int k = 0; k < num_centers; k++) {
+        const int center_idx = centers[k];
 
         Assert(center_idx >= 0 && center_idx < cand_count);
         rank_arr[center_idx].score = 1.0;
@@ -365,21 +337,20 @@ calc_plan_similarity(
          cand_count, num_centers);
 
     /* Optional: log the list of chosen centers */
-    {
-        StringInfoData buf;
+    StringInfoData buf;
 
-        initStringInfo(&buf);
-        appendStringInfoString(&buf, "calc_plan_similarity: centers = [");
-        for (k = 0; k < num_centers; k++) {
-            if (k > 0)
-                appendStringInfoString(&buf, ", ");
-            appendStringInfo(&buf, "%d", centers[k]);
+    initStringInfo(&buf);
+    appendStringInfoString(&buf, "calc_plan_similarity: centers = [");
+    for (int k = 0; k < num_centers; k++) {
+        if (k > 0) {
+            appendStringInfoString(&buf, ", ");
         }
-        appendStringInfoString(&buf, "]");
-        elog(LOG, "%s", buf.data);
-
-        pfree(buf.data);
+        appendStringInfo(&buf, "%d", centers[k]);
     }
+    appendStringInfoString(&buf, "]");
+    elog(LOG, "%s", buf.data);
+
+    pfree(buf.data);
 
     /* ----------------------------------------------------------
      * 5. Cleanup temporary structures (optional in short-lived
@@ -387,8 +358,9 @@ calc_plan_similarity(
      * ----------------------------------------------------------
      */
 
-    for (i = 0; i < cand_count; i++)
+    for (i = 0; i < cand_count; i++) {
         pfree(cost_matrix[i]);
+    }
 
     pfree(cost_matrix);
     pfree(centers);
