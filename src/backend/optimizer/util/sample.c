@@ -229,12 +229,11 @@ void set_baserel_rows_sample(
 
     /* 1. Resolve relation aliases (original alias and a standard fallback). */
     const char *alias = get_alias(root, baserel->relid);
-    const char *alias_fallback = get_std_alias(root, baserel->relid);
     elog(LOG, "[baserel %s] considering relation rows sample.", alias);
 
     /* 2. Allocate an error profile holder and try to populate it from cache. */
     ErrorProfile *ep;
-    const bool found = get_error_profile(alias, alias_fallback, &ep);
+    const bool found = get_error_profile(alias, NULL, &ep);
 
     /* 2.1 If no profile is available, fall back to a degenerate sample. */
     if (!found) {
@@ -330,30 +329,14 @@ void set_joinrel_rows_sample(
         if ((l_in_outer && r_in_inner) || (r_in_outer && l_in_inner)) {
             const char *left_rel_alias = get_alias(root, leftvar->varno);
             const char *right_rel_alias = get_alias(root, rightvar->varno);
-            const char *left_rel_std_alias = get_std_alias(root, leftvar->varno);
-            const char *right_rel_std_alias = get_std_alias(root, rightvar->varno);
 
             /* Canonicalize order to avoid duplicate “A=B” vs “B=A”. */
-            if (strcmp(left_rel_alias, right_rel_alias) < 0)
-                snprintf(alias, sizeof(alias), "%s=%s", left_rel_alias, right_rel_alias);
-            else
-                snprintf(alias, sizeof(alias), "%s=%s", right_rel_alias, left_rel_alias);
+            snprintf(alias, sizeof(alias), "%s_%s", left_rel_alias, right_rel_alias);
+            snprintf(alias_fallback, sizeof(alias_fallback), "%s_%s", right_rel_alias, left_rel_alias);
 
-            elog(LOG, "alias: %s; join key: %s.%d = %s.%d.",
-                 alias,
-                 left_rel_alias, leftvar->varattno,
-                 right_rel_alias, rightvar->varattno);
-
-            /* Canonicalize order to avoid duplicate “A=B” vs “B=A”. */
-            if (strcmp(left_rel_std_alias, right_rel_std_alias) < 0)
-                snprintf(alias_fallback, sizeof(alias_fallback), "%s=%s", left_rel_std_alias, right_rel_std_alias);
-            else
-                snprintf(alias_fallback, sizeof(alias_fallback), "%s=%s", right_rel_std_alias, left_rel_std_alias);
-
-            elog(LOG, "alias fallback: %s; join key: %s.%d = %s.%d.",
-                 alias_fallback,
-                 left_rel_std_alias, leftvar->varattno,
-                 right_rel_std_alias, rightvar->varattno);
+            // elog(LOG, "alias: %s; join key: %s.%d = %s.%d.",
+            //      alias, left_rel_alias, leftvar->varattno,
+            //      right_rel_alias, rightvar->varattno);
 
             break;
         }

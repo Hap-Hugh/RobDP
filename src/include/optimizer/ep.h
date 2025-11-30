@@ -54,11 +54,6 @@ char *get_alias(
     Index relid
 );
 
-char *get_std_alias(
-    const PlannerInfo *root,
-    Index relid
-);
-
 /* ------------------------------- Error Profiles ------------------------------- */
 int read_error_profile(
     const char *filename,
