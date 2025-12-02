@@ -201,7 +201,7 @@ extern void final_cost_hashjoin_2p(
     const JoinPathExtraData *extra
 );
 
-/* ==== ==== ==== ==== ==== ==== OTHER COST MODEL ==== ==== ==== ==== ==== ==== */
+/* ==== ==== ==== ==== ==== ==== GATHER COST MODEL ==== ==== ==== ==== ==== ==== */
 
 extern void cost_gather_1p(
     GatherPath *path,
@@ -237,6 +237,24 @@ extern void cost_gather_merge_2p(
     Cost input_startup_cost,
     Cost input_total_cost,
     const double *rows
+);
+
+/* ==== ==== ==== ==== ==== ==== SUBQUERY COST MODEL ==== ==== ==== ==== ==== ==== */
+
+extern void cost_subqueryscan_1p(
+    SubqueryScanPath *path,
+    PlannerInfo *root,
+    const RelOptInfo *baserel,
+    const ParamPathInfo *param_info,
+    bool trivial_pathtarget
+);
+
+extern void cost_subqueryscan_2p(
+    SubqueryScanPath *path,
+    PlannerInfo *root,
+    const RelOptInfo *baserel,
+    const ParamPathInfo *param_info,
+    bool trivial_pathtarget
 );
 
 #endif // COST_EXT_H
