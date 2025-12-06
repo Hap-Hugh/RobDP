@@ -841,7 +841,22 @@ select_path_by_strategy_basic(
      * Phase 2: select global top-k (smallest score) using a fixed MAX-heap.
      * Root of heap = worst among currently kept.
      * -------------------------------------------------------------------- */
-    const int k = Min(select_path_limit, cand_count);
+    int k = Min(select_path_limit, cand_count);
+
+    /* Reconsider k */
+    if (path_strategy_func == calc_plan_similarity) {
+        int adjusted_k = 0;
+        for (int i = 0; i < cand_count; i++) {
+            if (rank_arr[i].score < 0.1) {
+                rank_arr[i].score = 1.0; // Non-center
+            } else {
+                rank_arr[i].score = 0.0; // Center
+                ++adjusted_k;
+            }
+        }
+        Assert(adjusted_k > 0);
+        k = Min(k, adjusted_k);
+    }
 
     int *heap_idx = palloc(sizeof(int) * Max(1, k));
     int hsize = 0;

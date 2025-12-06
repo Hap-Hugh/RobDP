@@ -198,13 +198,13 @@ calc_plan_similarity(
     foreach(lc, cand_list) {
         Path *path = lfirst(lc);
 
-        Cost cur_max_total_cost = 0.0;
+        Cost cur_min_total_cost = DBL_MAX;
         const Sample *cur_total_cost_sample = path->total_cost_sample;
         const int cur_sample_count = cur_total_cost_sample->sample_count;
         for (int cur_sample_idx = 0; cur_sample_idx < cur_sample_count; ++cur_sample_idx) {
-            cur_max_total_cost = Max(cur_max_total_cost, cur_total_cost_sample->sample[cur_sample_idx]);
+            cur_min_total_cost = Min(cur_min_total_cost, cur_total_cost_sample->sample[cur_sample_idx]);
         }
-        if (cur_max_total_cost > max_total_cost_thresh) {
+        if (cur_min_total_cost > max_total_cost_thresh) {
             continue; /* We skip bad paths, but we don't remove it now. */
         }
 
@@ -214,6 +214,27 @@ calc_plan_similarity(
         ++writer;
     }
     Assert(writer <= cand_count);
+
+    /* Now we have no paths, but we need at least one path. */
+    if (writer == 0) {
+        elog(LOG, "Cannot find any proper paths using similarity score, but we still need one.");
+
+        Path *best_path = NULL;
+        Cost min_total_cost = DBL_MAX;
+        foreach(lc, cand_list) {
+            Path *path = lfirst(lc);
+            const Cost cur_total_cost = path->total_cost;
+            if (cur_total_cost < min_total_cost) {
+                min_total_cost = cur_total_cost;
+                best_path = path;
+            }
+        }
+
+        path_array[writer] = best_path;
+        rank_arr[writer].path = best_path;
+        rank_arr[writer].score = 0.0; /* Will be filled after K-center */
+        writer = 1;
+    }
     cand_count = writer; /* Actual cand count */
 
     /* ----------------------------------------------------------
