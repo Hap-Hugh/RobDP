@@ -1,5 +1,6 @@
 //
 // Created by Xuan Chen on 2025/11/21.
+// Modified by Xuan Chen on 2025/12/05.
 //
 
 /*
@@ -34,6 +35,8 @@
 #include "utils/memutils.h"
 #include "optimizer/pathstrategy.h"
 
+#define PRUNE_TOLERANCE_FACTOR 1.2
+
 /* ----------------------------------------------------------------
  * Internal helpers: KL, JS, etc.
  * ----------------------------------------------------------------
@@ -50,7 +53,7 @@
  * as arbitrary non-negative cost vectors.
  */
 static double
-kl_divergence(const double *p, const double *q, int sample_count) {
+kl_divergence(const double *p, const double *q, const int sample_count) {
     double sum_p = 0.0;
     double sum_q = 0.0;
     double kl = 0.0;
@@ -94,12 +97,13 @@ kl_divergence(const double *p, const double *q, int sample_count) {
  * call normalizes its inputs internally, just like the Python code.
  */
 static double
-js_distance(const double *p, const double *q, int sample_count) {
+js_distance(const double *p, const double *q, const int sample_count) {
     double *m = palloc(sizeof(double) * sample_count);
 
     /* Compute mixture distribution m = 0.5 * (p + q) */
-    for (int i = 0; i < sample_count; i++)
+    for (int i = 0; i < sample_count; ++i) {
         m[i] = 0.5 * (p[i] + q[i]);
+    }
 
     double js_div = 0.5 * kl_divergence(p, m, sample_count)
                     + 0.5 * kl_divergence(q, m, sample_count);
@@ -135,14 +139,13 @@ js_distance(const double *p, const double *q, int sample_count) {
  *
  * Caller is expected to use rank_arr to filter/sort candidates.
  *
- * min_envelope is currently unused here; it is kept in the signature
- * for compatibility and for potential future regret-based metrics.
+ * min_envelope unused here for pruning paths.
  */
 extern void
 calc_plan_similarity(
     const List *cand_list,
     PathRank *rank_arr,
-    const double *min_envelope, /* unused for JS-based similarity */
+    const double *min_envelope,
     const int sample_count
 ) {
     ListCell *lc;
@@ -152,14 +155,12 @@ calc_plan_similarity(
     /* per-plan distance to nearest center */
     /* R: number of centers we want */
 
-    (void) min_envelope; /* silence unused-variable warning for now */
-
     /* ----------------------------------------------------------
      * 0. Basic setup and sanity checks
      * ----------------------------------------------------------
      */
 
-    const int cand_count = list_length((List *) cand_list);
+    int cand_count = list_length((List *) cand_list);
     if (cand_count <= 0) {
         elog(LOG, "calc_plan_similarity: empty candidate list");
         return;
@@ -167,33 +168,53 @@ calc_plan_similarity(
 
     /* Determine number of centers R; clamp to [1, cand_count]. */
     int num_centers = retain_path_limit;
-    if (num_centers <= 0)
+    if (num_centers <= 0) {
         num_centers = 1;
-    if (num_centers > cand_count)
+    }
+    if (num_centers > cand_count) {
         num_centers = cand_count;
+    }
 
     elog(LOG,
          "calc_plan_similarity: cand_count=%d, sample_count=%d, target_centers=%d",
          cand_count, sample_count, num_centers);
 
     /* ----------------------------------------------------------
-     * 1. Materialize cand_list into an indexable array
+     * 1. Prune and materialize cand_list into an indexable array
      *    and fill rank_arr.path
      * ----------------------------------------------------------
      */
 
+    Cost max_total_cost_thresh = 0.0;
+    Assert(min_envelope != NULL);
+    for (int i = 0; i < sample_count; ++i) {
+        max_total_cost_thresh = Max(max_total_cost_thresh, min_envelope[i]);
+    }
+    max_total_cost_thresh = max_total_cost_thresh * PRUNE_TOLERANCE_FACTOR;
+
     Path **path_array = palloc(sizeof(Path *) * cand_count);
 
-    int i = 0;
+    int writer = 0;
     foreach(lc, cand_list) {
         Path *path = lfirst(lc);
 
-        path_array[i] = path;
-        rank_arr[i].path = path;
-        rank_arr[i].score = 0.0; /* will be filled after K-center */
-        i++;
+        Cost cur_max_total_cost = 0.0;
+        const Sample *cur_total_cost_sample = path->total_cost_sample;
+        const int cur_sample_count = cur_total_cost_sample->sample_count;
+        for (int cur_sample_idx = 0; cur_sample_idx < cur_sample_count; ++cur_sample_idx) {
+            cur_max_total_cost = Max(cur_max_total_cost, cur_total_cost_sample->sample[cur_sample_idx]);
+        }
+        if (cur_max_total_cost > max_total_cost_thresh) {
+            continue; /* We skip bad paths, but we don't remove it now. */
+        }
+
+        path_array[writer] = path;
+        rank_arr[writer].path = path;
+        rank_arr[writer].score = 0.0; /* Will be filled after K-center */
+        ++writer;
     }
-    Assert(i == cand_count);
+    Assert(writer <= cand_count);
+    cand_count = writer; /* Actual cand count */
 
     /* ----------------------------------------------------------
      * 2. Build cost_matrix: one cost vector per Path
@@ -207,12 +228,12 @@ calc_plan_similarity(
 
     double **cost_matrix = palloc(sizeof(double *) * cand_count);
 
-    for (i = 0; i < cand_count; i++) {
+    for (int i = 0; i < cand_count; ++i) {
         const Sample *sm = path_array[i]->total_cost_sample;
-        int sc;
 
-        if (sm == NULL)
+        if (sm == NULL) {
             elog(ERROR, "calc_plan_similarity: path %d has no Sample data", i);
+        }
 
         cost_matrix[i] = (double *) palloc(sizeof(double) * sample_count);
 
@@ -220,15 +241,16 @@ calc_plan_similarity(
          * Case 1: exact match → copy directly
          */
         if (sm->sample_count == sample_count) {
-            for (sc = 0; sc < sample_count; sc++)
+            for (int sc = 0; sc < sample_count; ++sc) {
                 cost_matrix[i][sc] = sm->sample[sc];
+            }
         }
         /*
          * Case 2: only 1 sample → broadcast that single value
          */
         else if (sm->sample_count == 1) {
             const double v = sm->sample[0];
-            for (sc = 0; sc < sample_count; sc++) {
+            for (int sc = 0; sc < sample_count; ++sc) {
                 cost_matrix[i][sc] = v;
             }
 
@@ -274,13 +296,13 @@ calc_plan_similarity(
     elog(LOG, "calc_plan_similarity: first center is candidate %d", first_center);
 
     /* 3.2 Iteratively select the remaining centers */
-    for (int k = 1; k < num_centers; k++) {
+    for (int k = 1; k < num_centers; ++k) {
         const int last_center = centers[k - 1];
         int farthest_idx = -1;
         double farthest_dist = -1.0;
 
         /* Update each candidate's distance to the nearest selected center */
-        for (int idx = 0; idx < cand_count; idx++) {
+        for (int idx = 0; idx < cand_count; ++idx) {
             const double dist = js_distance(
                 cost_matrix[idx], cost_matrix[last_center], sample_count
             );
@@ -320,12 +342,12 @@ calc_plan_similarity(
      */
 
     /* Default: all non-centers */
-    for (int idx = 0; idx < cand_count; idx++) {
+    for (int idx = 0; idx < cand_count; ++idx) {
         rank_arr[idx].score = 0.0;
     }
 
     /* Mark selected centers */
-    for (int k = 0; k < num_centers; k++) {
+    for (int k = 0; k < num_centers; ++k) {
         const int center_idx = centers[k];
 
         Assert(center_idx >= 0 && center_idx < cand_count);
@@ -341,7 +363,7 @@ calc_plan_similarity(
 
     initStringInfo(&buf);
     appendStringInfoString(&buf, "calc_plan_similarity: centers = [");
-    for (int k = 0; k < num_centers; k++) {
+    for (int k = 0; k < num_centers; ++k) {
         if (k > 0) {
             appendStringInfoString(&buf, ", ");
         }
@@ -358,7 +380,7 @@ calc_plan_similarity(
      * ----------------------------------------------------------
      */
 
-    for (i = 0; i < cand_count; i++) {
+    for (int i = 0; i < cand_count; ++i) {
         pfree(cost_matrix[i]);
     }
 
