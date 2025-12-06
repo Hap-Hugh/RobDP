@@ -834,7 +834,7 @@ select_path_by_strategy_basic(
      * Phase 1: build PathRank array and compute scores via strategy.
      * The strategy function fills rank_arr with (path, score).
      * -------------------------------------------------------------------- */
-    PathRank *rank_arr = palloc(sizeof(PathRank) * cand_count);
+    PathRank *rank_arr = palloc0(sizeof(PathRank) * cand_count);
     path_strategy_func(cand_list, rank_arr, min_envelope, sample_count);
 
     /* --------------------------------------------------------------------

@@ -171,13 +171,6 @@ calc_plan_similarity(
     if (num_centers <= 0) {
         num_centers = 1;
     }
-    if (num_centers > cand_count) {
-        num_centers = cand_count;
-    }
-
-    elog(LOG,
-         "calc_plan_similarity: cand_count=%d, sample_count=%d, target_centers=%d",
-         cand_count, sample_count, num_centers);
 
     /* ----------------------------------------------------------
      * 1. Prune and materialize cand_list into an indexable array
@@ -236,6 +229,14 @@ calc_plan_similarity(
         writer = 1;
     }
     cand_count = writer; /* Actual cand count */
+
+    if (num_centers > cand_count) {
+        num_centers = cand_count;
+    }
+
+    elog(LOG,
+         "calc_plan_similarity: cand_count=%d, sample_count=%d, target_centers=%d",
+         cand_count, sample_count, num_centers);
 
     /* ----------------------------------------------------------
      * 2. Build cost_matrix: one cost vector per Path
