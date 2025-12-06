@@ -846,12 +846,15 @@ select_path_by_strategy_basic(
     /* Reconsider k */
     if (path_strategy_func == calc_plan_similarity) {
         int adjusted_k = 0;
+        // FIXME: Not all element in `rank_arr` is valid. But we use `palloc0` to initialize
+        // FIXME: `rank_arr`. Thus, `rank_arr[i].score > 0.0` should indicate a valid item now.
+        // FIXME: Otherwise: either invalid or non-center about which we do not care.
         for (int i = 0; i < cand_count; i++) {
-            if (rank_arr[i].score < 0.1) {
-                rank_arr[i].score = 1.0; // Non-center
-            } else {
+            if (rank_arr[i].score > 0.0) {
                 rank_arr[i].score = 0.0; // Center
                 ++adjusted_k;
+            } else {
+                rank_arr[i].score = 1.0; // Non-center or invalid
             }
         }
         Assert(adjusted_k > 0);
