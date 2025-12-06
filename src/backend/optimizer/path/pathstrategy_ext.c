@@ -29,13 +29,12 @@
 #include <float.h>
 
 #include "nodes/pg_list.h"
-#include "lib/stringinfo.h"
 #include "optimizer/paths.h"
 #include "utils/elog.h"
 #include "utils/memutils.h"
 #include "optimizer/pathstrategy.h"
 
-#define PRUNE_TOLERANCE_FACTOR 1.2
+#define PRUNE_TOLERANCE_FACTOR 2.0
 
 /* ----------------------------------------------------------------
  * Internal helpers: KL, JS, etc.
@@ -162,8 +161,7 @@ calc_plan_similarity(
 
     int cand_count = list_length((List *) cand_list);
     if (cand_count <= 0) {
-        elog(LOG, "calc_plan_similarity: empty candidate list");
-        return;
+        elog(ERROR, "calc_plan_similarity: empty candidate list");
     }
 
     /* Determine number of centers R; clamp to [1, cand_count]. */
@@ -171,13 +169,6 @@ calc_plan_similarity(
     if (num_centers <= 0) {
         num_centers = 1;
     }
-    if (num_centers > cand_count) {
-        num_centers = cand_count;
-    }
-
-    elog(LOG,
-         "calc_plan_similarity: cand_count=%d, sample_count=%d, target_centers=%d",
-         cand_count, sample_count, num_centers);
 
     /* ----------------------------------------------------------
      * 1. Prune and materialize cand_list into an indexable array
@@ -198,13 +189,13 @@ calc_plan_similarity(
     foreach(lc, cand_list) {
         Path *path = lfirst(lc);
 
-        Cost cur_max_total_cost = 0.0;
+        Cost cur_min_total_cost = DBL_MAX;
         const Sample *cur_total_cost_sample = path->total_cost_sample;
         const int cur_sample_count = cur_total_cost_sample->sample_count;
         for (int cur_sample_idx = 0; cur_sample_idx < cur_sample_count; ++cur_sample_idx) {
-            cur_max_total_cost = Max(cur_max_total_cost, cur_total_cost_sample->sample[cur_sample_idx]);
+            cur_min_total_cost = Min(cur_min_total_cost, cur_total_cost_sample->sample[cur_sample_idx]);
         }
-        if (cur_max_total_cost > max_total_cost_thresh) {
+        if (cur_min_total_cost > max_total_cost_thresh) {
             continue; /* We skip bad paths, but we don't remove it now. */
         }
 
@@ -214,7 +205,32 @@ calc_plan_similarity(
         ++writer;
     }
     Assert(writer <= cand_count);
+
+    /* Now we have no paths, but we need at least one path. */
+    if (writer == 0) {
+        // elog(LOG, "Cannot find any proper paths using similarity score, but we still need one.");
+
+        Path *best_path = NULL;
+        Cost min_total_cost = DBL_MAX;
+        foreach(lc, cand_list) {
+            Path *path = lfirst(lc);
+            const Cost cur_total_cost = path->total_cost;
+            if (cur_total_cost < min_total_cost) {
+                min_total_cost = cur_total_cost;
+                best_path = path;
+            }
+        }
+
+        path_array[writer] = best_path;
+        rank_arr[writer].path = best_path;
+        rank_arr[writer].score = 0.0; /* Will be filled after K-center */
+        writer = 1;
+    }
     cand_count = writer; /* Actual cand count */
+
+    if (num_centers > cand_count) {
+        num_centers = cand_count;
+    }
 
     /* ----------------------------------------------------------
      * 2. Build cost_matrix: one cost vector per Path
@@ -253,10 +269,6 @@ calc_plan_similarity(
             for (int sc = 0; sc < sample_count; ++sc) {
                 cost_matrix[i][sc] = v;
             }
-
-            elog(LOG,
-                 "calc_plan_similarity: path %d only has 1 sample; broadcasting to %d slots",
-                 i, sample_count);
         }
         /*
          * Case 3: illegal → insufficient samples but not 1
@@ -293,7 +305,6 @@ calc_plan_similarity(
     for (int idx = 0; idx < cand_count; ++idx) {
         min_dist[idx] = DBL_MAX;
     }
-    elog(LOG, "calc_plan_similarity: first center is candidate %d", first_center);
 
     /* 3.2 Iteratively select the remaining centers */
     for (int k = 1; k < num_centers; ++k) {
@@ -318,10 +329,6 @@ calc_plan_similarity(
         }
 
         centers[k] = farthest_idx;
-
-        elog(LOG,
-             "calc_plan_similarity: selected center #%d -> candidate %d (min_dist=%.6f)",
-             k, farthest_idx, farthest_dist);
     }
 
     /* ----------------------------------------------------------
@@ -353,26 +360,6 @@ calc_plan_similarity(
         Assert(center_idx >= 0 && center_idx < cand_count);
         rank_arr[center_idx].score = 1.0;
     }
-
-    elog(LOG,
-         "calc_plan_similarity: reduced from %d candidates to %d centers",
-         cand_count, num_centers);
-
-    /* Optional: log the list of chosen centers */
-    StringInfoData buf;
-
-    initStringInfo(&buf);
-    appendStringInfoString(&buf, "calc_plan_similarity: centers = [");
-    for (int k = 0; k < num_centers; ++k) {
-        if (k > 0) {
-            appendStringInfoString(&buf, ", ");
-        }
-        appendStringInfo(&buf, "%d", centers[k]);
-    }
-    appendStringInfoString(&buf, "]");
-    elog(LOG, "%s", buf.data);
-
-    pfree(buf.data);
 
     /* ----------------------------------------------------------
      * 5. Cleanup temporary structures (optional in short-lived

@@ -5,6 +5,7 @@
 // Modified by Xuan Chen on 2025/10/31.
 // Modified by Xuan Chen on 2025/11/1.
 // Modified by Xuan Chen on 2025/11/23.
+// Modified by Xuan Chen on 2025/12/06.
 //
 
 #include "optimizer/addpath.h"
@@ -834,14 +835,32 @@ select_path_by_strategy_basic(
      * Phase 1: build PathRank array and compute scores via strategy.
      * The strategy function fills rank_arr with (path, score).
      * -------------------------------------------------------------------- */
-    PathRank *rank_arr = palloc(sizeof(PathRank) * cand_count);
+    PathRank *rank_arr = palloc0(sizeof(PathRank) * cand_count);
     path_strategy_func(cand_list, rank_arr, min_envelope, sample_count);
 
     /* --------------------------------------------------------------------
      * Phase 2: select global top-k (smallest score) using a fixed MAX-heap.
      * Root of heap = worst among currently kept.
      * -------------------------------------------------------------------- */
-    const int k = Min(select_path_limit, cand_count);
+    int k = Min(select_path_limit, cand_count);
+
+    /* Reconsider k */
+    if (path_strategy_func == calc_plan_similarity) {
+        int adjusted_k = 0;
+        // FIXME: Not all element in `rank_arr` is valid. But we use `palloc0` to initialize
+        // FIXME: `rank_arr`. Thus, `rank_arr[i].score > 0.0` should indicate a valid item now.
+        // FIXME: Otherwise: either invalid or non-center about which we do not care.
+        for (int i = 0; i < cand_count; i++) {
+            if (rank_arr[i].score > 0.0) {
+                rank_arr[i].score = 0.0; // Center
+                ++adjusted_k;
+            } else {
+                rank_arr[i].score = 1.0; // Non-center or invalid
+            }
+        }
+        Assert(adjusted_k > 0);
+        k = Min(k, adjusted_k);
+    }
 
     int *heap_idx = palloc(sizeof(int) * Max(1, k));
     int hsize = 0;
