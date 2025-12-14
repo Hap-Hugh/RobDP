@@ -2005,7 +2005,7 @@ struct config_bool ConfigureNamesBool[] =
 			 gettext_noop("Set whether the distribution of rows is enabled when estimating costs."),
 		 },
 		&enable_rows_dist,
-		false,
+		true,
 		NULL, NULL, NULL
 	},
 
