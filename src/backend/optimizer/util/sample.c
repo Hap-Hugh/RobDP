@@ -62,24 +62,24 @@ void calc_mean_std(
 Sample *make_sample_by_single_value(
     const double val
 ) {
-    Sample *res = palloc0(sizeof(Sample));
-    res->sample_count = 1;
-    res->sample[0] = val;
-    return res;
+    Sample *dst_sample = palloc0(sizeof(Sample));
+    dst_sample->sample_count = 1;
+    dst_sample->sample[0] = val;
+    return dst_sample;
 }
 
 Sample *make_sample_by_scale_factor(
-    const Sample *src,
+    const Sample *src_sample,
     const double factor
 ) {
-    Assert(src != NULL);
-    Sample *dst = palloc0(sizeof(Sample));
-    Assert(dst != NULL);
-    dst->sample_count = src->sample_count;
-    for (int i = 0; i < dst->sample_count; ++i) {
-        dst->sample[i] = src->sample[i] * factor;
+    Assert(src_sample != NULL);
+    Sample *dst_sample = palloc0(sizeof(Sample));
+    Assert(dst_sample != NULL);
+    dst_sample->sample_count = src_sample->sample_count;
+    for (int i = 0; i < dst_sample->sample_count; ++i) {
+        dst_sample->sample[i] = src_sample->sample[i] * factor;
     }
-    return dst;
+    return dst_sample;
 }
 
 /*
