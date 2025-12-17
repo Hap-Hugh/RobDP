@@ -3323,56 +3323,53 @@ standard_join_search(PlannerInfo *root, const int levels_needed, List *initial_r
 
     Assert(error_sample_count >= 1);
 
-    for (int round = 0; round < error_sample_count; ++round) {
-        /* Each round samples a different cost-estimation scenario */
-        root->round = round;
+    /* Only one round with the mean cost-estimation scenario */
 
-        /* Allocate per-round join_rel storage (indexed by join level) */
-        root->join_rel_level = palloc0((levels_needed + 1) * sizeof(List *));
-        root->join_rel_level[1] = initial_rels;
-        root->join_rel_list = NIL;
-        root->join_rel_hash = NULL;
+    /* Allocate per-round join_rel storage (indexed by join level) */
+    root->join_rel_level = palloc0((levels_needed + 1) * sizeof(List *));
+    root->join_rel_level[1] = initial_rels;
+    root->join_rel_list = NIL;
+    root->join_rel_hash = NULL;
 
-        /* Record this round's join_rel state for later envelope reduction */
-        saved_join_rel_levels = lappend(saved_join_rel_levels, root->join_rel_level);
+    /* Record this round's join_rel state for later envelope reduction */
+    saved_join_rel_levels = lappend(saved_join_rel_levels, root->join_rel_level);
 
-        for (int lev = 2; lev <= levels_needed; ++lev) {
-            ListCell *lc;
+    for (int lev = 2; lev <= levels_needed; ++lev) {
+        ListCell *lc;
+
+        /*
+         * Enumerate join rels at this level and build paths for them.
+         * (Classic dynamic-programming join search)
+         */
+        join_search_one_level(root, lev);
+
+        /*
+         * Now add partitionwise paths, gather paths, and pick cheapest
+         * paths for each joinrel at this level.
+         */
+        foreach(lc, root->join_rel_level[lev]) {
+            RelOptInfo *rel = lfirst(lc);
+
+            /* Compute per-round cost samples for this rel */
+            calc_score_from_pathlist(rel);
+
+            /* Add partition-wise join paths (if applicable) */
+            generate_partitionwise_join_paths(root, rel);
 
             /*
-             * Enumerate join rels at this level and build paths for them.
-             * (Classic dynamic-programming join search)
+             * Add gather paths for partial plans except for the final joinrel.
+             * (final handling happens later in grouping_planner)
              */
-            join_search_one_level(root, lev);
+            if (!bms_equal(rel->relids, root->all_query_rels)) {
+                generate_useful_gather_paths(root, rel, false);
+            }
 
-            /*
-             * Now add partitionwise paths, gather paths, and pick cheapest
-             * paths for each joinrel at this level.
-             */
-            foreach(lc, root->join_rel_level[lev]) {
-                RelOptInfo *rel = lfirst(lc);
-
-                /* Compute per-round cost samples for this rel */
-                calc_score_from_pathlist(rel);
-
-                /* Add partition-wise join paths (if applicable) */
-                generate_partitionwise_join_paths(root, rel);
-
-                /*
-                 * Add gather paths for partial plans except for the final joinrel.
-                 * (final handling happens later in grouping_planner)
-                 */
-                if (!bms_equal(rel->relids, root->all_query_rels)) {
-                    generate_useful_gather_paths(root, rel, false);
-                }
-
-                /* Select the cheapest paths now that all are built */
-                set_cheapest(rel);
+            /* Select the cheapest paths now that all are built */
+            set_cheapest(rel);
 
 #ifdef OPTIMIZER_DEBUG
-                debug_print_rel(root, rel);
+            debug_print_rel(root, rel);
 #endif
-            }
         }
     }
 
@@ -3412,7 +3409,7 @@ standard_join_search(PlannerInfo *root, const int levels_needed, List *initial_r
      */
     List **min_envelope = calc_minimum_envelope(
         saved_join_rel_levels,
-        error_sample_count,
+        1,
         levels_needed
     );
 
@@ -3437,7 +3434,6 @@ standard_join_search(PlannerInfo *root, const int levels_needed, List *initial_r
 
     /* The second pass -- we would like to calculated penalty based on previous results. */
     root->pass = 2;
-    root->round = -1;
     root->join_rel_level = palloc0((levels_needed + 1) * sizeof(List *));
     root->join_rel_level_first = min_envelope;
     root->join_rel_level[1] = initial_rels;

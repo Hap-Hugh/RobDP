@@ -292,9 +292,9 @@ struct PlannerInfo
 	 */
 	/* save which pass it is now -- we have two passes */
 	int			pass;
-	/* save which round of the first pass it is now -- we have multiple rounds,
-	 * should be consistent with the sample count. */
-	int			round;
+	/* save which round of the first pass it is now -- we have only one round,
+	 * so we no longer need the variable ``round''. */
+
 	/* lists of join-relation RelOptInfos (the first pass) */
 	List	  **join_rel_level pg_node_attr(read_write_ignore);
 	/* additional lists of join-relation RelOptInfos (the second pass) */
