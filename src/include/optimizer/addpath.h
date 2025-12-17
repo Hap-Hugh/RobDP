@@ -36,13 +36,6 @@ calc_score_from_pathlist(
     RelOptInfo *joinrel
 );
 
-List **
-calc_minimum_envelope(
-    List *saved_join_rel_levels,
-    int sample_count,
-    int levels_needed
-);
-
 List *
 sort_pathlist_by_total_cost(
     List *pathlist

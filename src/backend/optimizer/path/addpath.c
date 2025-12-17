@@ -1172,75 +1172,11 @@ calc_score_from_pathlist(
         partial_min_score = Min(partial_path->total_cost, partial_min_score);
     }
     joinrel->partial_min_score = partial_min_score;
-}
 
-/*
- * calc_minimum_envelope
- *
- * Accumulate per-round scalar scores for each joinrel into the first snapshot.
- * Each element of saved_join_rel_levels is a List** holding per-level joinrels
- * for one sampling round. We walk levels [2..levels_needed] in lockstep and, for
- * each joinrel, store this round's scalar score into min_rel->min_score_sample.
- *
- * Notes/Assumptions:
- * - The first snapshot acts as the accumulator (updated in-place and returned).
- * - Sample storage uses an embedded fixed-size array inside `Sample`
- *   (e.g., double sample[DIST_MAX_SAMPLE];), so no extra allocation is needed
- *   for the array itself; we only palloc the `Sample` header once at round 0.
- * - List orders match across rounds so `forboth` walks 1:1; if lengths differ,
- *   `forboth` stops at the shorter list.
- * - This routine records the per-round scalar value:
- *        Min(cur_rel->min_score, cur_rel->partial_min_score)
- *   into the sample slot for `round`. Any later elementwise-min over rounds
- *   (i.e., a true "minimum envelope") is expected to be performed elsewhere.
- */
-List **
-calc_minimum_envelope(
-    List *saved_join_rel_levels,
-    const int sample_count,
-    const int levels_needed
-) {
-    ListCell *lc, *lc1, *lc2;
-
-    /* Use the first snapshot as the initial (and final) envelope; updated in-place. */
-    List **min_envelope = linitial(saved_join_rel_levels);
-
-    /* Iterate over every saved snapshot of per-level join_rel lists. */
-    foreach(lc, saved_join_rel_levels) {
-        const int round = foreach_current_index(lc);
-        List **cur_saved_join_rel_level = lfirst(lc);
-
-        /* By convention, levels 0/1 are base rels; start from level 2. */
-        for (int lev = 2; lev <= levels_needed; ++lev) {
-            /*
-             * Pairwise walk the lists at the same level in the current snapshot
-             * and in the running minimum envelope. Assumes identical ordering.
-             * If lengths differ, forboth stops at the shorter list.
-             */
-            forboth(lc1, cur_saved_join_rel_level[lev], lc2, min_envelope[lev]) {
-                const RelOptInfo *cur_rel = lfirst(lc1);
-                RelOptInfo *min_rel = lfirst(lc2);
-                if (round == 0) {
-                    /*
-                     * Allocate the Sample header once; the underlying
-                     * `sample[]` is an embedded fixed-size array in `Sample`,
-                     * so no separate allocation is required here.
-                     * Caller ensures sample_count <= array capacity.
-                     */
-                    min_rel->min_score_sample = palloc(sizeof(Sample));
-                    min_rel->min_score_sample->sample_count = sample_count;
-                }
-                /* Current round's scalar score for this joinrel */
-                const double cur_rel_score = Min(
-                    cur_rel->min_score, cur_rel->partial_min_score
-                );
-                /* Store into the embedded sample array at index = round */
-                min_rel->min_score_sample->sample[round] = cur_rel_score;
-            }
-        }
-    }
-    /* Return the first snapshot pointer, now populated with per-round scores. */
-    return min_envelope;
+    const double cur_rel_score = Min(min_score, partial_min_score);
+    joinrel->min_score_sample = palloc(sizeof(Sample));
+    joinrel->min_score_sample->sample_count = 1;
+    joinrel->min_score_sample->sample[0] = cur_rel_score;
 }
 
 /*

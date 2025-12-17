@@ -872,6 +872,8 @@ void final_cost_nestloop_1p(
 
     path->jpath.path.startup_cost = startup_cost;
     path->jpath.path.total_cost = startup_cost + run_cost;
+    path->jpath.path.startup_cost_sample = make_sample_by_single_value(path->jpath.path.startup_cost);
+    path->jpath.path.total_cost_sample = make_sample_by_single_value(path->jpath.path.total_cost);
 }
 
 /* ==== ==== ==== ==== ==== ==== 1-PASS MERGE JOIN COST MODEL ==== ==== ==== ==== ==== ==== */
@@ -1333,6 +1335,8 @@ void final_cost_mergejoin_1p(
 
     path->jpath.path.startup_cost = startup_cost;
     path->jpath.path.total_cost = startup_cost + run_cost;
+    path->jpath.path.startup_cost_sample = make_sample_by_single_value(path->jpath.path.startup_cost);
+    path->jpath.path.total_cost_sample = make_sample_by_single_value(path->jpath.path.total_cost);
 }
 
 /* ==== ==== ==== ==== ==== ==== 1-PASS HASH JOIN COST MODEL ==== ==== ==== ==== ==== ==== */
@@ -1702,6 +1706,8 @@ void final_cost_hashjoin_1p(
 
     path->jpath.path.startup_cost = startup_cost;
     path->jpath.path.total_cost = startup_cost + run_cost;
+    path->jpath.path.startup_cost_sample = make_sample_by_single_value(path->jpath.path.startup_cost);
+    path->jpath.path.total_cost_sample = make_sample_by_single_value(path->jpath.path.total_cost);
 }
 
 /* ==== ==== ==== ==== ==== ==== 2-PASS NEST LOOP COST MODEL ==== ==== ==== ==== ==== ==== */

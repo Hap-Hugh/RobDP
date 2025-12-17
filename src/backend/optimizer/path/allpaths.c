@@ -3314,7 +3314,6 @@ standard_join_search(PlannerInfo *root, const int levels_needed, List *initial_r
      * set root->join_rel_level[1] to represent all the single-jointree-item
      * relations.
      */
-    List *saved_join_rel_levels = NIL;
 
     /* The first pass -- we would like to find out the minimum expected total cost vector. */
     root->pass = 1;
@@ -3330,9 +3329,6 @@ standard_join_search(PlannerInfo *root, const int levels_needed, List *initial_r
     root->join_rel_level[1] = initial_rels;
     root->join_rel_list = NIL;
     root->join_rel_hash = NULL;
-
-    /* Record this round's join_rel state for later envelope reduction */
-    saved_join_rel_levels = lappend(saved_join_rel_levels, root->join_rel_level);
 
     for (int lev = 2; lev <= levels_needed; ++lev) {
         ListCell *lc;
@@ -3373,67 +3369,11 @@ standard_join_search(PlannerInfo *root, const int levels_needed, List *initial_r
         }
     }
 
-    // ListCell *lc_round;
-    // foreach(lc_round, saved_join_rel_levels) {
-    //     List **join_rel_levels = lfirst(lc_round);
-    //     for (int lev = 2; lev <= levels_needed; ++lev) {
-    //         ListCell *lc;
-    //         foreach(lc, join_rel_levels[lev]) {
-    //             const RelOptInfo *rel = lfirst(lc);
-    //             ListCell *lc_path;
-    //             foreach(lc_path, rel->pathlist) {
-    //                 const Path *path = lfirst(lc_path);
-    //                 elog(LOG, "[1-pass] [round %d] [lev %d] [rel %d] [path %d] [pathtype %d] "
-    //                      "[rows %.3f] [startup cost %.3f] [total cost %.3f] [score %.3f]",
-    //                      foreach_current_index(lc_round), lev, foreach_current_index(lc),
-    //                      foreach_current_index(lc_path), path->pathtype,
-    //                      path->rows, path->startup_cost, path->total_cost, path->score);
-    //             }
-    //             foreach(lc_path, rel->partial_pathlist) {
-    //                 const Path *path = lfirst(lc_path);
-    //                 elog(LOG, "[1-pass] [round %d] [lev %d] [rel %d] [partial path %d] [pathtype %d] "
-    //                      "[rows %.3f] [startup cost %.3f] [total cost %.3f] [score %.3f]",
-    //                      foreach_current_index(lc_round), lev, foreach_current_index(lc),
-    //                      foreach_current_index(lc_path), path->pathtype,
-    //                      path->rows, path->startup_cost, path->total_cost, path->score);
-    //             }
-    //         }
-    //     }
-    // }
-
-    /* Ensure we have exactly `round` saved snapshots before reduction */
-    Assert(round == list_length(saved_join_rel_levels));
-    /*
-     * Compute the minimum-envelope across all saved join_rel snapshots.
-     * The first snapshot is updated in-place and returned.
-     */
-    List **min_envelope = calc_minimum_envelope(
-        saved_join_rel_levels,
-        1,
-        levels_needed
-    );
-
+    List **min_envelope = root->join_rel_level;
     RelOptInfo *final_rel = linitial(root->join_rel_level[levels_needed]);
 
-    // ListCell *lc_final;
-    // foreach(lc_final, final_rel->pathlist) {
-    //     const Path *path = lfirst(lc_final);
-    //     elog(LOG, "[1-pass] [final rel] [path %d] [pathtype %d] "
-    //          "[startup cost %.3f] [total cost %.3f] [score %.3f]",
-    //          foreach_current_index(lc_final), path->pathtype,
-    //          path->startup_cost, path->total_cost, path->score);
-    // }
-    //
-    // foreach(lc_final, final_rel->partial_pathlist) {
-    //     const Path *path = lfirst(lc_final);
-    //     elog(LOG, "[1-pass] [final rel] [partial path %d] [pathtype %d] "
-    //          "[startup cost %.3f] [total cost %.3f] [score %.3f]",
-    //          foreach_current_index(lc_final), path->pathtype,
-    //          path->startup_cost, path->total_cost, path->score);
-    // }
-
     /* The second pass -- we would like to calculated penalty based on previous results. */
-    root->pass = 2;
+    root->pass = 1; /* TODO: We still need to use the first pass logic. */
     root->join_rel_level = palloc0((levels_needed + 1) * sizeof(List *));
     root->join_rel_level_first = min_envelope;
     root->join_rel_level[1] = initial_rels;
@@ -3522,7 +3462,7 @@ standard_join_search(PlannerInfo *root, const int levels_needed, List *initial_r
                     min_envelope_sample,
                     main_objective_func, /* strategy A */
                     add_path_limit,
-                    error_sample_count,
+                    1,
                     true /* save score for kept */
                 );
 
@@ -3535,7 +3475,7 @@ standard_join_search(PlannerInfo *root, const int levels_needed, List *initial_r
                         min_envelope_sample,
                         retain_strategy_func,
                         retain_path_limit,
-                        error_sample_count,
+                        1,
                         false
                     );
                 }
@@ -3584,7 +3524,7 @@ standard_join_search(PlannerInfo *root, const int levels_needed, List *initial_r
                     min_envelope_sample,
                     main_objective_func, /* strategy A */
                     add_path_limit, /* first-pass limit for partial paths */
-                    error_sample_count,
+                    1,
                     true /* save score for kept */
                 );
 
@@ -3597,7 +3537,7 @@ standard_join_search(PlannerInfo *root, const int levels_needed, List *initial_r
                         min_envelope_sample,
                         retain_strategy_func, /* second-pass strategy for partial */
                         retain_path_limit, /* second-pass limit for partial */
-                        error_sample_count,
+                        1,
                         false
                     );
                 }
@@ -3622,13 +3562,13 @@ standard_join_search(PlannerInfo *root, const int levels_needed, List *initial_r
                     rel->pathlist,
                     min_envelope_sample,
                     final_score_func,
-                    error_sample_count
+                    1
                 );
                 set_path_score(
                     rel->partial_pathlist,
                     min_envelope_sample,
                     final_score_func,
-                    error_sample_count
+                    1
                 );
             }
 
