@@ -651,13 +651,11 @@ static bool fetch_cost_at(
 extern void calc_robust_coverage(
     const List *cand_list,
     PathRank *rank_arr,
-    const double *min_envelope /* unused */,
+    const double *min_envelope,
     const int sample_count
 ) {
     const int nplans = list_length((List *) cand_list);
     const double eps = ROBUST_EPS_DEFAULT;
-
-    (void) min_envelope; /* explicitly unused */
 
     if (nplans <= 0) {
         elog(LOG, "[robust_cover] No candidates.");
@@ -678,26 +676,13 @@ extern void calc_robust_coverage(
     bool *uncovered = (bool *) palloc(sizeof(bool) * sample_count);
     bool *selected = (bool *) palloc0(sizeof(bool) * nplans); /* init false */
 
+    /* --- 1) Fill in opt[] array --- */
     for (int s = 0; s < sample_count; s++) {
-        opt[s] = DBL_MAX;
+        opt[s] = min_envelope[s];
         uncovered[s] = true;
     }
 
-    /* --- 1) Compute per-sample minima opt[s] across all candidates --- */
-    for (int i = 0; i < nplans; i++) {
-        const Path *path = paths[i];
-
-        for (int s = 0; s < sample_count; s++) {
-            double v;
-            if (!fetch_cost_at(path, s, sample_count, &v))
-                elog(ERROR, "[robust_cover] candidate %d has incompatible total_cost_sample shape.", i);
-
-            if (v < opt[s])
-                opt[s] = v;
-        }
-    }
-
-    /* Log a brief statistic about opt[] for sanity (min/max over s). */
+    /* Log a brief statistic about opt[] for sanity. */
     {
         double mn = DBL_MAX, mx = -DBL_MAX;
         for (int s = 0; s < sample_count; s++) {
