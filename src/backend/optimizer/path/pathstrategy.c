@@ -2,6 +2,7 @@
 // Created by Xuan Chen on 2025/10/31.
 // Modified by Xuan Chen on 2025/11/9.
 // Modified by Xuan Chen on 2025/11/12.
+// Modified by Xuan Chen on 2025/12/27.
 //
 
 #define PENALTY_TOLERANCE_FACTOR 1.2
@@ -224,11 +225,16 @@ double calc_worst_penalty_impl(
     Assert(min_envelope != NULL);
     Assert(effective > 0);
 
-    for (int i = 0; i < effective; ++i) {
+    for (int i = 0; i < error_sample_count; ++i) {
         const double cur_thresh = min_envelope[i] * PENALTY_TOLERANCE_FACTOR;
-        const double cur_sample = total_cost_sample->sample[i];
-        const double cur_penalty =
-                (cur_sample > cur_thresh) ? (cur_sample - min_envelope[i]) : 0.0;
+        const double cur_sample
+                = (effective == 1)
+                      ? total_cost_sample->sample[0]
+                      : total_cost_sample->sample[i];
+        const double cur_penalty
+                = (cur_sample > cur_thresh)
+                      ? (cur_sample - min_envelope[i])
+                      : 0.0;
 
         if (cur_penalty > worst_penalty)
             worst_penalty = cur_penalty;
@@ -256,13 +262,19 @@ double calc_expected_penalty_impl(
     Assert(min_envelope != NULL);
     Assert(effective > 0);
 
-    for (int i = 0; i < effective; ++i) {
+    for (int i = 0; i < error_sample_count; ++i) {
         const double cur_thresh = min_envelope[i] * PENALTY_TOLERANCE_FACTOR;
-        const double cur_sample = total_cost_sample->sample[i];
-        expected_penalty +=
-                (cur_sample > cur_thresh) ? (cur_sample - min_envelope[i]) : 0.0;
+        const double cur_sample
+                = (effective == 1)
+                      ? total_cost_sample->sample[0]
+                      : total_cost_sample->sample[i];
+        const double cur_penalty
+                = (cur_sample > cur_thresh)
+                      ? (cur_sample - min_envelope[i])
+                      : 0.0;
+        expected_penalty += cur_penalty;
     }
-    return expected_penalty / (double) effective;
+    return expected_penalty / (double) error_sample_count;
 }
 
 /*
@@ -340,11 +352,16 @@ double calc_worst_penalty_with_std_impl(
     Assert(min_envelope != NULL);
     Assert(effective > 0);
 
-    for (int i = 0; i < effective; ++i) {
+    for (int i = 0; i < error_sample_count; ++i) {
         const double cur_thresh = min_envelope[i] * PENALTY_TOLERANCE_FACTOR;
-        const double cur_sample = total_cost_sample->sample[i];
-        const double cur_penalty =
-                (cur_sample > cur_thresh) ? (cur_sample - min_envelope[i]) : 0.0;
+        const double cur_sample
+                = (effective == 1)
+                      ? total_cost_sample->sample[0]
+                      : total_cost_sample->sample[i];
+        const double cur_penalty
+                = (cur_sample > cur_thresh)
+                      ? (cur_sample - min_envelope[i])
+                      : 0.0;
 
         if (cur_penalty > worst_penalty)
             worst_penalty = cur_penalty;
@@ -377,14 +394,20 @@ double calc_expected_penalty_with_std_impl(
     Assert(min_envelope != NULL);
     Assert(effective > 0);
 
-    for (int i = 0; i < effective; ++i) {
+    for (int i = 0; i < error_sample_count; ++i) {
         const double cur_thresh = min_envelope[i] * PENALTY_TOLERANCE_FACTOR;
-        const double cur_sample = total_cost_sample->sample[i];
-        sum_penalty +=
-                (cur_sample > cur_thresh) ? (cur_sample - min_envelope[i]) : 0.0;
+        const double cur_sample
+                = (effective == 1)
+                      ? total_cost_sample->sample[0]
+                      : total_cost_sample->sample[i];
+        const double cur_penalty
+                = (cur_sample > cur_thresh)
+                      ? (cur_sample - min_envelope[i])
+                      : 0.0;
+        sum_penalty += cur_penalty;
     }
 
-    const double mean_penalty = sum_penalty / (double) effective;
+    const double mean_penalty = sum_penalty / (double) error_sample_count;
 
     /* Add STD of penalty */
     const double std_penalty =
@@ -424,9 +447,12 @@ double calc_4th_worst_penalty_impl(
     Assert(min_envelope != NULL);
     Assert(effective > 0);
 
-    for (int i = 0; i < effective; ++i) {
+    for (int i = 0; i < error_sample_count; ++i) {
         const double thresh = min_envelope[i] * PENALTY_TOLERANCE_FACTOR;
-        const double val = total_cost_sample->sample[i];
+        const double val
+                = (effective == 1)
+                      ? total_cost_sample->sample[0]
+                      : total_cost_sample->sample[i];
         const double pen = (val > thresh) ? (val - min_envelope[i]) : 0.0;
 
         /* If we already have 4 penalties and this one is not better,
@@ -487,8 +513,11 @@ double calc_worst_total_cost_impl(
     Assert(total_cost_sample != NULL);
     Assert(effective > 0);
 
-    for (int i = 0; i < effective; ++i) {
-        const double cur_sample = total_cost_sample->sample[i];
+    for (int i = 0; i < error_sample_count; ++i) {
+        const double cur_sample
+                = (effective == 1)
+                      ? total_cost_sample->sample[0]
+                      : total_cost_sample->sample[i];
         if (cur_sample > worst_total_cost)
             worst_total_cost = cur_sample;
     }
@@ -513,10 +542,15 @@ double calc_expected_total_cost_impl(
     Assert(total_cost_sample != NULL);
     Assert(effective > 0);
 
-    for (int i = 0; i < effective; ++i)
-        expected_total_cost += total_cost_sample->sample[i];
+    for (int i = 0; i < error_sample_count; ++i) {
+        const double cur_sample
+                = (effective == 1)
+                      ? total_cost_sample->sample[0]
+                      : total_cost_sample->sample[i];
+        expected_total_cost += cur_sample;
+    }
 
-    return expected_total_cost / (double) effective;
+    return expected_total_cost / (double) error_sample_count;
 }
 
 /*
@@ -537,8 +571,11 @@ double calc_worst_startup_cost_impl(
     Assert(startup_cost_sample != NULL);
     Assert(effective > 0);
 
-    for (int i = 0; i < effective; ++i) {
-        const double cur_sample = startup_cost_sample->sample[i];
+    for (int i = 0; i < error_sample_count; ++i) {
+        const double cur_sample
+                = (effective == 1)
+                      ? startup_cost_sample->sample[0]
+                      : startup_cost_sample->sample[i];
         if (cur_sample > worst_startup_cost)
             worst_startup_cost = cur_sample;
     }
@@ -563,10 +600,15 @@ double calc_expected_startup_cost_impl(
     Assert(startup_cost_sample != NULL);
     Assert(effective > 0);
 
-    for (int i = 0; i < effective; ++i)
-        expected_startup_cost += startup_cost_sample->sample[i];
+    for (int i = 0; i < error_sample_count; ++i) {
+        const double cur_sample
+                = (effective == 1)
+                      ? startup_cost_sample->sample[0]
+                      : startup_cost_sample->sample[i];
+        expected_startup_cost += cur_sample;
+    }
 
-    return expected_startup_cost / (double) effective;
+    return expected_startup_cost / (double) error_sample_count;
 }
 
 static bool covers_under_eps(
@@ -651,13 +693,11 @@ static bool fetch_cost_at(
 extern void calc_robust_coverage(
     const List *cand_list,
     PathRank *rank_arr,
-    const double *min_envelope /* unused */,
+    const double *min_envelope,
     const int sample_count
 ) {
     const int nplans = list_length((List *) cand_list);
     const double eps = ROBUST_EPS_DEFAULT;
-
-    (void) min_envelope; /* explicitly unused */
 
     if (nplans <= 0) {
         elog(LOG, "[robust_cover] No candidates.");
@@ -678,26 +718,13 @@ extern void calc_robust_coverage(
     bool *uncovered = (bool *) palloc(sizeof(bool) * sample_count);
     bool *selected = (bool *) palloc0(sizeof(bool) * nplans); /* init false */
 
+    /* --- 1) Fill in opt[] array --- */
     for (int s = 0; s < sample_count; s++) {
-        opt[s] = DBL_MAX;
+        opt[s] = min_envelope[s];
         uncovered[s] = true;
     }
 
-    /* --- 1) Compute per-sample minima opt[s] across all candidates --- */
-    for (int i = 0; i < nplans; i++) {
-        const Path *path = paths[i];
-
-        for (int s = 0; s < sample_count; s++) {
-            double v;
-            if (!fetch_cost_at(path, s, sample_count, &v))
-                elog(ERROR, "[robust_cover] candidate %d has incompatible total_cost_sample shape.", i);
-
-            if (v < opt[s])
-                opt[s] = v;
-        }
-    }
-
-    /* Log a brief statistic about opt[] for sanity (min/max over s). */
+    /* Log a brief statistic about opt[] for sanity. */
     {
         double mn = DBL_MAX, mx = -DBL_MAX;
         for (int s = 0; s < sample_count; s++) {
