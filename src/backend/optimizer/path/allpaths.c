@@ -3461,14 +3461,14 @@ standard_join_search(PlannerInfo *root, const int levels_needed, List *initial_r
                     &kept_pathlist,
                     min_envelope_sample,
                     main_objective_func, /* strategy A */
-                    add_path_limit,
+                    lev == levels_needed ? 1 : add_path_limit,
                     1,
                     true /* save score for kept */
                 );
 
                 /* Pass B: only if capacity remains */
                 List *final_dropped = NIL;
-                if (retain_path_limit > 0 && dropped_pathlist != NIL) {
+                if (lev != levels_needed && retain_path_limit > 0 && dropped_pathlist != NIL) {
                     final_dropped = select_path_by_strategy_dispatch(
                         dropped_pathlist,
                         &kept_pathlist,
@@ -3523,14 +3523,14 @@ standard_join_search(PlannerInfo *root, const int levels_needed, List *initial_r
                     &kept_partial_pathlist,
                     min_envelope_sample,
                     main_objective_func, /* strategy A */
-                    add_path_limit, /* first-pass limit for partial paths */
+                    lev == levels_needed ? 1 : add_path_limit, /* first-pass limit for partial paths */
                     1,
                     true /* save score for kept */
                 );
 
                 /* Pass B: always run with the specified retain strategy/limit (no global cap) */
                 List *final_partial_dropped = NIL;
-                if (retain_path_limit > 0 && dropped_partial_pathlist != NIL) {
+                if (lev != levels_needed && retain_path_limit > 0 && dropped_partial_pathlist != NIL) {
                     final_partial_dropped = select_path_by_strategy_dispatch(
                         dropped_partial_pathlist,
                         &kept_partial_pathlist,
