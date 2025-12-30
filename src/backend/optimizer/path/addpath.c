@@ -94,11 +94,8 @@ rank_idx_maxheap_push_topk(int *heap, const int size, const int k, const int idx
  * CoverPathRank
  *
  * Composite ranking for robust coverage selection:
- *   - cover_rank:
- *       Integral rank from robust coverage (calc_robust_coverage), where
- *       smaller = picked earlier by the greedy coverage algorithm.
- *   - mep:
- *       Minimum expected penalty, as produced by calc_expected_penalty.
+ *   - cover_rank: larger is better
+ *   - mep:        smaller is better
  *
  * Sorting rule:
  *   - Primary key:  cover_rank (descending).
@@ -106,8 +103,8 @@ rank_idx_maxheap_push_topk(int *heap, const int size, const int k, const int idx
  */
 typedef struct CoverPathRank {
     Path *path;
-    int cover_rank; /* primary key: greedy coverage rank (0,1,2,...) */
-    double mep; /* secondary key: minimum expected penalty */
+    int cover_rank; /* primary: larger is better */
+    double mep; /* secondary: smaller is better */
 } CoverPathRank;
 
 /*
@@ -145,7 +142,7 @@ compare_cover_path_rank(const void *a, const void *b) {
  * and the function returns a List* of all pruned (not kept) Paths.
  *
  * Contract (per-strategy):
- *   - Lower score = better.
+ *   - Lower score = better (except robust coverage).
  *   - Each strategy function must:
  *       * Fill rank_arr[0..cand_count-1] with {path, score} for each node in
  *         `cand_list`, in the same iteration order.
@@ -159,8 +156,10 @@ compare_cover_path_rank(const void *a, const void *b) {
  *       2) calc_expected_penalty()
  *       3) calc_expected_total_cost()
  *       4) calc_expected_penalty_with_std()
+ *       5) calc_robust_coverage()
+ *       6) calc_plan_similarity()
  *   - Selection is done in round-robin order over these four strategies:
- *       strategy 0 -> 1 -> 2 -> 3 -> 0 -> ...
+ *       strategy 0 -> 1 -> 2 -> 3 -> 4 -> 5 -> 0 -> 1 -> ...
  *   - For each strategy in turn, we pick the *best* (lowest score) path
  *     not yet selected according to that strategy. Selected paths are
  *     never picked again by later strategies.
