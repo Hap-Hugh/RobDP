@@ -5,6 +5,8 @@
 // Modified by Xuan Chen on 2025/10/31.
 // Modified by Xuan Chen on 2025/11/1.
 // Modified by Xuan Chen on 2025/11/23.
+// Modified by Xuan Chen on 2025/12/06.
+// Modified by Xuan Chen on 2025/12/31.
 //
 
 #include "optimizer/addpath.h"
@@ -107,6 +109,16 @@ typedef struct CoverPathRank {
     double mep; /* secondary: smaller is better */
 } CoverPathRank;
 
+/* A fast "is a better candidate than b" helper (matches compare_cover_path_rank). */
+static bool
+cover_path_rank_better(const CoverPathRank *a, const CoverPathRank *b) {
+    if (a->cover_rank != b->cover_rank)
+        return a->cover_rank > b->cover_rank; /* DESC: larger is better */
+    if (a->mep != b->mep)
+        return a->mep < b->mep; /* ASC */
+    return false;
+}
+
 /*
  * Comparator for CoverPathRank used by qsort().
  *
@@ -206,6 +218,14 @@ select_path_by_retention_set(
     PathRank *rank_total_cost = palloc(sizeof(PathRank) * cand_count);
     PathRank *rank_exp_penalty_std = palloc(sizeof(PathRank) * cand_count);
 
+    /* New: similarity (initialized to 0s to match your existing assumption) */
+    PathRank *rank_similarity = palloc0(sizeof(PathRank) * cand_count);
+
+    /* New: robust coverage + MEP composite */
+    PathRank *cover_arr = palloc(sizeof(PathRank) * cand_count);
+    PathRank *mep_arr = palloc(sizeof(PathRank) * cand_count);
+    CoverPathRank *rank_cover_mep = palloc(sizeof(CoverPathRank) * cand_count);
+
     /* Strategy 0: worst penalty */
     calc_worst_penalty(cand_list, rank_worst, min_envelope, sample_count);
 
@@ -218,12 +238,57 @@ select_path_by_retention_set(
     /* Strategy 3: expected penalty with standard deviation */
     calc_expected_penalty_with_std(cand_list, rank_exp_penalty_std, min_envelope, sample_count);
 
-    /* Convenience array for iterating strategies in a loop. */
-    PathRank *strategies[4] = {
-        rank_worst,
-        rank_exp_penalty,
-        rank_total_cost,
-        rank_exp_penalty_std
+    /* Strategy 4 (composite): robust coverage + MEP */
+    calc_robust_coverage(cand_list, cover_arr, min_envelope, sample_count);
+    calc_expected_penalty(cand_list, mep_arr, min_envelope, sample_count);
+
+    for (int i = 0; i < cand_count; ++i) {
+        Path *p_cover = cover_arr[i].path;
+        Path *p_mep = mep_arr[i].path;
+
+        if (p_cover != p_mep) {
+            elog(ERROR, "inconsistent paths when selecting paths by robust coverages");
+        }
+        Assert(p_cover == p_mep);
+
+        rank_cover_mep[i].path = p_cover;
+
+        /* Treat cover_arr[i].score as "rank/score where larger is better". */
+        rank_cover_mep[i].cover_rank = (int) cover_arr[i].score;
+        rank_cover_mep[i].mep = mep_arr[i].score;
+    }
+
+    /* Strategy 5: similarity */
+    calc_plan_similarity(cand_list, rank_similarity, min_envelope, sample_count);
+
+    /*
+     * Post-process similarity into a clean scalar ranking:
+     *   - if (score > 0) => Center => score = 0 (best)
+     *   - else           => Non-center => score = 1
+     *   - path == NULL   => invalid => DBL_MAX (never pick)
+     *
+     * This is a safer version of your snippet: avoids selecting NULL paths.
+     */
+    for (int i = 0; i < cand_count; ++i) {
+        if (rank_similarity[i].path == NULL) {
+            rank_similarity[i].score = DBL_MAX;
+            continue;
+        }
+
+        if (rank_similarity[i].score > 0.0) {
+            rank_similarity[i].score = 0.0; /* Center */
+        } else {
+            rank_similarity[i].score = 1.0; /* Non-center */
+        }
+    }
+
+    /* Convenience array for scalar strategies (lower score = better). */
+    PathRank *scalar_strategies[5] = {
+        rank_worst, /* s=0 */
+        rank_exp_penalty, /* s=1 */
+        rank_total_cost, /* s=2 */
+        rank_exp_penalty_std, /* s=3 */
+        rank_similarity /* s=5 */
     };
 
     /* --------------------------------------------------------------------
@@ -236,6 +301,7 @@ select_path_by_retention_set(
      * Once a path is selected by any strategy, it is marked and excluded
      * from further consideration by all strategies.
      * -------------------------------------------------------------------- */
+#define STRAT_COUNT 6
     const int k_target = Min(select_path_limit, cand_count);
     /* Mark which candidate indices are already selected as winners. */
     bool *selected = palloc0(sizeof(bool) * cand_count);
@@ -247,25 +313,49 @@ select_path_by_retention_set(
     while (winners_cnt < k_target) {
         bool progress_this_round = false;
 
-        for (int s = 0; s < 4 && winners_cnt < k_target; s++) {
+        for (int s = 0; s < STRAT_COUNT && winners_cnt < k_target; s++) {
+            /* Strategy 4: composite (cover_rank DESC, mep ASC) */
+            if (s == 4) {
+                int best_idx = -1;
+
+                for (int i = 0; i < cand_count; i++) {
+                    if (selected[i])
+                        continue;
+                    if (rank_cover_mep[i].path == NULL)
+                        continue;
+
+                    if (best_idx < 0 ||
+                        cover_path_rank_better(&rank_cover_mep[i], &rank_cover_mep[best_idx])) {
+                        best_idx = i;
+                    }
+                }
+
+                if (best_idx >= 0) {
+                    selected[best_idx] = true;
+                    winners[winners_cnt++] = best_idx;
+                    progress_this_round = true;
+                }
+
+                continue;
+            }
+
+            /* Other strategies: scalar (lower score = better) */
+            PathRank *cur = NULL;
+            if (s < 4) {
+                cur = scalar_strategies[s];
+            } else {
+                /* s == 5 */
+                cur = scalar_strategies[4]; /* rank_similarity */
+            }
+
             int best_idx = -1;
             double best_score = DBL_MAX;
 
-            /*
-             * Scan all candidates for this strategy, choosing the
-             * lowest-score candidate not yet selected.
-             *
-             * Complexity note:
-             *   - This is O(4 * k_target * cand_count), which is
-             *     acceptable for moderate cand_count. If cand_count becomes
-             *     large, consider pre-sorting per-strategy arrays instead.
-             */
             for (int i = 0; i < cand_count; i++) {
                 if (selected[i])
                     continue;
 
-                const double score = strategies[s][i].score;
-
+                const double score = cur[i].score;
                 if (score < best_score) {
                     best_score = score;
                     best_idx = i;
@@ -350,6 +440,12 @@ select_path_by_retention_set(
     pfree(rank_exp_penalty);
     pfree(rank_total_cost);
     pfree(rank_exp_penalty_std);
+
+    pfree(rank_similarity);
+
+    pfree(cover_arr);
+    pfree(mep_arr);
+    pfree(rank_cover_mep);
 
     pfree(selected);
     pfree(winners);
