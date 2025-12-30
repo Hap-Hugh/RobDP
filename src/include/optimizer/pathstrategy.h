@@ -10,7 +10,7 @@
 #include "nodes/pathnodes.h"
 #include "optimizer/sample.h"
 
-#define ROBUST_EPS_DEFAULT 0.05
+#define ROBUST_EPS_DEFAULT 0.01
 
 /* Per-candidate ranking info (only score is relevant here). */
 typedef struct PathRank {
