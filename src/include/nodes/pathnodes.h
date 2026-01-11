@@ -22,7 +22,7 @@
 #include "nodes/parsenodes.h"
 #include "storage/block.h"
 
-#define JCW_MAX_SAMPLE 100
+#define JCW_MAX_SAMPLE 40
 
 typedef struct Sample Sample;
 
