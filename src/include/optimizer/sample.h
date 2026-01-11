@@ -10,7 +10,7 @@
 #include "postgres.h"
 #include "nodes/pathnodes.h"
 
-#define DIST_MAX_SAMPLE   40
+#define DIST_MAX_SAMPLE   100
 
 /* GUC Parameters */
 extern bool enable_rows_dist;
