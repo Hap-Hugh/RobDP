@@ -1113,3 +1113,366 @@ extern void cost_gather_merge_2p(
     path->path.startup_cost *= invN;
     path->path.total_cost *= invN;
 }
+
+/* ==== ==== ==== ==== ==== ==== SUBQUERY COST MODEL ==== ==== ==== ==== ==== ==== */
+
+extern void cost_subqueryscan_1p(
+    SubqueryScanPath *path,
+    PlannerInfo *root,
+    const RelOptInfo *baserel,
+    const ParamPathInfo *param_info,
+    const bool trivial_pathtarget
+) {
+    List *qpquals;
+    QualCost qpqual_cost;
+
+    /* Should only be applied to base relations that are subqueries */
+    Assert(baserel->relid > 0);
+    Assert(baserel->rtekind == RTE_SUBQUERY);
+
+    /*
+     * We compute the rowcount estimate as the subplan's estimate times the
+     * selectivity of relevant restriction clauses.  In simple cases this will
+     * come out the same as baserel->rows; but when dealing with parallelized
+     * paths we must do it like this to get the right answer.
+     */
+    if (param_info) {
+        qpquals = list_concat_copy(
+            param_info->ppi_clauses, baserel->baserestrictinfo
+        );
+    } else {
+        qpquals = baserel->baserestrictinfo;
+    }
+
+    path->path.rows = clamp_row_est(
+        path->subpath->rows * clauselist_selectivity(
+            root, qpquals, 0, JOIN_INNER, NULL
+        ));
+
+    /*
+     * Cost of path is cost of evaluating the subplan, plus cost of evaluating
+     * any restriction clauses and tlist that will be attached to the
+     * SubqueryScan node, plus cpu_tuple_cost to account for selection and
+     * projection overhead.
+     */
+    path->path.startup_cost = path->subpath->startup_cost;
+    path->path.total_cost = path->subpath->total_cost;
+
+    /*
+     * However, if there are no relevant restriction clauses and the
+     * pathtarget is trivial, then we expect that setrefs.c will optimize away
+     * the SubqueryScan plan node altogether, so we should just make its cost
+     * and rowcount equal to the input path's.
+     *
+     * Note: there are some edge cases where createplan.c will apply a
+     * different targetlist to the SubqueryScan node, thus falsifying our
+     * current estimate of whether the target is trivial, and making the cost
+     * estimate (though not the rowcount) wrong.  It does not seem worth the
+     * extra complication to try to account for that exactly, especially since
+     * that behavior falsifies other cost estimates as well.
+     */
+    if (qpquals == NIL && trivial_pathtarget) {
+        return;
+    }
+
+    get_restriction_qual_cost(root, baserel, param_info, &qpqual_cost);
+
+    Cost startup_cost = qpqual_cost.startup;
+    const Cost cpu_per_tuple = cpu_tuple_cost + qpqual_cost.per_tuple;
+    Cost run_cost = cpu_per_tuple * path->subpath->rows;
+
+    /* tlist eval costs are paid per output row, not per tuple scanned */
+    startup_cost += path->path.pathtarget->cost.startup;
+    run_cost += path->path.pathtarget->cost.per_tuple * path->path.rows;
+
+    path->path.startup_cost += startup_cost;
+    path->path.total_cost += startup_cost + run_cost;
+}
+
+extern void cost_subqueryscan_2p(
+    SubqueryScanPath *path,
+    PlannerInfo *root,
+    const RelOptInfo *baserel,
+    const ParamPathInfo *param_info,
+    const bool trivial_pathtarget
+) {
+    List *qpquals;
+    QualCost qpqual_cost;
+
+    /* Should only be applied to base relations that are subqueries */
+    Assert(baserel->relid > 0);
+    Assert(baserel->rtekind == RTE_SUBQUERY);
+
+    /*
+     * We compute the rowcount estimate as the subplan's estimate times the
+     * selectivity of relevant restriction clauses.  In simple cases this will
+     * come out the same as baserel->rows; but when dealing with parallelized
+     * paths we must do it like this to get the right answer.
+     */
+    if (param_info) {
+        qpquals = list_concat_copy(
+            param_info->ppi_clauses, baserel->baserestrictinfo
+        );
+    } else {
+        qpquals = baserel->baserestrictinfo;
+    }
+
+    const double sel_est = clauselist_selectivity(
+        root, qpquals, 0, JOIN_INNER, NULL
+    );
+    path->path.rows = clamp_row_est(path->subpath->rows * sel_est);
+    path->path.rows_sample = make_sample_by_scale_factor(
+        path->subpath->rows_sample, sel_est
+    );
+
+    /*
+     * Cost of path is cost of evaluating the subplan, plus cost of evaluating
+     * any restriction clauses and tlist that will be attached to the
+     * SubqueryScan node, plus cpu_tuple_cost to account for selection and
+     * projection overhead.
+     */
+    const int sample_count = path->path.rows_sample->sample_count;
+    Assert(sample_count > 0);
+
+    path->path.startup_cost_sample = initialize_sample(sample_count);
+    path->path.total_cost_sample = initialize_sample(sample_count);
+
+    /*
+     * However, if there are no relevant restriction clauses and the
+     * pathtarget is trivial, then we expect that setrefs.c will optimize away
+     * the SubqueryScan plan node altogether, so we should just make its cost
+     * and rowcount equal to the input path's.
+     *
+     * Note: there are some edge cases where createplan.c will apply a
+     * different targetlist to the SubqueryScan node, thus falsifying our
+     * current estimate of whether the target is trivial, and making the cost
+     * estimate (though not the rowcount) wrong.  It does not seem worth the
+     * extra complication to try to account for that exactly, especially since
+     * that behavior falsifies other cost estimates as well.
+     */
+    if (qpquals == NIL && trivial_pathtarget) {
+        /* copy startup/total sample from subpath */
+        for (int i = 0; i < sample_count; ++i) {
+            path->path.startup_cost_sample->sample[i] =
+                    path->subpath->startup_cost_sample->sample[i];
+            path->path.total_cost_sample->sample[i] =
+                    path->subpath->total_cost_sample->sample[i];
+        }
+
+        /* scalar avg */
+        Cost startup_accum = 0, total_accum = 0;
+        for (int i = 0; i < sample_count; ++i) {
+            startup_accum += path->path.startup_cost_sample->sample[i];
+            total_accum += path->path.total_cost_sample->sample[i];
+        }
+
+        const double invN = 1.0 / sample_count;
+        path->path.startup_cost = startup_accum * invN;
+        path->path.total_cost = total_accum * invN;
+        return;
+    }
+
+    /* non-trivial case */
+    get_restriction_qual_cost(root, baserel, param_info, &qpqual_cost);
+
+    const Cost startup_cost = qpqual_cost.startup + path->path.pathtarget->cost.startup;
+    const Cost cpu_per_tuple = cpu_tuple_cost + qpqual_cost.per_tuple;
+    const Cost pathtarget_per_tuple = path->path.pathtarget->cost.per_tuple;
+
+    Cost startup_accum = 0.0;
+    Cost total_accum = 0.0;
+
+    for (int i = 0; i < sample_count; ++i) {
+        const double input_rows = path->subpath->rows_sample->sample[i];
+        const double output_rows = path->path.rows_sample->sample[i];
+
+        /* start from subpath costs */
+        const Cost sub_startup = path->subpath->startup_cost_sample->sample[i];
+        const Cost sub_total = path->subpath->total_cost_sample->sample[i];
+
+        /* CPU run increment */
+        const Cost run_cost_i = cpu_per_tuple * input_rows + pathtarget_per_tuple * output_rows;
+
+        /* final per-sample startup & total */
+        path->path.startup_cost_sample->sample[i] = sub_startup + startup_cost;
+        path->path.total_cost_sample->sample[i] = sub_total + startup_cost + run_cost_i;
+
+        startup_accum += path->path.startup_cost_sample->sample[i];
+        total_accum += path->path.total_cost_sample->sample[i];
+    }
+
+    const double invN = 1.0 / (double) sample_count;
+    path->path.startup_cost = startup_accum * invN;
+    path->path.total_cost = total_accum * invN;
+}
+
+/* ==== ==== ==== ==== ==== ==== CTESCAN COST MODEL ==== ==== ==== ==== ==== ==== */
+
+extern void cost_ctescan_1p(
+    Path *path, PlannerInfo *root,
+    const RelOptInfo *baserel, const ParamPathInfo *param_info
+) {
+    Cost startup_cost = 0;
+    Cost run_cost = 0;
+    QualCost qpqual_cost;
+    Cost cpu_per_tuple;
+
+    /* Should only be applied to base relations that are CTEs */
+    Assert(baserel->relid > 0);
+    Assert(baserel->rtekind == RTE_CTE);
+
+    /* Mark the path with the correct row estimate */
+    if (param_info) {
+        path->rows = param_info->ppi_rows;
+    } else {
+        path->rows = baserel->rows;
+    }
+
+    /* Charge one CPU tuple cost per row for tuplestore manipulation */
+    cpu_per_tuple = cpu_tuple_cost;
+
+    /* Add scanning CPU costs */
+    get_restriction_qual_cost(root, baserel, param_info, &qpqual_cost);
+
+    startup_cost += qpqual_cost.startup;
+    cpu_per_tuple += cpu_tuple_cost + qpqual_cost.per_tuple;
+    run_cost += cpu_per_tuple * baserel->tuples;
+
+    /* tlist eval costs are paid per output row, not per tuple scanned */
+    startup_cost += path->pathtarget->cost.startup;
+    run_cost += path->pathtarget->cost.per_tuple * path->rows;
+
+    path->startup_cost = startup_cost;
+    path->total_cost = startup_cost + run_cost;
+}
+
+void cost_ctescan_2p(
+    Path *path,
+    PlannerInfo *root,
+    const RelOptInfo *baserel,
+    const ParamPathInfo *param_info
+) {
+    /* ----------------------------------------------------------------------
+     * 0) Preconditions & invariants
+     * ----------------------------------------------------------------------
+     * This costing function applies only to CTE base relations.
+     * NOTE: Costs of evaluating the referenced CTE query itself are initplan
+     * costs; do NOT add them here.
+     */
+    Assert(baserel->relid > 0);
+    Assert(baserel->rtekind == RTE_CTE);
+
+    /* ----------------------------------------------------------------------
+     * 1) Resolve base estimates and sample distributions
+     * ----------------------------------------------------------------------
+     * Scalar rows follows original behavior:
+     *   - param path: use ppi_rows
+     *   - else:       use baserel->rows
+     *
+     * Sample rows follows your 2p convention:
+     *   - param path: single-value sample (ppi_rows)
+     *   - else:       duplicate baserel->rows_sample
+     */
+    if (param_info) {
+        path->rows = param_info->ppi_rows;
+        path->rows_sample = make_sample_by_single_value(param_info->ppi_rows);
+    } else {
+        path->rows = baserel->rows;
+        path->rows_sample = duplicate_sample(baserel->rows_sample);
+    }
+
+    const int sample_count = path->rows_sample->sample_count;
+    Assert(sample_count > 0);
+
+    /* We assume baserel->tuples_sample always exists and matches sample_count. */
+    Assert(baserel->tuples_sample != NULL);
+    Assert(baserel->tuples_sample->sample_count == sample_count);
+
+    /* ----------------------------------------------------------------------
+     * 2) Allocate per-sample outputs and initialize accumulators
+     * ----------------------------------------------------------------------
+     * We compute startup/total costs per sample, then average to fill
+     * the scalar Path fields for backward compatibility.
+     */
+    path->startup_cost_sample = initialize_sample(sample_count);
+    path->total_cost_sample = initialize_sample(sample_count);
+
+    double rows_accum = 0.0;
+    Cost startup_accum = 0.0;
+    Cost total_accum = 0.0;
+
+    /* ----------------------------------------------------------------------
+     * 3) Precompute terms that do not vary across samples
+     * ----------------------------------------------------------------------
+     * CTE scan CPU model in PG:
+     *   - charge "tuplestore manipulation" roughly as cpu_tuple_cost per tuple
+     *   - add restriction qual CPU per scanned tuple
+     *   - add restriction qual startup
+     *   - add tlist startup, and tlist per output row
+     *
+     * The scanned tuples count is baserel->tuples (or per-sample tuples_sample).
+     */
+    QualCost qpqual_cost;
+    get_restriction_qual_cost(root, baserel, param_info, &qpqual_cost);
+
+    /* Startup components: restriction qual startup + tlist startup */
+    const Cost startup_fixed =
+            qpqual_cost.startup + path->pathtarget->cost.startup;
+
+    /*
+     * Per scanned tuple CPU:
+     *   - tuplestore manipulation: cpu_tuple_cost
+     *   - base per-tuple overhead + qual per-tuple: cpu_tuple_cost + qpqual_cost.per_tuple
+     * So total per scanned tuple:
+     */
+    const Cost cpu_per_scanned_tuple =
+            cpu_tuple_cost + (cpu_tuple_cost + qpqual_cost.per_tuple);
+
+    /* Per output row CPU for targetlist eval */
+    const Cost cpu_per_output_row = path->pathtarget->cost.per_tuple;
+
+    /* ----------------------------------------------------------------------
+     * 4) Per-sample evaluation
+     * ----------------------------------------------------------------------
+     * For each sample:
+     *   - output_rows    comes from path->rows_sample[i]
+     *   - startup is constant across samples (given our assumptions)
+     *   - run cost varies with scanned_tuples and output_rows
+     */
+    const double scanned_tuples = baserel->tuples;
+
+    for (int i = 0; i < sample_count; ++i) {
+        const double output_rows = path->rows_sample->sample[i];
+
+        /* Startup cost (same across samples) */
+        const Cost startup_cost = startup_fixed;
+
+        /* Run cost = scan CPU per scanned tuple + tlist CPU per output row */
+        const Cost run_cost =
+                cpu_per_scanned_tuple * scanned_tuples +
+                cpu_per_output_row * output_rows;
+
+        const Cost total_cost = startup_cost + run_cost;
+
+        /* Record per-sample results */
+        path->startup_cost_sample->sample[i] = startup_cost;
+        path->total_cost_sample->sample[i] = total_cost;
+
+        /* Accumulate means */
+        rows_accum += output_rows;
+        startup_accum += startup_cost;
+        total_accum += total_cost;
+    }
+
+    /* ----------------------------------------------------------------------
+     * 5) Finalize scalar outputs by averaging across samples
+     * ----------------------------------------------------------------------
+     * Keep classic semantics:
+     *   - path->rows is the mean output row estimate
+     *   - startup_cost/total_cost are the mean of per-sample costs
+     */
+    const double invN = 1.0 / (double) sample_count;
+    path->rows = rows_accum * invN;
+    path->startup_cost = startup_accum * invN;
+    path->total_cost = total_accum * invN;
+}

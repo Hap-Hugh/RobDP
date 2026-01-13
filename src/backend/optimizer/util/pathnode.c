@@ -30,6 +30,7 @@
 #include "optimizer/planmain.h"
 #include "optimizer/prep.h"
 #include "optimizer/restrictinfo.h"
+#include "optimizer/sample.h"
 #include "optimizer/tlist.h"
 #include "parser/parsetree.h"
 #include "utils/lsyscache.h"
@@ -2617,10 +2618,12 @@ create_hashjoin_path(PlannerInfo *root,
  * 'target' is the PathTarget to be computed
  */
 ProjectionPath *
-create_projection_path(PlannerInfo *root,
-                       RelOptInfo *rel,
-                       Path *subpath,
-                       PathTarget *target) {
+create_projection_path(
+    PlannerInfo *root,
+    RelOptInfo *rel,
+    Path *subpath,
+    PathTarget *target
+) {
     ProjectionPath *pathnode = makeNode(ProjectionPath);
     PathTarget *oldtarget;
 
@@ -2673,11 +2676,30 @@ create_projection_path(PlannerInfo *root,
          * Set cost of plan as subpath's cost, adjusted for tlist replacement.
          */
         pathnode->path.rows = subpath->rows;
-        pathnode->path.startup_cost = subpath->startup_cost +
-                                      (target->cost.startup - oldtarget->cost.startup);
-        pathnode->path.total_cost = subpath->total_cost +
-                                    (target->cost.startup - oldtarget->cost.startup) +
-                                    (target->cost.per_tuple - oldtarget->cost.per_tuple) * subpath->rows;
+        pathnode->path.startup_cost
+                = subpath->startup_cost
+                  + (target->cost.startup - oldtarget->cost.startup);
+        pathnode->path.total_cost
+                = subpath->total_cost
+                  + (target->cost.startup - oldtarget->cost.startup)
+                  + (target->cost.per_tuple - oldtarget->cost.per_tuple)
+                  * subpath->rows;
+
+        const int sample_count = subpath->rows_sample->sample_count;
+        pathnode->path.rows_sample = duplicate_sample(subpath->rows_sample);
+        pathnode->path.startup_cost_sample = initialize_sample(sample_count);
+        pathnode->path.total_cost_sample = initialize_sample(sample_count);
+
+        for (int i = 0; i < sample_count; ++i) {
+            pathnode->path.startup_cost_sample->sample[i]
+                    = subpath->startup_cost_sample->sample[i]
+                      + (target->cost.startup - oldtarget->cost.startup);
+            pathnode->path.total_cost_sample->sample[i]
+                    = subpath->total_cost_sample->sample[i]
+                      + (target->cost.startup - oldtarget->cost.startup)
+                      + (target->cost.per_tuple - oldtarget->cost.per_tuple)
+                      * subpath->rows_sample->sample[i];
+        }
     } else {
         /* We really do need the Result node */
         pathnode->dummypp = false;
@@ -2687,11 +2709,30 @@ create_projection_path(PlannerInfo *root,
          * evaluating the tlist.  There is no qual to worry about.
          */
         pathnode->path.rows = subpath->rows;
-        pathnode->path.startup_cost = subpath->startup_cost +
-                                      target->cost.startup;
-        pathnode->path.total_cost = subpath->total_cost +
-                                    target->cost.startup +
-                                    (cpu_tuple_cost + target->cost.per_tuple) * subpath->rows;
+        pathnode->path.startup_cost
+                = subpath->startup_cost
+                  + target->cost.startup;
+        pathnode->path.total_cost
+                = subpath->total_cost
+                  + target->cost.startup
+                  + (cpu_tuple_cost + target->cost.per_tuple)
+                  * subpath->rows;
+
+        const int sample_count = subpath->rows_sample->sample_count;
+        pathnode->path.rows_sample = duplicate_sample(subpath->rows_sample);
+        pathnode->path.startup_cost_sample = initialize_sample(sample_count);
+        pathnode->path.total_cost_sample = initialize_sample(sample_count);
+
+        for (int i = 0; i < sample_count; ++i) {
+            pathnode->path.startup_cost_sample->sample[i]
+                    = subpath->startup_cost_sample->sample[i]
+                      + target->cost.startup;
+            pathnode->path.total_cost_sample->sample[i]
+                    = subpath->total_cost_sample->sample[i]
+                      + target->cost.startup
+                      + (cpu_tuple_cost + target->cost.per_tuple)
+                      * subpath->rows_sample->sample[i];
+        }
     }
 
     if (root->pass == 3) {
@@ -3721,11 +3762,13 @@ create_modifytable_path(PlannerInfo *root, RelOptInfo *rel,
  * 'count_est' is the estimated value of the LIMIT expression
  */
 LimitPath *
-create_limit_path(PlannerInfo *root, RelOptInfo *rel,
-                  Path *subpath,
-                  Node *limitOffset, Node *limitCount,
-                  LimitOption limitOption,
-                  int64 offset_est, int64 count_est) {
+create_limit_path(
+    PlannerInfo *root, RelOptInfo *rel,
+    Path *subpath,
+    Node *limitOffset, Node *limitCount,
+    LimitOption limitOption,
+    int64 offset_est, int64 count_est
+) {
     LimitPath *pathnode = makeNode(LimitPath);
 
     pathnode->path.pathtype = T_Limit;
@@ -3739,8 +3782,11 @@ create_limit_path(PlannerInfo *root, RelOptInfo *rel,
                                    subpath->parallel_safe;
     pathnode->path.parallel_workers = subpath->parallel_workers;
     pathnode->path.rows = subpath->rows;
+    pathnode->path.rows_sample = duplicate_sample(subpath->rows_sample);
     pathnode->path.startup_cost = subpath->startup_cost;
+    pathnode->path.startup_cost_sample = duplicate_sample(subpath->startup_cost_sample);
     pathnode->path.total_cost = subpath->total_cost;
+    pathnode->path.total_cost_sample = duplicate_sample(subpath->total_cost_sample);
     pathnode->path.pathkeys = subpath->pathkeys;
     pathnode->subpath = subpath;
     pathnode->limitOffset = limitOffset;
@@ -3750,10 +3796,24 @@ create_limit_path(PlannerInfo *root, RelOptInfo *rel,
     /*
      * Adjust the output rows count and costs according to the offset/limit.
      */
-    adjust_limit_rows_costs(&pathnode->path.rows,
-                            &pathnode->path.startup_cost,
-                            &pathnode->path.total_cost,
-                            offset_est, count_est);
+    adjust_limit_rows_costs(
+        &pathnode->path.rows,
+        &pathnode->path.startup_cost,
+        &pathnode->path.total_cost,
+        offset_est,
+        count_est
+    );
+
+    const int sample_count = pathnode->path.rows_sample->sample_count;
+    for (int i = 0; i < sample_count; ++i) {
+        adjust_limit_rows_costs(
+            &pathnode->path.rows_sample->sample[i],
+            &pathnode->path.startup_cost_sample->sample[i],
+            &pathnode->path.total_cost_sample->sample[i],
+            offset_est,
+            count_est
+        );
+    }
 
     return pathnode;
 }

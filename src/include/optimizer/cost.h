@@ -143,8 +143,8 @@ extern void cost_tidrangescan(
 extern void cost_subqueryscan(
     SubqueryScanPath *path,
     PlannerInfo *root,
-    RelOptInfo *baserel,
-    ParamPathInfo *param_info,
+    const RelOptInfo *baserel,
+    const ParamPathInfo *param_info,
     bool trivial_pathtarget
 );
 
@@ -172,8 +172,8 @@ extern void cost_tablefuncscan(
 extern void cost_ctescan(
     Path *path,
     PlannerInfo *root,
-    RelOptInfo *baserel,
-    ParamPathInfo *param_info
+    const RelOptInfo *baserel,
+    const ParamPathInfo *param_info
 );
 
 extern void cost_namedtuplestorescan(

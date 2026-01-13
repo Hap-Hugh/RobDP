@@ -991,75 +991,16 @@ void cost_tidrangescan(Path *path, PlannerInfo *root,
  */
 void cost_subqueryscan(
     SubqueryScanPath *path, PlannerInfo *root,
-    RelOptInfo *baserel, ParamPathInfo *param_info,
-    bool trivial_pathtarget
+    const RelOptInfo *baserel, const ParamPathInfo *param_info,
+    const bool trivial_pathtarget
 ) {
-    Cost startup_cost;
-    Cost run_cost;
-    List *qpquals;
-    QualCost qpqual_cost;
-    Cost cpu_per_tuple;
-
-    /* Should only be applied to base relations that are subqueries */
-    Assert(baserel->relid > 0);
-    Assert(baserel->rtekind == RTE_SUBQUERY);
-
-    /*
-     * We compute the rowcount estimate as the subplan's estimate times the
-     * selectivity of relevant restriction clauses.  In simple cases this will
-     * come out the same as baserel->rows; but when dealing with parallelized
-     * paths we must do it like this to get the right answer.
-     */
-    if (param_info)
-        qpquals = list_concat_copy(param_info->ppi_clauses,
-                                   baserel->baserestrictinfo);
-    else
-        qpquals = baserel->baserestrictinfo;
-
-    path->path.rows = clamp_row_est(path->subpath->rows *
-                                    clauselist_selectivity(root,
-                                                           qpquals,
-                                                           0,
-                                                           JOIN_INNER,
-                                                           NULL));
-
-    /*
-     * Cost of path is cost of evaluating the subplan, plus cost of evaluating
-     * any restriction clauses and tlist that will be attached to the
-     * SubqueryScan node, plus cpu_tuple_cost to account for selection and
-     * projection overhead.
-     */
-    path->path.startup_cost = path->subpath->startup_cost;
-    path->path.total_cost = path->subpath->total_cost;
-
-    /*
-     * However, if there are no relevant restriction clauses and the
-     * pathtarget is trivial, then we expect that setrefs.c will optimize away
-     * the SubqueryScan plan node altogether, so we should just make its cost
-     * and rowcount equal to the input path's.
-     *
-     * Note: there are some edge cases where createplan.c will apply a
-     * different targetlist to the SubqueryScan node, thus falsifying our
-     * current estimate of whether the target is trivial, and making the cost
-     * estimate (though not the rowcount) wrong.  It does not seem worth the
-     * extra complication to try to account for that exactly, especially since
-     * that behavior falsifies other cost estimates as well.
-     */
-    if (qpquals == NIL && trivial_pathtarget)
-        return;
-
-    get_restriction_qual_cost(root, baserel, param_info, &qpqual_cost);
-
-    startup_cost = qpqual_cost.startup;
-    cpu_per_tuple = cpu_tuple_cost + qpqual_cost.per_tuple;
-    run_cost = cpu_per_tuple * path->subpath->rows;
-
-    /* tlist eval costs are paid per output row, not per tuple scanned */
-    startup_cost += path->path.pathtarget->cost.startup;
-    run_cost += path->path.pathtarget->cost.per_tuple * path->path.rows;
-
-    path->path.startup_cost += startup_cost;
-    path->path.total_cost += startup_cost + run_cost;
+    if (!enable_rows_dist || root->pass == 1) {
+        cost_subqueryscan_1p(path, root, baserel, param_info, trivial_pathtarget);
+    } else if (root->pass == 0 || root->pass == 2) {
+        cost_subqueryscan_2p(path, root, baserel, param_info, trivial_pathtarget);
+    } else {
+        elog(ERROR, "bad pass number");
+    }
 }
 
 /*
@@ -1238,39 +1179,15 @@ void cost_valuesscan(
  */
 void cost_ctescan(
     Path *path, PlannerInfo *root,
-    RelOptInfo *baserel, ParamPathInfo *param_info
+    const RelOptInfo *baserel, const ParamPathInfo *param_info
 ) {
-    Cost startup_cost = 0;
-    Cost run_cost = 0;
-    QualCost qpqual_cost;
-    Cost cpu_per_tuple;
-
-    /* Should only be applied to base relations that are CTEs */
-    Assert(baserel->relid > 0);
-    Assert(baserel->rtekind == RTE_CTE);
-
-    /* Mark the path with the correct row estimate */
-    if (param_info)
-        path->rows = param_info->ppi_rows;
-    else
-        path->rows = baserel->rows;
-
-    /* Charge one CPU tuple cost per row for tuplestore manipulation */
-    cpu_per_tuple = cpu_tuple_cost;
-
-    /* Add scanning CPU costs */
-    get_restriction_qual_cost(root, baserel, param_info, &qpqual_cost);
-
-    startup_cost += qpqual_cost.startup;
-    cpu_per_tuple += cpu_tuple_cost + qpqual_cost.per_tuple;
-    run_cost += cpu_per_tuple * baserel->tuples;
-
-    /* tlist eval costs are paid per output row, not per tuple scanned */
-    startup_cost += path->pathtarget->cost.startup;
-    run_cost += path->pathtarget->cost.per_tuple * path->rows;
-
-    path->startup_cost = startup_cost;
-    path->total_cost = startup_cost + run_cost;
+    if (!enable_rows_dist || root->pass == 1) {
+        cost_ctescan_1p(path, root, baserel, param_info);
+    } else if (root->pass == 0 || root->pass == 2) {
+        cost_ctescan_2p(path, root, baserel, param_info);
+    } else {
+        elog(ERROR, "bad pass number");
+    }
 }
 
 /*
@@ -1677,6 +1594,12 @@ void cost_sort(
     path->rows = tuples;
     path->startup_cost = startup_cost;
     path->total_cost = startup_cost + run_cost;
+
+    // FIXME: Do we need to make `cost_tuplesort` also sample-based?
+
+    path->rows_sample = make_sample_by_single_value(path->rows);
+    path->startup_cost_sample = make_sample_by_single_value(path->startup_cost);
+    path->total_cost_sample = make_sample_by_single_value(path->total_cost);
 }
 
 /*
