@@ -3524,7 +3524,7 @@ struct config_int ConfigureNamesInt[] =
 			NULL
 		},
 		&error_sample_count,
-		20, 4, 200,
+		20, 4, 64,
 		NULL, NULL, NULL
 	},
 
@@ -3886,11 +3886,11 @@ struct config_real ConfigureNamesReal[] =
 	{
 		{"error_sample_kde_bandwidth", PGC_USERSET, DEVELOPER_OPTIONS,
 			gettext_noop("Sets the bandwidth of KDE estimation."),
-			gettext_noop("Set 0.0 for Silverman's rule-of-thumb bandwidth; set a value between 0.0 and 1.0"
+			gettext_noop("Set 0.0 for Silverman's rule-of-thumb bandwidth; set a value between 0.0 and 2.0"
 				"for a given bandwidth.")
 		},
 		&error_sample_kde_bandwidth,
-		0.0, 0.0, 1.0,
+		0.0, 0.0, 2.0,
 		NULL, NULL, NULL
 	},
 

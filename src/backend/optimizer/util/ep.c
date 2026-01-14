@@ -17,25 +17,6 @@ char *get_alias(
     return pstrdup(alias);
 }
 
-char *get_std_alias(
-    const PlannerInfo *root,
-    const Index relid
-) {
-    Assert(relid > 0);
-    const RangeTblEntry *rte = root->simple_rte_array[relid];
-    const char *alias = rte->eref->aliasname;
-    char *std_alias = pstrdup(alias);
-    char *ch = std_alias;
-    while (*ch != '\0') {
-        if (*ch >= '0' && *ch <= '9') {
-            *ch = '\0'; // *ch is a digit, break now
-            break;
-        }
-        ++ch;
-    }
-    return std_alias;
-}
-
 /* ------------------------------- Error Profiles ------------------------------- */
 int read_error_profile(
     const char *filename,
@@ -116,7 +97,7 @@ bool get_error_profile(
     }
 
     // Otherwise, fallback to alias_fallback + suffix
-    if (strcmp(alias, alias_fallback) == 0) {
+    if (alias_fallback == NULL || strcmp(alias, alias_fallback) == 0) {
         // We check whether the alias and alias fallback is the same
         return false;
     }
