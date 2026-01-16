@@ -859,7 +859,11 @@ extern void cost_gather_1p(
     } else {
         path->path.rows = rel->rows;
     }
-    path->path.rows_sample = NULL;
+    // FIXME
+    path->path.rows_sample = initialize_sample(error_sample_count);
+    for (int i = 0; i < error_sample_count; ++i) {
+        path->path.rows_sample->sample[i] = path->path.rows;
+    }
 
     startup_cost = path->subpath->startup_cost;
 
@@ -871,6 +875,16 @@ extern void cost_gather_1p(
 
     path->path.startup_cost = startup_cost;
     path->path.total_cost = (startup_cost + run_cost);
+
+    // FIXME
+    path->path.startup_cost_sample = initialize_sample(error_sample_count);
+    for (int i = 0; i < error_sample_count; ++i) {
+        path->path.startup_cost_sample->sample[i] = path->path.startup_cost;
+    }
+    path->path.total_cost_sample = initialize_sample(error_sample_count);
+    for (int i = 0; i < error_sample_count; ++i) {
+        path->path.total_cost_sample->sample[i] = path->path.total_cost;
+    }
 }
 
 extern void cost_gather_2p(
@@ -976,7 +990,11 @@ extern void cost_gather_merge_1p(
     } else {
         path->path.rows = rel->rows;
     }
-    path->path.rows_sample = NULL;
+    // FIXME
+    path->path.rows_sample = initialize_sample(error_sample_count);
+    for (int i = 0; i < error_sample_count; ++i) {
+        path->path.rows_sample->sample[i] = path->path.rows;
+    }
 
     if (!enable_gathermerge) {
         startup_cost += disable_cost;
@@ -1014,6 +1032,16 @@ extern void cost_gather_merge_1p(
 
     path->path.startup_cost = startup_cost + input_startup_cost;
     path->path.total_cost = (startup_cost + run_cost + input_total_cost);
+
+    // FIXME
+    path->path.startup_cost_sample = initialize_sample(error_sample_count);
+    for (int i = 0; i < error_sample_count; ++i) {
+        path->path.startup_cost_sample->sample[i] = path->path.startup_cost;
+    }
+    path->path.total_cost_sample = initialize_sample(error_sample_count);
+    for (int i = 0; i < error_sample_count; ++i) {
+        path->path.total_cost_sample->sample[i] = path->path.total_cost;
+    }
 }
 
 extern void cost_gather_merge_2p(
@@ -1148,6 +1176,10 @@ extern void cost_subqueryscan_1p(
         path->subpath->rows * clauselist_selectivity(
             root, qpquals, 0, JOIN_INNER, NULL
         ));
+    path->path.rows_sample = initialize_sample(error_sample_count);
+    for (int i = 0; i < error_sample_count; ++i) {
+        path->path.rows_sample->sample[i] = path->path.rows;
+    }
 
     /*
      * Cost of path is cost of evaluating the subplan, plus cost of evaluating
@@ -1187,6 +1219,13 @@ extern void cost_subqueryscan_1p(
 
     path->path.startup_cost += startup_cost;
     path->path.total_cost += startup_cost + run_cost;
+
+    path->path.startup_cost_sample = initialize_sample(error_sample_count);
+    path->path.total_cost_sample = initialize_sample(error_sample_count);
+    for (int i = 0; i < error_sample_count; ++i) {
+        path->path.startup_cost_sample->sample[i] = path->path.startup_cost;
+        path->path.total_cost_sample->sample[i] = path->path.total_cost;
+    }
 }
 
 extern void cost_subqueryscan_2p(

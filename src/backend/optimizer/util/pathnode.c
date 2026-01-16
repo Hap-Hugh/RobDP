@@ -1386,6 +1386,20 @@ create_append_path(PlannerInfo *root,
     if (rows >= 0)
         pathnode->path.rows = rows;
 
+    // FIXME
+    pathnode->path.rows_sample = initialize_sample(error_sample_count);
+    for (int i = 0; i < error_sample_count; ++i) {
+        pathnode->path.rows_sample->sample[i] = pathnode->path.rows;
+    }
+    pathnode->path.startup_cost_sample = initialize_sample(error_sample_count);
+    for (int i = 0; i < error_sample_count; ++i) {
+        pathnode->path.startup_cost_sample->sample[i] = pathnode->path.startup_cost;
+    }
+    pathnode->path.total_cost_sample = initialize_sample(error_sample_count);
+    for (int i = 0; i < error_sample_count; ++i) {
+        pathnode->path.total_cost_sample->sample[i] = pathnode->path.total_cost;
+    }
+
     return pathnode;
 }
 
@@ -1522,6 +1536,19 @@ create_merge_append_path(PlannerInfo *root,
                           input_startup_cost, input_total_cost,
                           pathnode->path.rows);
 
+    // FIXME
+    pathnode->path.rows_sample = initialize_sample(error_sample_count);
+    for (int i = 0; i < error_sample_count; ++i) {
+        pathnode->path.rows_sample->sample[i] = pathnode->path.rows;
+    }
+    pathnode->path.startup_cost_sample = initialize_sample(error_sample_count);
+    for (int i = 0; i < error_sample_count; ++i) {
+        pathnode->path.startup_cost_sample->sample[i] = pathnode->path.startup_cost;
+    }
+    pathnode->path.total_cost_sample = initialize_sample(error_sample_count);
+    for (int i = 0; i < error_sample_count; ++i) {
+        pathnode->path.total_cost_sample->sample[i] = pathnode->path.total_cost;
+    }
     return pathnode;
 }
 
@@ -1858,6 +1885,20 @@ create_unique_path(PlannerInfo *root, RelOptInfo *rel, Path *subpath,
     }
 
     rel->cheapest_unique_path = (Path *) pathnode;
+
+    // FIXME
+    pathnode->path.rows_sample = initialize_sample(error_sample_count);
+    for (int i = 0; i < error_sample_count; ++i) {
+        pathnode->path.rows_sample->sample[i] = pathnode->path.rows;
+    }
+    pathnode->path.startup_cost_sample = initialize_sample(error_sample_count);
+    for (int i = 0; i < error_sample_count; ++i) {
+        pathnode->path.startup_cost_sample->sample[i] = pathnode->path.startup_cost;
+    }
+    pathnode->path.total_cost_sample = initialize_sample(error_sample_count);
+    for (int i = 0; i < error_sample_count; ++i) {
+        pathnode->path.total_cost_sample->sample[i] = pathnode->path.total_cost;
+    }
 
     MemoryContextSwitchTo(oldcontext);
 
@@ -2686,19 +2727,35 @@ create_projection_path(
                   * subpath->rows;
 
         const int sample_count = subpath->rows_sample->sample_count;
-        pathnode->path.rows_sample = duplicate_sample(subpath->rows_sample);
-        pathnode->path.startup_cost_sample = initialize_sample(sample_count);
-        pathnode->path.total_cost_sample = initialize_sample(sample_count);
+        if (root->pass == 2) {
+            pathnode->path.rows_sample = duplicate_sample(subpath->rows_sample);
+            pathnode->path.startup_cost_sample = initialize_sample(sample_count);
+            pathnode->path.total_cost_sample = initialize_sample(sample_count);
 
-        for (int i = 0; i < sample_count; ++i) {
-            pathnode->path.startup_cost_sample->sample[i]
-                    = subpath->startup_cost_sample->sample[i]
-                      + (target->cost.startup - oldtarget->cost.startup);
-            pathnode->path.total_cost_sample->sample[i]
-                    = subpath->total_cost_sample->sample[i]
-                      + (target->cost.startup - oldtarget->cost.startup)
-                      + (target->cost.per_tuple - oldtarget->cost.per_tuple)
-                      * subpath->rows_sample->sample[i];
+            for (int i = 0; i < sample_count; ++i) {
+                pathnode->path.startup_cost_sample->sample[i]
+                        = subpath->startup_cost_sample->sample[i]
+                          + (target->cost.startup - oldtarget->cost.startup);
+                pathnode->path.total_cost_sample->sample[i]
+                        = subpath->total_cost_sample->sample[i]
+                          + (target->cost.startup - oldtarget->cost.startup)
+                          + (target->cost.per_tuple - oldtarget->cost.per_tuple)
+                          * subpath->rows_sample->sample[i];
+            }
+        } else {
+            // FIXME
+            pathnode->path.rows_sample = initialize_sample(error_sample_count);
+            for (int i = 0; i < error_sample_count; ++i) {
+                pathnode->path.rows_sample->sample[i] = pathnode->path.rows;
+            }
+            pathnode->path.startup_cost_sample = initialize_sample(error_sample_count);
+            for (int i = 0; i < error_sample_count; ++i) {
+                pathnode->path.startup_cost_sample->sample[i] = pathnode->path.startup_cost;
+            }
+            pathnode->path.total_cost_sample = initialize_sample(error_sample_count);
+            for (int i = 0; i < error_sample_count; ++i) {
+                pathnode->path.total_cost_sample->sample[i] = pathnode->path.total_cost;
+            }
         }
     } else {
         /* We really do need the Result node */
@@ -2717,21 +2774,36 @@ create_projection_path(
                   + target->cost.startup
                   + (cpu_tuple_cost + target->cost.per_tuple)
                   * subpath->rows;
+        if (root->pass == 2) {
+            const int sample_count = subpath->rows_sample->sample_count;
+            pathnode->path.rows_sample = duplicate_sample(subpath->rows_sample);
+            pathnode->path.startup_cost_sample = initialize_sample(sample_count);
+            pathnode->path.total_cost_sample = initialize_sample(sample_count);
 
-        const int sample_count = subpath->rows_sample->sample_count;
-        pathnode->path.rows_sample = duplicate_sample(subpath->rows_sample);
-        pathnode->path.startup_cost_sample = initialize_sample(sample_count);
-        pathnode->path.total_cost_sample = initialize_sample(sample_count);
-
-        for (int i = 0; i < sample_count; ++i) {
-            pathnode->path.startup_cost_sample->sample[i]
-                    = subpath->startup_cost_sample->sample[i]
-                      + target->cost.startup;
-            pathnode->path.total_cost_sample->sample[i]
-                    = subpath->total_cost_sample->sample[i]
-                      + target->cost.startup
-                      + (cpu_tuple_cost + target->cost.per_tuple)
-                      * subpath->rows_sample->sample[i];
+            for (int i = 0; i < sample_count; ++i) {
+                pathnode->path.startup_cost_sample->sample[i]
+                        = subpath->startup_cost_sample->sample[i]
+                          + target->cost.startup;
+                pathnode->path.total_cost_sample->sample[i]
+                        = subpath->total_cost_sample->sample[i]
+                          + target->cost.startup
+                          + (cpu_tuple_cost + target->cost.per_tuple)
+                          * subpath->rows_sample->sample[i];
+            }
+        } else {
+            // FIXME
+            pathnode->path.rows_sample = initialize_sample(error_sample_count);
+            for (int i = 0; i < error_sample_count; ++i) {
+                pathnode->path.rows_sample->sample[i] = pathnode->path.rows;
+            }
+            pathnode->path.startup_cost_sample = initialize_sample(error_sample_count);
+            for (int i = 0; i < error_sample_count; ++i) {
+                pathnode->path.startup_cost_sample->sample[i] = pathnode->path.startup_cost;
+            }
+            pathnode->path.total_cost_sample = initialize_sample(error_sample_count);
+            for (int i = 0; i < error_sample_count; ++i) {
+                pathnode->path.total_cost_sample->sample[i] = pathnode->path.total_cost;
+            }
         }
     }
 
@@ -3107,6 +3179,20 @@ create_upper_unique_path(PlannerInfo *root,
     pathnode->path.total_cost = subpath->total_cost +
                                 cpu_operator_cost * subpath->rows * numCols;
     pathnode->path.rows = numGroups;
+
+    // FIXME
+    pathnode->path.rows_sample = initialize_sample(error_sample_count);
+    for (int i = 0; i < error_sample_count; ++i) {
+        pathnode->path.rows_sample->sample[i] = pathnode->path.rows;
+    }
+    pathnode->path.startup_cost_sample = initialize_sample(error_sample_count);
+    for (int i = 0; i < error_sample_count; ++i) {
+        pathnode->path.startup_cost_sample->sample[i] = pathnode->path.startup_cost;
+    }
+    pathnode->path.total_cost_sample = initialize_sample(error_sample_count);
+    for (int i = 0; i < error_sample_count; ++i) {
+        pathnode->path.total_cost_sample->sample[i] = pathnode->path.total_cost;
+    }
 
     return pathnode;
 }
@@ -3543,6 +3629,19 @@ create_setop_path(PlannerInfo *root,
     pathnode->path.total_cost = subpath->total_cost +
                                 cpu_operator_cost * subpath->rows * list_length(distinctList);
     pathnode->path.rows = outputRows;
+    // FIXME
+    pathnode->path.rows_sample = initialize_sample(error_sample_count);
+    for (int i = 0; i < error_sample_count; ++i) {
+        pathnode->path.rows_sample->sample[i] = pathnode->path.rows;
+    }
+    pathnode->path.startup_cost_sample = initialize_sample(error_sample_count);
+    for (int i = 0; i < error_sample_count; ++i) {
+        pathnode->path.startup_cost_sample->sample[i] = pathnode->path.startup_cost;
+    }
+    pathnode->path.total_cost_sample = initialize_sample(error_sample_count);
+    for (int i = 0; i < error_sample_count; ++i) {
+        pathnode->path.total_cost_sample->sample[i] = pathnode->path.total_cost;
+    }
 
     return pathnode;
 }

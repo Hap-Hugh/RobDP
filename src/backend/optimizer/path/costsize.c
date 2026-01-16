@@ -340,9 +340,9 @@ void cost_gather(
     const RelOptInfo *rel, const ParamPathInfo *param_info,
     const double *rows
 ) {
-    if (!enable_rows_dist || root->pass == 1 || root->pass == 3) {
+    if (!enable_rows_dist || root->pass == 0 || root->pass == 1 || root->pass == 3) {
         cost_gather_1p(path, root, rel, param_info, rows);
-    } else if (root->pass == 0 || root->pass == 2) {
+    } else if (root->pass == 2) {
         cost_gather_2p(path, root, rel, param_info, rows);
     } else {
         elog(ERROR, "bad pass number");
@@ -393,11 +393,11 @@ void cost_gather_merge(
     const Cost input_total_cost,
     const double *rows
 ) {
-    if (!enable_rows_dist || root->pass == 1 || root->pass == 3) {
+    if (!enable_rows_dist || root->pass == 0 || root->pass == 1 || root->pass == 3) {
         cost_gather_merge_1p(
             path, root, rel, param_info, input_startup_cost, input_total_cost, rows
         );
-    } else if (root->pass == 0 || root->pass == 2) {
+    } else if (root->pass == 2) {
         cost_gather_merge_2p(
             path, root, rel, param_info, input_startup_cost, input_total_cost, rows
         );
@@ -1558,6 +1558,20 @@ void cost_incremental_sort(
     path->rows = input_tuples;
     path->startup_cost = startup_cost;
     path->total_cost = startup_cost + run_cost;
+
+    // FIXME
+    path->rows_sample = initialize_sample(error_sample_count);
+    for (int i = 0; i < error_sample_count; ++i) {
+        path->rows_sample->sample[i] = path->rows;
+    }
+    path->startup_cost_sample = initialize_sample(error_sample_count);
+    for (int i = 0; i < error_sample_count; ++i) {
+        path->startup_cost_sample->sample[i] = path->startup_cost;
+    }
+    path->total_cost_sample = initialize_sample(error_sample_count);
+    for (int i = 0; i < error_sample_count; ++i) {
+        path->total_cost_sample->sample[i] = path->total_cost;
+    }
 }
 
 /*
@@ -1597,9 +1611,19 @@ void cost_sort(
 
     // FIXME: Do we need to make `cost_tuplesort` also sample-based?
 
-    path->rows_sample = make_sample_by_single_value(path->rows);
-    path->startup_cost_sample = make_sample_by_single_value(path->startup_cost);
-    path->total_cost_sample = make_sample_by_single_value(path->total_cost);
+    // FIXME
+    path->rows_sample = initialize_sample(error_sample_count);
+    for (int i = 0; i < error_sample_count; ++i) {
+        path->rows_sample->sample[i] = path->rows;
+    }
+    path->startup_cost_sample = initialize_sample(error_sample_count);
+    for (int i = 0; i < error_sample_count; ++i) {
+        path->startup_cost_sample->sample[i] = path->startup_cost;
+    }
+    path->total_cost_sample = initialize_sample(error_sample_count);
+    for (int i = 0; i < error_sample_count; ++i) {
+        path->total_cost_sample->sample[i] = path->total_cost;
+    }
 }
 
 /*

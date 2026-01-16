@@ -284,14 +284,14 @@ void set_joinrel_rows_sample(
     if (root->pass == 1) {
         /* Determine the outer relation's single-point row estimate. */
         double outer_rows_single_point;
-        if (outer_rel->relid > 0 && outer_rel->rows_sample->sample_count > 1) {
+        if (outer_rel->relid > 0 && outer_rel->rows_sample && outer_rel->rows_sample->sample_count > 1) {
             outer_rows_single_point = outer_rel->rows_sample->sample[root->round];
         } else {
             outer_rows_single_point = outer_rel->rows;
         }
         /* Determine the inner relation's single-point row estimate. */
         double inner_rows_single_point;
-        if (inner_rel->relid > 0 && inner_rel->rows_sample->sample_count > 1) {
+        if (inner_rel->relid > 0 && inner_rel->rows_sample && inner_rel->rows_sample->sample_count > 1) {
             inner_rows_single_point = inner_rel->rows_sample->sample[root->round];
         } else {
             inner_rows_single_point = inner_rel->rows;
