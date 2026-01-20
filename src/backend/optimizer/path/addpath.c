@@ -93,59 +93,6 @@ rank_idx_maxheap_push_topk(int *heap, const int size, const int k, const int idx
 }
 
 /*
- * CoverPathRank
- *
- * Composite ranking for robust coverage selection:
- *   - cover_rank: larger is better
- *   - mep:        smaller is better
- *
- * Sorting rule:
- *   - Primary key:  cover_rank (descending).
- *   - Secondary:    mep (ascending).
- */
-typedef struct CoverPathRank {
-    Path *path;
-    int cover_rank; /* primary: larger is better */
-    double mep; /* secondary: smaller is better */
-} CoverPathRank;
-
-/* A fast "is a better candidate than b" helper (matches compare_cover_path_rank). */
-static bool
-cover_path_rank_better(const CoverPathRank *a, const CoverPathRank *b) {
-    if (a->cover_rank != b->cover_rank)
-        return a->cover_rank > b->cover_rank; /* DESC: larger is better */
-    if (a->mep != b->mep)
-        return a->mep < b->mep; /* ASC */
-    return false;
-}
-
-/*
- * Comparator for CoverPathRank used by qsort().
- *
- * Order:
- *   1) cover_rank descending (larger = better)
- *   2) mep ascending (smaller = better)
- */
-static int
-compare_cover_path_rank(const void *a, const void *b) {
-    const CoverPathRank *ra = a;
-    const CoverPathRank *rb = b;
-
-    if (ra->cover_rank < rb->cover_rank)
-        return 1;
-    if (ra->cover_rank > rb->cover_rank)
-        return -1;
-
-    /* Secondary: mep ascending (smaller = better) */
-    if (ra->mep < rb->mep)
-        return -1;
-    if (ra->mep > rb->mep)
-        return 1;
-
-    return 0;
-}
-
-/*
  * select_path_by_retention_set
  *
  * From the given candidate list, keep at most `select_path_limit` Paths
@@ -223,8 +170,6 @@ select_path_by_retention_set(
 
     /* New: robust coverage + MEP composite */
     PathRank *cover_arr = palloc(sizeof(PathRank) * cand_count);
-    PathRank *mep_arr = palloc(sizeof(PathRank) * cand_count);
-    CoverPathRank *rank_cover_mep = palloc(sizeof(CoverPathRank) * cand_count);
 
     /* Strategy 0: worst penalty */
     calc_worst_penalty(cand_list, rank_worst, min_envelope, sample_count);
@@ -238,25 +183,8 @@ select_path_by_retention_set(
     /* Strategy 3: expected penalty with standard deviation */
     calc_expected_penalty_with_std(cand_list, rank_exp_penalty_std, min_envelope, sample_count);
 
-    /* Strategy 4 (composite): robust coverage + MEP */
+    /* Strategy 4: robust coverage */
     calc_robust_coverage(cand_list, cover_arr, min_envelope, sample_count);
-    calc_expected_penalty(cand_list, mep_arr, min_envelope, sample_count);
-
-    for (int i = 0; i < cand_count; ++i) {
-        Path *p_cover = cover_arr[i].path;
-        Path *p_mep = mep_arr[i].path;
-
-        if (p_cover != p_mep) {
-            elog(ERROR, "inconsistent paths when selecting paths by robust coverages");
-        }
-        Assert(p_cover == p_mep);
-
-        rank_cover_mep[i].path = p_cover;
-
-        /* Treat cover_arr[i].score as "rank/score where larger is better". */
-        rank_cover_mep[i].cover_rank = (int) cover_arr[i].score;
-        rank_cover_mep[i].mep = mep_arr[i].score;
-    }
 
     /* Strategy 5: similarity */
     calc_plan_similarity(cand_list, rank_similarity, min_envelope, sample_count);
@@ -301,7 +229,6 @@ select_path_by_retention_set(
      * Once a path is selected by any strategy, it is marked and excluded
      * from further consideration by all strategies.
      * -------------------------------------------------------------------- */
-#define STRAT_COUNT 6
     const int k_target = Min(select_path_limit, cand_count);
     /* Mark which candidate indices are already selected as winners. */
     bool *selected = palloc0(sizeof(bool) * cand_count);
@@ -313,21 +240,18 @@ select_path_by_retention_set(
     while (winners_cnt < k_target) {
         bool progress_this_round = false;
 
-        for (int s = 0; s < STRAT_COUNT && winners_cnt < k_target; s++) {
-            /* Strategy 4: composite (cover_rank DESC, mep ASC) */
+        for (int s = 0; s < 6 && winners_cnt < k_target; s++) {
+            /* Strategy 4: greedy-order prefix (no comparator; take first available in order) */
             if (s == 4) {
                 int best_idx = -1;
 
                 for (int i = 0; i < cand_count; i++) {
-                    if (selected[i])
+                    if (selected[i]) {
                         continue;
-                    if (rank_cover_mep[i].path == NULL)
-                        continue;
-
-                    if (best_idx < 0 ||
-                        cover_path_rank_better(&rank_cover_mep[i], &rank_cover_mep[best_idx])) {
-                        best_idx = i;
                     }
+                    /* already in desired order => pick first available */
+                    best_idx = i;
+                    break;
                 }
 
                 if (best_idx >= 0) {
@@ -340,7 +264,7 @@ select_path_by_retention_set(
             }
 
             /* Other strategies: scalar (lower score = better) */
-            PathRank *cur = NULL;
+            const PathRank *cur = NULL;
             if (s < 4) {
                 cur = scalar_strategies[s];
             } else {
@@ -440,12 +364,8 @@ select_path_by_retention_set(
     pfree(rank_exp_penalty);
     pfree(rank_total_cost);
     pfree(rank_exp_penalty_std);
-
     pfree(rank_similarity);
-
     pfree(cover_arr);
-    pfree(mep_arr);
-    pfree(rank_cover_mep);
 
     pfree(selected);
     pfree(winners);
@@ -744,33 +664,35 @@ select_path_by_jointype_based_score(
  * select_path_by_robust_coverage
  *
  * From the given candidate list, keep at most `select_path_limit` Paths
- * using a combined ranking:
+ * using the greedy order produced by `calc_robust_coverage`:
  *
- *   - Primary:  cover_rank descending (larger = better, more coverage).
- *   - Secondary: mep   ascending (smaller = better, lower expected penalty).
+ *   - `calc_robust_coverage` returns candidates in a greedy pick order
+ *     (highest marginal NEW coverage first; i.e., set-cover style selection).
+ *   - This function keeps the first k entries in that returned order.
  *
- * Winners (top-k after sorting by the above rule) are appended to
- * `*kept_list_ptr` (which may already contain entries), and the function
- * returns a List* of all pruned (not kept) Paths.
+ * Winners (first k in greedy order) are appended to `*kept_list_ptr`
+ * (which may already contain entries), and the function returns a List*
+ * of all pruned (not kept) Paths.
  *
  * Contract:
  *   - `calc_robust_coverage` must:
  *       * Fill a PathRank array with .path and .score for each candidate.
- *       * .score is an integer-like *coverage amount* (e.g., #covered samples).
- *   - `calc_expected_penalty` must:
- *       * Fill a PathRank array with .path and .score (MEP) for each candidate.
- *       * Lower MEP = better.
+ *       * Order the PathRank array such that the prefix corresponds to the
+ *         greedy pick order (used for keep/drop decision).
+ *       * Set .score to the plan's TOTAL robust coverage over all samples
+ *         (e.g., #covered samples under eps vs. opt[s]); this is NOT the
+ *         marginal gain used during greedy picking.
  *
  * Score exposure:
- *   - If `should_save_score` is true, we store the cover rank for both kept
- *     and dropped paths.
+ *   - If `should_save_score` is true, we store the TOTAL coverage score
+ *     (PathRank.score) into Path->score for both kept and dropped paths.
  *
  * Return:
  *   - List* of pruned Paths (those NOT kept). If nothing is pruned, returns NIL.
  *
  * Notes:
- *   - Winners are NOT sorted by Path->score; they follow the sorted combined
- *     order described above.
+ *   - This function does NOT sort by Path->score. Keep/drop follows the greedy
+ *     order returned by `calc_robust_coverage`.
  *   - Existing entries in `*kept_list_ptr` are preserved; winners are appended.
  *   - This function does NOT free list cells of `cand_list` (parameter is const).
  *     If the caller needs to release list cells of `cand_list`, do it outside
@@ -791,84 +713,40 @@ select_path_by_robust_coverage(
     const int k = Min(select_path_limit, cand_count);
 
     /* --------------------------------------------------------------------
-    * Phase 1: compute robust coverage rank and minimum expected penalty.
+    * Phase 1: compute robust-coverage ordering + per-plan coverage score.
     *
-    * We use two temporary PathRank arrays:
-    *   - cover_arr: scores from calc_robust_coverage (0, 1, 2, ...).
-    *   - mep_arr: scores from calc_expected_penalty (double).
-    *
-    * Then we merge them into a single CoverPathRank array.
+    * NOTE: calc_robust_coverage must return cover_arr in GREEDY order.
+    * cover_arr[i].score is TOTAL coverage (not marginal gain).
     * -------------------------------------------------------------------- */
     PathRank *cover_arr = palloc(sizeof(PathRank) * cand_count);
-    PathRank *mep_arr = palloc(sizeof(PathRank) * cand_count);
 
-    /* Robust coverage ranking */
+    /* Robust coverage */
     calc_robust_coverage(cand_list, cover_arr, min_envelope, sample_count);
 
-    /* Minimum expected penalty (MEP) */
-    calc_expected_penalty(cand_list, mep_arr, min_envelope, sample_count);
-
-    /* Build composite ranking array */
-    CoverPathRank *rank_arr = palloc(sizeof(CoverPathRank) * cand_count);
-
-    for (int i = 0; i < cand_count; ++i) {
-        /*
-         * Both calc_robust_coverage and calc_expected_penalty must iterate
-         * cand_list in the same order, so their i-th entries refer to the
-         * same Path*.
-         */
-        Path *path_cover = cover_arr[i].path;
-        const Path *path_mep = mep_arr[i].path;
-
-        /* Sanity: they should match; if not, something is inconsistent. */
-        if (path_cover != path_mep) {
-            elog(ERROR, "inconsistent paths when selecting paths by robust coverages");
-        }
-        Assert(path_cover == path_mep);
-
-        rank_arr[i].path = path_cover;
-        rank_arr[i].cover_rank = (int) cover_arr[i].score; /* score is integer-like */
-        rank_arr[i].mep = mep_arr[i].score; /* minimum expected penalty */
-    }
-
-    /* Temporary arrays no longer needed */
-    pfree(cover_arr);
-    pfree(mep_arr);
-
     /* --------------------------------------------------------------------
-     * Phase 2: sort by (cover_rank DESC, mep ASC) and split into winners/losers.
+     * Phase 2: split into winners/losers.
      * -------------------------------------------------------------------- */
-    qsort(rank_arr, cand_count, sizeof(CoverPathRank), compare_cover_path_rank);
 
     /* Winners: first k entries; losers: remaining entries */
     List *kept_list = (*kept_list_ptr != NULL) ? *kept_list_ptr : NIL;
     List *dropped_list = NIL;
 
-    /* Append winners */
+    /* Append winners (greedy order) */
     for (int i = 0; i < k; i++) {
-        const CoverPathRank *cover_rank = &rank_arr[i];
-        Path *keep = cover_rank->path;
-
+        Path *keep = cover_arr[i].path;
         if (should_save_score) {
-            /*
-             * Expose cover rank as Path->score, so later stages can see a scalar
-             * expectation-based penalty for this Path.
-             */
-            keep->score = cover_rank->cover_rank;
+            /* Expose TOTAL robust coverage as Path->score (scalar) */
+            keep->score = cover_arr[i].score;
         }
-
         kept_list = lappend(kept_list, keep);
     }
-    /* Build dropped list (if any) */
+
+    /* Append losers (remaining candidates, already in deterministic order) */
     for (int i = k; i < cand_count; i++) {
-        const CoverPathRank *cover_rank = &rank_arr[i];
-        Path *drop = cover_rank->path;
-
+        Path *drop = cover_arr[i].path;
         if (should_save_score) {
-            /* Same convention for losers: expose cover rank into Path->score. */
-            drop->score = cover_rank->cover_rank;
+            drop->score = cover_arr[i].score;
         }
-
         dropped_list = lappend(dropped_list, drop);
     }
 
@@ -878,7 +756,7 @@ select_path_by_robust_coverage(
     /* --------------------------------------------------------------------
      * Phase 3: cleanup and return pruned paths.
      * -------------------------------------------------------------------- */
-    pfree(rank_arr);
+    pfree(cover_arr);
 
     return dropped_list;
 }
