@@ -5,7 +5,7 @@
 // Modified by Xuan Chen on 2025/12/22.
 //
 
-#define PENALTY_TOLERANCE_FACTOR 1.05
+#define PENALTY_TOLERANCE_FACTOR 1.02
 
 #include "optimizer/pathstrategy.h"
 
