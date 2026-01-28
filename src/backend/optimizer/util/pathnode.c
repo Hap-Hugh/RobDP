@@ -1346,11 +1346,14 @@ create_append_path(PlannerInfo *root,
     else
         pathnode->limit_tuples = -1.0;
 
+    pathnode->path.score = 0.0;
+
     foreach(l, pathnode->subpaths) {
         Path *subpath = (Path *) lfirst(l);
 
         pathnode->path.parallel_safe = pathnode->path.parallel_safe &&
                                        subpath->parallel_safe;
+        pathnode->path.score += subpath->score;
 
         /* All child paths must have same parameterization */
         Assert(bms_equal(PATH_REQ_OUTER(subpath), required_outer));
@@ -1481,6 +1484,8 @@ create_merge_append_path(PlannerInfo *root,
     else
         pathnode->limit_tuples = -1.0;
 
+    pathnode->path.score = 0.0;
+
     /*
      * Add up the sizes and costs of the input paths.
      */
@@ -1493,6 +1498,8 @@ create_merge_append_path(PlannerInfo *root,
         pathnode->path.rows += subpath->rows;
         pathnode->path.parallel_safe = pathnode->path.parallel_safe &&
                                        subpath->parallel_safe;
+
+        pathnode->path.score += subpath->score;
 
         if (pathkeys_contained_in(pathkeys, subpath->pathkeys)) {
             /* Subpath is adequately ordered, we won't need to sort it */
@@ -1676,6 +1683,10 @@ create_memoize_path(PlannerInfo *root, RelOptInfo *rel, Path *subpath,
     pathnode->path.startup_cost = subpath->startup_cost + cpu_tuple_cost;
     pathnode->path.total_cost = subpath->total_cost + cpu_tuple_cost;
     pathnode->path.rows = subpath->rows;
+
+    if (root->pass == 3) {
+        pathnode->path.score = subpath->score;
+    }
 
     return pathnode;
 }
@@ -1901,7 +1912,9 @@ create_unique_path(PlannerInfo *root, RelOptInfo *rel, Path *subpath,
     }
 
     MemoryContextSwitchTo(oldcontext);
-
+    if (root->pass == 3) {
+        pathnode->path.score = subpath->score;
+    }
     return pathnode;
 }
 
@@ -2066,6 +2079,8 @@ create_subqueryscan_path(PlannerInfo *root, RelOptInfo *rel, Path *subpath,
 
     cost_subqueryscan(pathnode, root, rel, pathnode->path.param_info,
                       trivial_pathtarget);
+
+    pathnode->path.score = pathnode->subpath->score;
 
     return pathnode;
 }
@@ -2807,9 +2822,7 @@ create_projection_path(
         }
     }
 
-    if (root->pass == 3) {
-        pathnode->path.score = pathnode->subpath->score;
-    }
+    pathnode->path.score = pathnode->subpath->score;
 
     return pathnode;
 }
@@ -2970,6 +2983,10 @@ create_set_projection_path(PlannerInfo *root,
                                 (cpu_tuple_cost + target->cost.per_tuple) * subpath->rows +
                                 (pathnode->path.rows - subpath->rows) * cpu_tuple_cost / 2;
 
+    if (root->pass == 3) {
+        pathnode->path.score = subpath->score;
+    }
+
     return pathnode;
 }
 
@@ -3020,9 +3037,7 @@ create_incremental_sort_path(PlannerInfo *root,
 
     sort->nPresortedCols = presorted_keys;
 
-    if (root->pass == 3) {
-        pathnode->path.score = subpath->score;
-    }
+    pathnode->path.score = subpath->score;
 
     return sort;
 }
@@ -3066,9 +3081,7 @@ create_sort_path(PlannerInfo *root,
               0.0, /* XXX comparison_cost shouldn't be 0? */
               work_mem, limit_tuples);
 
-    if (root->pass == 3) {
-        pathnode->path.score = subpath->score;
-    }
+    pathnode->path.score = subpath->score;
 
     return pathnode;
 }
@@ -3193,7 +3206,9 @@ create_upper_unique_path(PlannerInfo *root,
     for (int i = 0; i < error_sample_count; ++i) {
         pathnode->path.total_cost_sample->sample[i] = pathnode->path.total_cost;
     }
-
+    if (root->pass == 3) {
+        pathnode->path.score = subpath->score;
+    }
     return pathnode;
 }
 
@@ -3272,9 +3287,7 @@ create_agg_path(PlannerInfo *root,
     pathnode->path.total_cost += target->cost.startup +
             target->cost.per_tuple * pathnode->path.rows;
 
-    if (root->pass == 3) {
-        pathnode->path.score = subpath->score;
-    }
+    pathnode->path.score = subpath->score;
 
     return pathnode;
 }
@@ -3434,6 +3447,8 @@ create_groupingsets_path(PlannerInfo *root,
     pathnode->path.total_cost += target->cost.startup +
             target->cost.per_tuple * pathnode->path.rows;
 
+    pathnode->path.score = subpath->score;
+
     return pathnode;
 }
 
@@ -3568,6 +3583,10 @@ create_windowagg_path(PlannerInfo *root,
     pathnode->path.total_cost += target->cost.startup +
             target->cost.per_tuple * pathnode->path.rows;
 
+    if (root->pass == 3) {
+        pathnode->path.score += subpath->score;
+    }
+
     return pathnode;
 }
 
@@ -3642,6 +3661,8 @@ create_setop_path(PlannerInfo *root,
     for (int i = 0; i < error_sample_count; ++i) {
         pathnode->path.total_cost_sample->sample[i] = pathnode->path.total_cost;
     }
+
+    pathnode->path.score = subpath->score;
 
     return pathnode;
 }
@@ -3738,6 +3759,10 @@ create_lockrows_path(PlannerInfo *root, RelOptInfo *rel,
     pathnode->path.startup_cost = subpath->startup_cost;
     pathnode->path.total_cost = subpath->total_cost +
                                 cpu_tuple_cost * subpath->rows;
+
+    if (root->pass == 3) {
+        pathnode->path.score += subpath->score;
+    }
 
     return pathnode;
 }
@@ -3913,6 +3938,8 @@ create_limit_path(
             count_est
         );
     }
+
+    pathnode->path.score = subpath->score;
 
     return pathnode;
 }
