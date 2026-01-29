@@ -3266,6 +3266,18 @@ make_rel_from_joinlist(PlannerInfo *root, List *joinlist) {
     }
 }
 
+static void
+save_score(const double score, const double partial_score) {
+    FILE *fp = fopen(score_filename, "a");
+    if (fp == NULL) {
+        elog(WARNING, "cannot open file to write score");
+        return;
+    }
+    fprintf(fp, "%.6f %.6f\n", score, partial_score);
+    fclose(fp);
+    elog(LOG, "Best path score saved at %s", score_filename);
+}
+
 /*
  * standard_join_search
  *	  Find possible joinpaths for a query by successively finding ways
@@ -3646,6 +3658,17 @@ standard_join_search(PlannerInfo *root, const int levels_needed, List *initial_r
              */
             if (!bms_equal(rel->relids, root->all_query_rels)) {
                 generate_useful_gather_paths(root, rel, false);
+            } else {
+                /* Now this is the topmost relation. We output the scores here. */
+                double score = -1.0;
+                double partial_score = -1.0;
+                if (rel->pathlist) {
+                    score = ((Path *) linitial(rel->pathlist))->score;
+                }
+                if (rel->partial_pathlist) {
+                    partial_score = ((Path *) linitial(rel->partial_pathlist))->score;
+                }
+                save_score(score, partial_score);
             }
 
             /* Find and save the cheapest paths for this rel */

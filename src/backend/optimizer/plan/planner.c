@@ -322,22 +322,15 @@ planner(Query *parse, const char *query_string, int cursorOptions,
 }
 
 static void
-save_best_path_score(const Path *best_path) {
-    if (best_path == NULL) {
-        elog(WARNING, "best_path is NULL, cannot save score");
-        return;
-    }
-
+print_delim() {
     FILE *fp = fopen(score_filename, "a");
     if (fp == NULL) {
-        elog(WARNING, "cannot open file to write score");
+        elog(WARNING, "cannot open file to print delim");
         return;
     }
-
-    fprintf(fp, "Best path score: %.6f\n", best_path->score);
+    fprintf(fp, "====\n");
     fclose(fp);
-
-    elog(LOG, "Best path score saved at %s", score_filename);
+    elog(LOG, "Delim printed at %s", score_filename);
 }
 
 PlannedStmt *
@@ -471,7 +464,8 @@ standard_planner(
     final_rel = fetch_upper_rel(root, UPPERREL_FINAL, NULL);
     best_path = get_cheapest_fractional_path(final_rel, tuple_fraction);
 
-    save_best_path_score(best_path);
+    // save_best_path_score(best_path);
+    print_delim();
 
     top_plan = create_plan(root, best_path);
 
