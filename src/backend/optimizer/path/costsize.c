@@ -673,6 +673,16 @@ void cost_bitmap_heap_scan(
 
     path->startup_cost = startup_cost;
     path->total_cost = startup_cost + run_cost;
+
+    path->rows_sample = initialize_sample(error_sample_count);
+    path->startup_cost_sample = initialize_sample(error_sample_count);
+    path->total_cost_sample = initialize_sample(error_sample_count);
+
+    for (int i = 0; i < error_sample_count; ++i) {
+        path->rows_sample->sample[i] = path->rows;
+        path->startup_cost_sample->sample[i] = path->startup_cost;
+        path->total_cost_sample->sample[i] = path->total_cost;
+    }
 }
 
 /*
@@ -746,6 +756,16 @@ void cost_bitmap_and_node(BitmapAndPath *path, PlannerInfo *root) {
     path->path.rows = 0; /* per above, not used */
     path->path.startup_cost = totalCost;
     path->path.total_cost = totalCost;
+
+    path->path.rows_sample = initialize_sample(error_sample_count);
+    path->path.startup_cost_sample = initialize_sample(error_sample_count);
+    path->path.total_cost_sample = initialize_sample(error_sample_count);
+
+    for (int i = 0; i < error_sample_count; ++i) {
+        path->path.rows_sample->sample[i] = path->path.rows;
+        path->path.startup_cost_sample->sample[i] = path->path.startup_cost;
+        path->path.total_cost_sample->sample[i] = path->path.total_cost;
+    }
 }
 
 /*
@@ -789,6 +809,16 @@ void cost_bitmap_or_node(BitmapOrPath *path, PlannerInfo *root) {
     path->path.rows = 0; /* per above, not used */
     path->path.startup_cost = totalCost;
     path->path.total_cost = totalCost;
+
+    path->path.rows_sample = initialize_sample(error_sample_count);
+    path->path.startup_cost_sample = initialize_sample(error_sample_count);
+    path->path.total_cost_sample = initialize_sample(error_sample_count);
+
+    for (int i = 0; i < error_sample_count; ++i) {
+        path->path.rows_sample->sample[i] = path->path.rows;
+        path->path.startup_cost_sample->sample[i] = path->path.startup_cost;
+        path->path.total_cost_sample->sample[i] = path->path.total_cost;
+    }
 }
 
 /*
