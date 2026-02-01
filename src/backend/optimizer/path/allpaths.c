@@ -206,6 +206,303 @@ static void recurse_push_qual(Node *setOp, Query *topquery,
 static void remove_unused_subquery_outputs(Query *subquery, RelOptInfo *rel,
                                            Bitmapset *extra_used_attrs);
 
+/* ---------- Alias helpers ---------- */
+
+static const char *
+get_rte_aliasname(PlannerInfo *root, Index varno) {
+    RangeTblEntry *rte;
+
+    if (root == NULL)
+        return NULL;
+
+    if (varno <= 0 || varno >= root->simple_rel_array_size)
+        return NULL;
+
+    rte = root->simple_rte_array[varno];
+    if (rte == NULL)
+        return NULL;
+
+    if (rte->eref && rte->eref->aliasname)
+        return rte->eref->aliasname;
+
+    if (rte->alias && rte->alias->aliasname)
+        return rte->alias->aliasname;
+
+    return NULL;
+}
+
+/* Print a relid/relids as "a b c" (space separated). */
+static void
+append_relids_as_aliases(StringInfo buf, PlannerInfo *root, Bitmapset *relids) {
+    int member = -1;
+    bool first = true;
+
+    if (relids == NULL) {
+        appendStringInfoString(buf, "<no-relids>");
+        return;
+    }
+
+    while ((member = bms_next_member(relids, member)) >= 0) {
+        Index varno = (Index) member;
+        const char *alias = get_rte_aliasname(root, varno);
+
+        if (!first)
+            appendStringInfoChar(buf, ' ');
+        first = false;
+
+        if (alias && alias[0] != '\0')
+            appendStringInfoString(buf, alias);
+        else
+            appendStringInfo(buf, "rel%u", varno);
+    }
+
+    if (first)
+        appendStringInfoString(buf, "<empty-relids>");
+}
+
+static void
+append_single_rel_as_alias(StringInfo buf, PlannerInfo *root, RelOptInfo *baserel) {
+    Index varno = baserel ? baserel->relid : 0;
+    const char *alias = (varno > 0) ? get_rte_aliasname(root, varno) : NULL;
+
+    if (alias && alias[0] != '\0')
+        appendStringInfoString(buf, alias);
+    else
+        appendStringInfo(buf, "rel%u", varno);
+}
+
+/* ---------- Leading() (join order) ---------- */
+
+static void
+append_leading_expr(StringInfo buf, PlannerInfo *root, Path *path) {
+    if (path == NULL) {
+        appendStringInfoString(buf, "<NULL>");
+        return;
+    }
+
+    switch (path->pathtype) {
+        case T_SeqScan:
+        case T_IndexScan: {
+            /* Leaf: just its alias */
+            append_single_rel_as_alias(buf, root, path->parent);
+            break;
+        }
+
+        case T_HashJoin:
+        case T_MergeJoin:
+        case T_NestLoop: {
+            JoinPath *jp = (JoinPath *) path;
+
+            appendStringInfoChar(buf, '(');
+            append_leading_expr(buf, root, jp->outerjoinpath);
+            appendStringInfoChar(buf, ' ');
+            append_leading_expr(buf, root, jp->innerjoinpath);
+            appendStringInfoChar(buf, ')');
+            break;
+        }
+
+        default: {
+            /*
+             * Not in our supported set; fall back to the full relids of this path's parent.
+             * This keeps the output usable even if other path types appear.
+             */
+            append_relids_as_aliases(buf, root, path->parent ? path->parent->relids : NULL);
+            break;
+        }
+    }
+}
+
+/* ---------- Tree printer (plan-like) ---------- */
+
+static const char *
+path_tag_to_name(NodeTag tag) {
+    switch (tag) {
+        case T_SeqScan: return "SeqScan";
+        case T_IndexScan: return "IndexScan";
+        case T_HashJoin: return "HashJoin";
+        case T_MergeJoin: return "MergeJoin";
+        case T_NestLoop: return "NestLoop";
+        default: return "OtherPath";
+    }
+}
+
+/*
+ * Print a path composition tree:
+ * - For scans: "SeqScan (a)" / "IndexScan (a)"
+ * - For joins: "HashJoin (a b c)" where a b c are all rels under the join rel
+ *   then recursively print children indented.
+ */
+static void
+append_path_tree(StringInfo buf, PlannerInfo *root, Path *path, int indent) {
+    int i;
+
+    if (path == NULL) {
+        appendStringInfoString(buf, "<NULL path>\n");
+        return;
+    }
+
+    for (i = 0; i < indent; i++)
+        appendStringInfoChar(buf, ' ');
+
+    appendStringInfo(buf, "%s (", path_tag_to_name(path->pathtype));
+
+    switch (path->pathtype) {
+        case T_SeqScan:
+        case T_IndexScan:
+            append_single_rel_as_alias(buf, root, path->parent);
+            break;
+
+        case T_HashJoin:
+        case T_MergeJoin:
+        case T_NestLoop:
+            /* Print all rels involved in this join node */
+            append_relids_as_aliases(buf, root, path->parent ? path->parent->relids : NULL);
+            break;
+
+        default:
+            append_relids_as_aliases(buf, root, path->parent ? path->parent->relids : NULL);
+            break;
+    }
+
+    appendStringInfoString(buf, ")\n");
+
+    /* Recurse into join children for supported join paths */
+    if (nodeTag(path) == T_HashPath ||
+        nodeTag(path) == T_MergePath ||
+        nodeTag(path) == T_NestPath) {
+        const JoinPath *jp = (JoinPath *) path;
+        append_path_tree(buf, root, jp->outerjoinpath, indent + 2);
+        append_path_tree(buf, root, jp->innerjoinpath, indent + 2);
+    }
+}
+
+/* ---------- Public entry points ---------- */
+
+/*
+ * Build hint-like strings from a Path:
+ * 1) Composition tree (plan-ish)
+ * 2) Leading((...)) join order
+ */
+static void
+debug_print_path_hintstyle(PlannerInfo *root, Path *path) {
+    StringInfoData treebuf;
+    StringInfoData leadbuf;
+
+    initStringInfo(&treebuf);
+    initStringInfo(&leadbuf);
+
+    append_path_tree(&treebuf, root, path, 0);
+
+    appendStringInfoString(&leadbuf, "Leading(");
+    append_leading_expr(&leadbuf, root, path);
+    appendStringInfoChar(&leadbuf, ')');
+
+    elog(LOG, "[planner-debug] Path score: %.3f", path->score);
+    elog(LOG, "[planner-debug] Path cost: %.3f..%.3f", path->startup_cost, path->total_cost);
+    elog(LOG, "[planner-debug] Path composition:\n%s", treebuf.data);
+    elog(LOG, "[planner-debug] %s", leadbuf.data);
+
+    pfree(treebuf.data);
+    pfree(leadbuf.data);
+}
+
+static const char *
+reloptkind_to_cstring(RelOptKind kind) {
+    switch (kind) {
+        case RELOPT_BASEREL: return "baserel";
+        case RELOPT_JOINREL: return "joinrel";
+        default: return "unknown";
+    }
+}
+
+/*
+ * Build join key string like "A=B=C" from rel->relids.
+ * If alias names cannot be found, fallback to "rel<varno>".
+ */
+static void
+build_join_key(StringInfo buf, PlannerInfo *root, RelOptInfo *rel) {
+    int member = -1;
+    bool first = true;
+
+    if (rel == NULL || rel->relids == NULL) {
+        appendStringInfoString(buf, "<no-relids>");
+        return;
+    }
+
+    while ((member = bms_next_member(rel->relids, member)) >= 0) {
+        Index varno = (Index) member; /* bms members are ints */
+        const char *alias = get_rte_aliasname(root, varno);
+
+        if (!first)
+            appendStringInfoString(buf, "=");
+        first = false;
+
+        if (alias && alias[0] != '\0')
+            appendStringInfoString(buf, alias);
+        else
+            appendStringInfo(buf, "rel%u", varno);
+    }
+
+    if (first)
+        appendStringInfoString(buf, "<empty-relids>");
+}
+
+/* --- public API --- */
+
+/*
+ * Main function: prints counts and rel name using root for alias resolution.
+ *
+ * Output example (LOG):
+ *   [planner-debug] rel=0x... kind=joinrel name=t1=t2 paths=5 partial_paths=2
+ */
+static void
+debug_print_rel_paths(PlannerInfo *root, RelOptInfo *rel) {
+    int npaths;
+    int npartial;
+    StringInfoData namebuf;
+    const char *kindstr;
+
+    if (rel == NULL) {
+        elog(LOG, "[planner-debug] rel=<NULL>");
+        return;
+    }
+
+    npaths = list_length(rel->pathlist);
+    npartial = list_length(rel->partial_pathlist);
+
+    kindstr = reloptkind_to_cstring(rel->reloptkind);
+
+    initStringInfo(&namebuf);
+
+    if (rel->reloptkind == RELOPT_BASEREL) {
+        /* Base rel: rel->relid is the varno (1-based RTE index) */
+        Index varno = rel->relid;
+        const char *alias = get_rte_aliasname(root, varno);
+
+        if (alias && alias[0] != '\0')
+            appendStringInfoString(&namebuf, alias);
+        else
+            appendStringInfo(&namebuf, "rel%u", varno);
+    } else if (rel->reloptkind == RELOPT_JOINREL) {
+        /* Join rel: build "A=B=C" from rel->relids */
+        build_join_key(&namebuf, root, rel);
+    } else {
+        /*
+         * Other rel kinds: best effort.
+         * If relids exists, print them like a join key; otherwise relid.
+         */
+        if (rel->relids)
+            build_join_key(&namebuf, root, rel);
+        else
+            appendStringInfo(&namebuf, "rel%u", rel->relid);
+    }
+
+    elog(LOG,
+         "[planner-debug] rel=%p kind=%s name=%s paths=%d partial_paths=%d",
+         rel, kindstr, namebuf.data, npaths, npartial);
+
+    pfree(namebuf.data);
+}
 
 /*
  * make_one_rel
@@ -3337,6 +3634,7 @@ standard_join_search(PlannerInfo *root, const int levels_needed, List *initial_r
         saved_join_rel_levels = lappend(saved_join_rel_levels, root->join_rel_level);
 
         for (int lev = 2; lev <= levels_needed; ++lev) {
+            elog(LOG, "[LEVEL] %d", lev);
             ListCell *lc;
 
             /*
@@ -3351,6 +3649,20 @@ standard_join_search(PlannerInfo *root, const int levels_needed, List *initial_r
              */
             foreach(lc, root->join_rel_level[lev]) {
                 RelOptInfo *rel = lfirst(lc);
+                debug_print_rel_paths(root, rel);
+
+                ListCell *lc_path;
+                elog(LOG, "==== ====");
+                foreach(lc_path, rel->pathlist) {
+                    Path *path = lfirst(lc_path);
+                    debug_print_path_hintstyle(root, path);
+                }
+                elog(LOG, "---- ----");
+                foreach(lc_path, rel->partial_pathlist) {
+                    Path *path = lfirst(lc_path);
+                    debug_print_path_hintstyle(root, path);
+                }
+                elog(LOG, "==== ====");
 
                 /* Compute per-round cost samples for this rel */
                 calc_score_from_pathlist(rel);
@@ -3469,6 +3781,7 @@ standard_join_search(PlannerInfo *root, const int levels_needed, List *initial_r
             path_strategy_funcs[final_score_id];
 
     for (int lev = 2; lev <= levels_needed; lev++) {
+        elog(LOG, "[LEVEL] %d", lev);
         ListCell *lc;
 
         /*
@@ -3490,6 +3803,8 @@ standard_join_search(PlannerInfo *root, const int levels_needed, List *initial_r
          */
         foreach(lc, root->join_rel_level[lev]) {
             RelOptInfo *rel = lfirst(lc);
+            debug_print_rel_paths(root, rel);
+
             const int rel_index = foreach_current_index(lc);
 
             const RelOptInfo *min_envelope_joinrel = (RelOptInfo *) list_nth(
@@ -3530,6 +3845,13 @@ standard_join_search(PlannerInfo *root, const int levels_needed, List *initial_r
                     true /* save score for kept */
                 );
 
+                ListCell *lc_path;
+                elog(LOG, "==== [A] ====");
+                foreach(lc_path, kept_pathlist) {
+                    Path *path = lfirst(lc_path);
+                    debug_print_path_hintstyle(root, path);
+                }
+
                 /* Pass B: only if capacity remains */
                 List *final_dropped = NIL;
                 if (lev != levels_needed && retain_path_limit > 0 && dropped_pathlist != NIL) {
@@ -3557,6 +3879,12 @@ standard_join_search(PlannerInfo *root, const int levels_needed, List *initial_r
                 rel->pathlist = kept_pathlist;
                 /* Sort selected normal paths by total cost (ascending) */
                 rel->pathlist = sort_pathlist_by_total_cost(rel->pathlist);
+
+                elog(LOG, "==== [B] ====");
+                foreach(lc_path, rel->pathlist) {
+                    Path *path = lfirst(lc_path);
+                    debug_print_path_hintstyle(root, path);
+                }
             }
 
             /* --------------------------------------------------------------------
@@ -3592,6 +3920,13 @@ standard_join_search(PlannerInfo *root, const int levels_needed, List *initial_r
                     true /* save score for kept */
                 );
 
+                ListCell *lc_path;
+                elog(LOG, "==== [A] ====");
+                foreach(lc_path, kept_partial_pathlist) {
+                    Path *path = lfirst(lc_path);
+                    debug_print_path_hintstyle(root, path);
+                }
+
                 /* Pass B: always run with the specified retain strategy/limit (no global cap) */
                 List *final_partial_dropped = NIL;
                 if (lev != levels_needed && retain_path_limit > 0 && dropped_partial_pathlist != NIL) {
@@ -3619,6 +3954,12 @@ standard_join_search(PlannerInfo *root, const int levels_needed, List *initial_r
                 rel->partial_pathlist = kept_partial_pathlist;
                 /* Sort selected partial paths by total cost (ascending) */
                 rel->partial_pathlist = sort_pathlist_by_total_cost(rel->partial_pathlist);
+
+                elog(LOG, "==== [B] ====");
+                foreach(lc_path, rel->partial_pathlist) {
+                    Path *path = lfirst(lc_path);
+                    debug_print_path_hintstyle(root, path);
+                }
             }
 
             if (lev == levels_needed) {
