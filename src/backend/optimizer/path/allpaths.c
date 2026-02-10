@@ -208,7 +208,7 @@ static void remove_unused_subquery_outputs(Query *subquery, RelOptInfo *rel,
 
 /* ---------- Alias helpers ---------- */
 
-static const char *
+const char *
 get_rte_aliasname(PlannerInfo *root, Index varno) {
     RangeTblEntry *rte;
 
@@ -232,7 +232,7 @@ get_rte_aliasname(PlannerInfo *root, Index varno) {
 }
 
 /* Print a relid/relids as "a b c" (space separated). */
-static void
+void
 append_relids_as_aliases(StringInfo buf, PlannerInfo *root, Bitmapset *relids) {
     int member = -1;
     bool first = true;
@@ -260,7 +260,7 @@ append_relids_as_aliases(StringInfo buf, PlannerInfo *root, Bitmapset *relids) {
         appendStringInfoString(buf, "<empty-relids>");
 }
 
-static void
+void
 append_single_rel_as_alias(StringInfo buf, PlannerInfo *root, RelOptInfo *baserel) {
     Index varno = baserel ? baserel->relid : 0;
     const char *alias = (varno > 0) ? get_rte_aliasname(root, varno) : NULL;
@@ -273,7 +273,7 @@ append_single_rel_as_alias(StringInfo buf, PlannerInfo *root, RelOptInfo *basere
 
 /* ---------- Leading() (join order) ---------- */
 
-static void
+void
 append_leading_expr(StringInfo buf, PlannerInfo *root, Path *path) {
     if (path == NULL) {
         appendStringInfoString(buf, "<NULL>");
@@ -314,7 +314,7 @@ append_leading_expr(StringInfo buf, PlannerInfo *root, Path *path) {
 
 /* ---------- Tree printer (plan-like) ---------- */
 
-static const char *
+const char *
 path_tag_to_name(NodeTag tag) {
     switch (tag) {
         case T_SeqScan: return "SeqScan";
@@ -332,7 +332,7 @@ path_tag_to_name(NodeTag tag) {
  * - For joins: "HashJoin (a b c)" where a b c are all rels under the join rel
  *   then recursively print children indented.
  */
-static void
+void
 append_path_tree(StringInfo buf, PlannerInfo *root, Path *path, int indent) {
     int i;
 
@@ -383,7 +383,7 @@ append_path_tree(StringInfo buf, PlannerInfo *root, Path *path, int indent) {
  * 1) Composition tree (plan-ish)
  * 2) Leading((...)) join order
  */
-static void
+void
 debug_print_path_hintstyle(PlannerInfo *root, Path *path) {
     StringInfoData treebuf;
     StringInfoData leadbuf;
@@ -406,7 +406,7 @@ debug_print_path_hintstyle(PlannerInfo *root, Path *path) {
     pfree(leadbuf.data);
 }
 
-static const char *
+const char *
 reloptkind_to_cstring(RelOptKind kind) {
     switch (kind) {
         case RELOPT_BASEREL: return "baserel";
@@ -419,7 +419,7 @@ reloptkind_to_cstring(RelOptKind kind) {
  * Build join key string like "A=B=C" from rel->relids.
  * If alias names cannot be found, fallback to "rel<varno>".
  */
-static void
+void
 build_join_key(StringInfo buf, PlannerInfo *root, RelOptInfo *rel) {
     int member = -1;
     bool first = true;
@@ -455,7 +455,7 @@ build_join_key(StringInfo buf, PlannerInfo *root, RelOptInfo *rel) {
  * Output example (LOG):
  *   [planner-debug] rel=0x... kind=joinrel name=t1=t2 paths=5 partial_paths=2
  */
-static void
+void
 debug_print_rel_paths(PlannerInfo *root, RelOptInfo *rel) {
     int npaths;
     int npartial;
@@ -3869,12 +3869,6 @@ standard_join_search(PlannerInfo *root, const int levels_needed, List *initial_r
                 /* rel->pathlist was never freed by select_* (takes const), free old cells now */
                 list_free(rel->pathlist);
 
-                /* Free temporary loser lists' cells (Path structs remain alive) */
-                if (dropped_pathlist != NIL)
-                    list_free((List *) dropped_pathlist);
-                if (final_dropped != NIL)
-                    list_free(final_dropped);
-
                 /* Install and sort */
                 rel->pathlist = kept_pathlist;
                 /* Sort selected normal paths by total cost (ascending) */
@@ -3885,6 +3879,12 @@ standard_join_search(PlannerInfo *root, const int levels_needed, List *initial_r
                     Path *path = lfirst(lc_path);
                     debug_print_path_hintstyle(root, path);
                 }
+
+                /* Free temporary loser lists' cells (Path structs remain alive) */
+                if (dropped_pathlist != NIL)
+                    list_free((List *) dropped_pathlist);
+                if (final_dropped != NIL)
+                    list_free(final_dropped);
             }
 
             /* --------------------------------------------------------------------

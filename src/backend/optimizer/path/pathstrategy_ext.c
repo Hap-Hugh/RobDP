@@ -29,6 +29,7 @@
 #include <float.h>
 
 #include "nodes/pg_list.h"
+#include "optimizer/pathnode.h"
 #include "optimizer/paths.h"
 #include "utils/elog.h"
 #include "utils/memutils.h"
@@ -182,6 +183,7 @@ calc_plan_similarity(
         max_total_cost_thresh = Max(max_total_cost_thresh, min_envelope[i]);
     }
     max_total_cost_thresh = max_total_cost_thresh * PRUNE_TOLERANCE_FACTOR;
+    elog(LOG, "[calc_plan_similarity] threshold: %.3f", max_total_cost_thresh);
 
     Path **path_array = palloc(sizeof(Path *) * cand_count);
 
@@ -196,9 +198,12 @@ calc_plan_similarity(
             cur_min_total_cost = Min(cur_min_total_cost, cur_total_cost_sample->sample[cur_sample_idx]);
         }
         if (cur_min_total_cost > max_total_cost_thresh) {
+            elog(LOG, "[calc_plan_similarity] removed: %.3f > %.3f, costs: (%.3f..%.3f), score: %.3f",
+                 cur_min_total_cost, max_total_cost_thresh, path->startup_cost, path->total_cost, path->score);
             continue; /* We skip bad paths, but we don't remove it now. */
         }
-
+        elog(LOG, "[calc_plan_similarity] kept: %.3f < %.3f, costs: (%.3f..%.3f), score: %.3f",
+             cur_min_total_cost, max_total_cost_thresh, path->startup_cost, path->total_cost, path->score);
         path_array[writer] = path;
         rank_arr[writer].path = path;
         rank_arr[writer].score = 0.0; /* Will be filled after K-center */
@@ -329,6 +334,12 @@ calc_plan_similarity(
         }
 
         centers[k] = farthest_idx;
+        elog(LOG, "[calc_plan_similarity] k: %d, last_center: %d, farthest_idx: %d, farthest_dist: %.3f",
+             k, last_center, farthest_idx, farthest_dist);
+    }
+
+    for (int i = 0; i < num_centers; ++i) {
+        elog(LOG, "[calc_plan_similarity] center_idx: %d", centers[i]);
     }
 
     /* ----------------------------------------------------------
@@ -359,6 +370,9 @@ calc_plan_similarity(
 
         Assert(center_idx >= 0 && center_idx < cand_count);
         rank_arr[center_idx].score = 1.0;
+        const Path *path = path_array[center_idx];
+        elog(LOG, "[calc_plan_similarity] center_idx: %d, costs: (%.3f..%.3f), score: %.3f",
+             center_idx, path->startup_cost, path->total_cost, path->score);
     }
 
     /* ----------------------------------------------------------
