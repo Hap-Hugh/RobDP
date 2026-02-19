@@ -322,11 +322,38 @@ planner(Query *parse, const char *query_string, int cursorOptions,
 }
 
 static void
-save_best_path_score(const Path *best_path) {
+save_best_path_score(const PlannerInfo *root, Path *best_path) {
     if (best_path == NULL) {
         elog(WARNING, "best_path is NULL, cannot save score");
         return;
     }
+
+    // Path *best_subpath = best_path;
+    // bool loop_continues = true;
+    // while (best_subpath && loop_continues) {
+    //     switch (best_subpath->pathtype) {
+    //         case T_Gather:
+    //             best_subpath = ((GatherPath *) best_subpath)->subpath;
+    //             break;
+    //         case T_GatherMerge:
+    //             best_subpath = ((GatherMergePath *) best_subpath)->subpath;
+    //             break;
+    //         case T_Agg:
+    //             best_subpath = ((AggPath *) best_subpath)->subpath;
+    //             break;
+    //         case T_Sort:
+    //             best_subpath = ((SortPath *) best_subpath)->subpath;
+    //             break;
+    //         case T_IncrementalSort:
+    //             best_subpath = ((IncrementalSortPath *) best_subpath)->spath.subpath;
+    //             break;
+    //         default:
+    //             loop_continues = false;
+    //             break;
+    //     }
+    // }
+
+    debug_print_path_hintstyle(root, best_path);
 
     FILE *fp = fopen(score_filename, "a");
     if (fp == NULL) {
@@ -471,7 +498,7 @@ standard_planner(
     final_rel = fetch_upper_rel(root, UPPERREL_FINAL, NULL);
     best_path = get_cheapest_fractional_path(final_rel, tuple_fraction);
 
-    save_best_path_score(best_path);
+    save_best_path_score(root, best_path);
 
     top_plan = create_plan(root, best_path);
 

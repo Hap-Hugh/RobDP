@@ -623,25 +623,25 @@ extern RelOptInfo *build_child_join_rel(
 );
 
 extern const char *get_rte_aliasname(
-    PlannerInfo *root,
+    const PlannerInfo *root,
     Index varno
 );
 
 extern void append_relids_as_aliases(
     StringInfo buf,
-    PlannerInfo *root,
-    Bitmapset *relids
+    const PlannerInfo *root,
+    const Bitmapset *relids
 );
 
 extern void append_single_rel_as_alias(
     StringInfo buf,
-    PlannerInfo *root,
-    RelOptInfo *baserel
+    const PlannerInfo *root,
+    const RelOptInfo *baserel
 );
 
 extern void append_leading_expr(
     StringInfo buf,
-    PlannerInfo *root,
+    const PlannerInfo *root,
     Path *path
 );
 
@@ -651,13 +651,13 @@ extern const char *path_tag_to_name(
 
 extern void append_path_tree(
     StringInfo buf,
-    PlannerInfo *root,
+    const PlannerInfo *root,
     Path *path,
     int indent
 );
 
 extern void debug_print_path_hintstyle(
-    PlannerInfo *root,
+    const PlannerInfo *root,
     Path *path
 );
 
@@ -667,13 +667,13 @@ extern const char *reloptkind_to_cstring(
 
 extern void build_join_key(
     StringInfo buf,
-    PlannerInfo *root,
-    RelOptInfo *rel
+    const PlannerInfo *root,
+    const RelOptInfo *rel
 );
 
 extern void debug_print_rel_paths(
-    PlannerInfo *root,
-    RelOptInfo *rel
+    const PlannerInfo *root,
+    const RelOptInfo *rel
 );
 
 #endif							/* PATHNODE_H */

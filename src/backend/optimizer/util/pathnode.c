@@ -984,6 +984,7 @@ create_seqscan_path(PlannerInfo *root, RelOptInfo *rel,
     pathnode->parallel_safe = rel->consider_parallel;
     pathnode->parallel_workers = parallel_workers;
     pathnode->pathkeys = NIL; /* seqscan has unordered result */
+    pathnode->is_set_by_dv = false;
 
     cost_seqscan(pathnode, root, rel, pathnode->param_info);
 
@@ -1007,6 +1008,7 @@ create_samplescan_path(PlannerInfo *root, RelOptInfo *rel, Relids required_outer
     pathnode->parallel_safe = rel->consider_parallel;
     pathnode->parallel_workers = 0;
     pathnode->pathkeys = NIL; /* samplescan has unordered result */
+    pathnode->is_set_by_dv = false;
 
     cost_samplescan(pathnode, root, rel, pathnode->param_info);
 
@@ -1064,6 +1066,7 @@ create_index_path(PlannerInfo *root,
     pathnode->indexorderbys = indexorderbys;
     pathnode->indexorderbycols = indexorderbycols;
     pathnode->indexscandir = indexscandir;
+    pathnode->path.is_set_by_dv = false;
 
     cost_index(pathnode, root, loop_count, partial_path);
 
@@ -1100,6 +1103,7 @@ create_bitmap_heap_path(PlannerInfo *root,
     pathnode->path.parallel_safe = rel->consider_parallel;
     pathnode->path.parallel_workers = parallel_degree;
     pathnode->path.pathkeys = NIL; /* always unordered */
+    pathnode->path.is_set_by_dv = false;
 
     pathnode->bitmapqual = bitmapqual;
 
@@ -1153,6 +1157,7 @@ create_bitmap_and_path(PlannerInfo *root,
     pathnode->path.pathkeys = NIL; /* always unordered */
 
     pathnode->bitmapquals = bitmapquals;
+    pathnode->path.is_set_by_dv = false;
 
     /* this sets bitmapselectivity as well as the regular cost fields: */
     cost_bitmap_and_node(pathnode, root);
@@ -1203,6 +1208,7 @@ create_bitmap_or_path(PlannerInfo *root,
     pathnode->path.pathkeys = NIL; /* always unordered */
 
     pathnode->bitmapquals = bitmapquals;
+    pathnode->path.is_set_by_dv = false;
 
     /* this sets bitmapselectivity as well as the regular cost fields: */
     cost_bitmap_or_node(pathnode, root);
@@ -1230,6 +1236,7 @@ create_tidscan_path(PlannerInfo *root, RelOptInfo *rel, List *tidquals,
     pathnode->path.pathkeys = NIL; /* always unordered */
 
     pathnode->tidquals = tidquals;
+    pathnode->path.is_set_by_dv = false;
 
     cost_tidscan(&pathnode->path, root, rel, tidquals,
                  pathnode->path.param_info);
@@ -1258,6 +1265,7 @@ create_tidrangescan_path(PlannerInfo *root, RelOptInfo *rel,
     pathnode->path.pathkeys = NIL; /* always unordered */
 
     pathnode->tidrangequals = tidrangequals;
+    pathnode->path.is_set_by_dv = false;
 
     cost_tidrangescan(&pathnode->path, root, rel, tidrangequals,
                       pathnode->path.param_info);
@@ -1384,6 +1392,7 @@ create_append_path(PlannerInfo *root,
     /* If the caller provided a row estimate, override the computed value. */
     if (rows >= 0)
         pathnode->path.rows = rows;
+    pathnode->path.is_set_by_dv = false;
 
     return pathnode;
 }
@@ -1456,6 +1465,7 @@ create_merge_append_path(PlannerInfo *root,
     pathnode->path.parallel_workers = 0;
     pathnode->path.pathkeys = pathkeys;
     pathnode->subpaths = subpaths;
+    pathnode->path.is_set_by_dv = false;
 
     /*
      * Apply query-wide LIMIT if known and path is for sole base relation.
@@ -1545,6 +1555,7 @@ create_group_result_path(PlannerInfo *root, RelOptInfo *rel,
     pathnode->path.parallel_workers = 0;
     pathnode->path.pathkeys = NIL;
     pathnode->quals = havingqual;
+    pathnode->path.is_set_by_dv = false;
 
     /*
      * We can't quite use cost_resultscan() because the quals we want to
@@ -1594,6 +1605,7 @@ create_material_path(RelOptInfo *rel, Path *subpath) {
     pathnode->path.pathkeys = subpath->pathkeys;
 
     pathnode->subpath = subpath;
+    pathnode->path.is_set_by_dv = false;
 
     cost_material(&pathnode->path,
                   subpath->startup_cost,
@@ -1640,6 +1652,7 @@ create_memoize_path(PlannerInfo *root, RelOptInfo *rel, Path *subpath,
      * If left at 0, the executor will make a guess at a good value.
      */
     pathnode->est_entries = 0;
+    pathnode->path.is_set_by_dv = false;
 
     /*
      * Add a small additional charge for caching the first entry.  All the
@@ -1857,6 +1870,7 @@ create_unique_path(PlannerInfo *root, RelOptInfo *rel, Path *subpath,
     }
 
     rel->cheapest_unique_path = (Path *) pathnode;
+    pathnode->path.is_set_by_dv = false;
 
     MemoryContextSwitchTo(oldcontext);
 
@@ -1912,6 +1926,7 @@ create_gather_merge_path(PlannerInfo *root, RelOptInfo *rel, Path *subpath,
         input_startup_cost += sort_path.startup_cost;
         input_total_cost += sort_path.total_cost;
     }
+    pathnode->path.is_set_by_dv = false;
 
     cost_gather_merge(pathnode, root, rel, pathnode->path.param_info,
                       input_startup_cost, input_total_cost, rows);
@@ -1984,6 +1999,7 @@ create_gather_path(PlannerInfo *root, RelOptInfo *rel, Path *subpath,
         pathnode->num_workers = 1;
         pathnode->single_copy = true;
     }
+    pathnode->path.is_set_by_dv = false;
 
     cost_gather(pathnode, root, rel, pathnode->path.param_info, rows);
 
@@ -2021,6 +2037,7 @@ create_subqueryscan_path(PlannerInfo *root, RelOptInfo *rel, Path *subpath,
     pathnode->path.parallel_workers = subpath->parallel_workers;
     pathnode->path.pathkeys = pathkeys;
     pathnode->subpath = subpath;
+    pathnode->path.is_set_by_dv = false;
 
     cost_subqueryscan(pathnode, root, rel, pathnode->path.param_info,
                       trivial_pathtarget);
@@ -2047,6 +2064,7 @@ create_functionscan_path(PlannerInfo *root, RelOptInfo *rel,
     pathnode->parallel_safe = rel->consider_parallel;
     pathnode->parallel_workers = 0;
     pathnode->pathkeys = pathkeys;
+    pathnode->is_set_by_dv = false;
 
     cost_functionscan(pathnode, root, rel, pathnode->param_info);
 
@@ -2072,6 +2090,7 @@ create_tablefuncscan_path(PlannerInfo *root, RelOptInfo *rel,
     pathnode->parallel_safe = rel->consider_parallel;
     pathnode->parallel_workers = 0;
     pathnode->pathkeys = NIL; /* result is always unordered */
+    pathnode->is_set_by_dv = false;
 
     cost_tablefuncscan(pathnode, root, rel, pathnode->param_info);
 
@@ -2097,6 +2116,7 @@ create_valuesscan_path(PlannerInfo *root, RelOptInfo *rel,
     pathnode->parallel_safe = rel->consider_parallel;
     pathnode->parallel_workers = 0;
     pathnode->pathkeys = NIL; /* result is always unordered */
+    pathnode->is_set_by_dv = false;
 
     cost_valuesscan(pathnode, root, rel, pathnode->param_info);
 
@@ -2121,6 +2141,7 @@ create_ctescan_path(PlannerInfo *root, RelOptInfo *rel, Relids required_outer) {
     pathnode->parallel_safe = rel->consider_parallel;
     pathnode->parallel_workers = 0;
     pathnode->pathkeys = NIL; /* XXX for now, result is always unordered */
+    pathnode->is_set_by_dv = false;
 
     cost_ctescan(pathnode, root, rel, pathnode->param_info);
 
@@ -2146,6 +2167,7 @@ create_namedtuplestorescan_path(PlannerInfo *root, RelOptInfo *rel,
     pathnode->parallel_safe = rel->consider_parallel;
     pathnode->parallel_workers = 0;
     pathnode->pathkeys = NIL; /* result is always unordered */
+    pathnode->is_set_by_dv = false;
 
     cost_namedtuplestorescan(pathnode, root, rel, pathnode->param_info);
 
@@ -2171,6 +2193,7 @@ create_resultscan_path(PlannerInfo *root, RelOptInfo *rel,
     pathnode->parallel_safe = rel->consider_parallel;
     pathnode->parallel_workers = 0;
     pathnode->pathkeys = NIL; /* result is always unordered */
+    pathnode->is_set_by_dv = false;
 
     cost_resultscan(pathnode, root, rel, pathnode->param_info);
 
@@ -2196,6 +2219,7 @@ create_worktablescan_path(PlannerInfo *root, RelOptInfo *rel,
     pathnode->parallel_safe = rel->consider_parallel;
     pathnode->parallel_workers = 0;
     pathnode->pathkeys = NIL; /* result is always unordered */
+    pathnode->is_set_by_dv = false;
 
     /* Cost is the same as for a regular CTE scan */
     cost_ctescan(pathnode, root, rel, pathnode->param_info);
@@ -2239,6 +2263,7 @@ create_foreignscan_path(PlannerInfo *root, RelOptInfo *rel,
     pathnode->path.startup_cost = startup_cost;
     pathnode->path.total_cost = total_cost;
     pathnode->path.pathkeys = pathkeys;
+    pathnode->path.is_set_by_dv = false;
 
     pathnode->fdw_outerpath = fdw_outerpath;
     pathnode->fdw_private = fdw_private;
@@ -2288,6 +2313,7 @@ create_foreign_join_path(PlannerInfo *root, RelOptInfo *rel,
     pathnode->path.startup_cost = startup_cost;
     pathnode->path.total_cost = total_cost;
     pathnode->path.pathkeys = pathkeys;
+    pathnode->path.is_set_by_dv = false;
 
     pathnode->fdw_outerpath = fdw_outerpath;
     pathnode->fdw_private = fdw_private;
@@ -2332,6 +2358,7 @@ create_foreign_upper_path(PlannerInfo *root, RelOptInfo *rel,
     pathnode->path.startup_cost = startup_cost;
     pathnode->path.total_cost = total_cost;
     pathnode->path.pathkeys = pathkeys;
+    pathnode->path.is_set_by_dv = false;
 
     pathnode->fdw_outerpath = fdw_outerpath;
     pathnode->fdw_private = fdw_private;
@@ -2461,6 +2488,7 @@ create_nestloop_path(PlannerInfo *root,
     pathnode->jpath.outerjoinpath = outer_path;
     pathnode->jpath.innerjoinpath = inner_path;
     pathnode->jpath.joinrestrictinfo = restrict_clauses;
+    pathnode->jpath.path.is_set_by_dv = false;
 
     final_cost_nestloop(root, pathnode, workspace, extra);
 
@@ -2527,6 +2555,7 @@ create_mergejoin_path(PlannerInfo *root,
     pathnode->path_mergeclauses = mergeclauses;
     pathnode->outersortkeys = outersortkeys;
     pathnode->innersortkeys = innersortkeys;
+    pathnode->jpath.path.is_set_by_dv = false;
     /* pathnode->skip_mark_restore will be set by final_cost_mergejoin */
     /* pathnode->materialize_inner will be set by final_cost_mergejoin */
 
@@ -2601,6 +2630,7 @@ create_hashjoin_path(PlannerInfo *root,
     pathnode->jpath.innerjoinpath = inner_path;
     pathnode->jpath.joinrestrictinfo = restrict_clauses;
     pathnode->path_hashclauses = hashclauses;
+    pathnode->jpath.path.is_set_by_dv = false;
     /* final_cost_hashjoin will fill in pathnode->num_batches */
 
     final_cost_hashjoin(root, pathnode, workspace, extra);
@@ -2693,6 +2723,7 @@ create_projection_path(PlannerInfo *root,
                                     target->cost.startup +
                                     (cpu_tuple_cost + target->cost.per_tuple) * subpath->rows;
     }
+    pathnode->path.is_set_by_dv = false;
 
     if (root->pass == 3) {
         pathnode->path.score = pathnode->subpath->score;
@@ -2792,6 +2823,7 @@ apply_projection_to_path(PlannerInfo *root,
          */
         path->parallel_safe = false;
     }
+    path->is_set_by_dv = false;
 
     return path;
 }
@@ -2856,7 +2888,7 @@ create_set_projection_path(PlannerInfo *root,
                                 target->cost.startup +
                                 (cpu_tuple_cost + target->cost.per_tuple) * subpath->rows +
                                 (pathnode->path.rows - subpath->rows) * cpu_tuple_cost / 2;
-
+    pathnode->path.is_set_by_dv = false;
     return pathnode;
 }
 
@@ -2906,6 +2938,7 @@ create_incremental_sort_path(PlannerInfo *root,
                           work_mem, limit_tuples);
 
     sort->nPresortedCols = presorted_keys;
+    pathnode->path.is_set_by_dv = false;
 
     if (root->pass == 3) {
         pathnode->path.score = subpath->score;
@@ -2943,6 +2976,7 @@ create_sort_path(PlannerInfo *root,
                                    subpath->parallel_safe;
     pathnode->path.parallel_workers = subpath->parallel_workers;
     pathnode->path.pathkeys = pathkeys;
+    pathnode->path.is_set_by_dv = false;
 
     pathnode->subpath = subpath;
 
@@ -2997,6 +3031,7 @@ create_group_path(PlannerInfo *root,
 
     pathnode->groupClause = groupClause;
     pathnode->qual = qual;
+    pathnode->path.is_set_by_dv = false;
 
     cost_group(&pathnode->path, root,
                list_length(groupClause),
@@ -3066,6 +3101,7 @@ create_upper_unique_path(PlannerInfo *root,
     pathnode->path.total_cost = subpath->total_cost +
                                 cpu_operator_cost * subpath->rows * numCols;
     pathnode->path.rows = numGroups;
+    pathnode->path.is_set_by_dv = false;
 
     return pathnode;
 }
@@ -3144,6 +3180,7 @@ create_agg_path(PlannerInfo *root,
     pathnode->path.startup_cost += target->cost.startup;
     pathnode->path.total_cost += target->cost.startup +
             target->cost.per_tuple * pathnode->path.rows;
+    pathnode->path.is_set_by_dv = false;
 
     if (root->pass == 3) {
         pathnode->path.score = subpath->score;
@@ -3301,6 +3338,7 @@ create_groupingsets_path(PlannerInfo *root,
             pathnode->path.rows += agg_path.rows;
         }
     }
+    pathnode->path.is_set_by_dv = false;
 
     /* add tlist eval cost for each output row */
     pathnode->path.startup_cost += target->cost.startup;
@@ -3358,6 +3396,7 @@ create_minmaxagg_path(PlannerInfo *root,
     pathnode->path.startup_cost = initplan_cost + target->cost.startup;
     pathnode->path.total_cost = initplan_cost + target->cost.startup +
                                 target->cost.per_tuple + cpu_tuple_cost;
+    pathnode->path.is_set_by_dv = false;
 
     /*
      * Add cost of qual, if any --- but we ignore its selectivity, since our
@@ -3436,6 +3475,8 @@ create_windowagg_path(PlannerInfo *root,
                    subpath->total_cost,
                    subpath->rows);
 
+    pathnode->path.is_set_by_dv = false;
+
     /* add tlist eval cost for each output row */
     pathnode->path.startup_cost += target->cost.startup;
     pathnode->path.total_cost += target->cost.startup +
@@ -3493,6 +3534,7 @@ create_setop_path(PlannerInfo *root,
     pathnode->flagColIdx = flagColIdx;
     pathnode->firstFlag = firstFlag;
     pathnode->numGroups = numGroups;
+    pathnode->path.is_set_by_dv = false;
 
     /*
      * Charge one cpu_operator_cost per comparison per input tuple. We assume
@@ -3549,6 +3591,7 @@ create_recursiveunion_path(PlannerInfo *root,
     pathnode->distinctList = distinctList;
     pathnode->wtParam = wtParam;
     pathnode->numGroups = numGroups;
+    pathnode->path.is_set_by_dv = false;
 
     cost_recursive_union(&pathnode->path, leftpath, rightpath);
 
@@ -3589,6 +3632,7 @@ create_lockrows_path(PlannerInfo *root, RelOptInfo *rel,
     pathnode->subpath = subpath;
     pathnode->rowMarks = rowMarks;
     pathnode->epqParam = epqParam;
+    pathnode->path.is_set_by_dv = false;
 
     /*
      * We should charge something extra for the costs of row locking and
@@ -3699,6 +3743,7 @@ create_modifytable_path(PlannerInfo *root, RelOptInfo *rel,
     pathnode->onconflict = onconflict;
     pathnode->epqParam = epqParam;
     pathnode->mergeActionLists = mergeActionLists;
+    pathnode->path.is_set_by_dv = false;
 
     return pathnode;
 }
@@ -3746,6 +3791,7 @@ create_limit_path(PlannerInfo *root, RelOptInfo *rel,
     pathnode->limitOffset = limitOffset;
     pathnode->limitCount = limitCount;
     pathnode->limitOption = limitOption;
+    pathnode->path.is_set_by_dv = false;
 
     /*
      * Adjust the output rows count and costs according to the offset/limit.

@@ -1658,6 +1658,7 @@ typedef struct Path
 	Sample     *total_cost_sample pg_node_attr(read_write_ignore);
 
 	double		score;
+    bool        is_set_by_dv;
 } Path;
 
 /* Macro for extracting a path's parameterization relids; beware double eval */

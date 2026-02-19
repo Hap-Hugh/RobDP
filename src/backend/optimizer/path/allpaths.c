@@ -209,7 +209,7 @@ static void remove_unused_subquery_outputs(Query *subquery, RelOptInfo *rel,
 /* ---------- Alias helpers ---------- */
 
 const char *
-get_rte_aliasname(PlannerInfo *root, Index varno) {
+get_rte_aliasname(const PlannerInfo *root, const Index varno) {
     RangeTblEntry *rte;
 
     if (root == NULL)
@@ -233,7 +233,7 @@ get_rte_aliasname(PlannerInfo *root, Index varno) {
 
 /* Print a relid/relids as "a b c" (space separated). */
 void
-append_relids_as_aliases(StringInfo buf, PlannerInfo *root, Bitmapset *relids) {
+append_relids_as_aliases(StringInfo buf, const PlannerInfo *root, const Bitmapset *relids) {
     int member = -1;
     bool first = true;
 
@@ -261,7 +261,7 @@ append_relids_as_aliases(StringInfo buf, PlannerInfo *root, Bitmapset *relids) {
 }
 
 void
-append_single_rel_as_alias(StringInfo buf, PlannerInfo *root, RelOptInfo *baserel) {
+append_single_rel_as_alias(StringInfo buf, const PlannerInfo *root, const RelOptInfo *baserel) {
     Index varno = baserel ? baserel->relid : 0;
     const char *alias = (varno > 0) ? get_rte_aliasname(root, varno) : NULL;
 
@@ -274,7 +274,7 @@ append_single_rel_as_alias(StringInfo buf, PlannerInfo *root, RelOptInfo *basere
 /* ---------- Leading() (join order) ---------- */
 
 void
-append_leading_expr(StringInfo buf, PlannerInfo *root, Path *path) {
+append_leading_expr(StringInfo buf, const PlannerInfo *root, Path *path) {
     if (path == NULL) {
         appendStringInfoString(buf, "<NULL>");
         return;
@@ -282,7 +282,8 @@ append_leading_expr(StringInfo buf, PlannerInfo *root, Path *path) {
 
     switch (path->pathtype) {
         case T_SeqScan:
-        case T_IndexScan: {
+        case T_IndexScan:
+        case T_IndexOnlyScan: {
             /* Leaf: just its alias */
             append_single_rel_as_alias(buf, root, path->parent);
             break;
@@ -291,13 +292,44 @@ append_leading_expr(StringInfo buf, PlannerInfo *root, Path *path) {
         case T_HashJoin:
         case T_MergeJoin:
         case T_NestLoop: {
-            JoinPath *jp = (JoinPath *) path;
+            const JoinPath *jp = (JoinPath *) path;
 
             appendStringInfoChar(buf, '(');
             append_leading_expr(buf, root, jp->outerjoinpath);
             appendStringInfoChar(buf, ' ');
             append_leading_expr(buf, root, jp->innerjoinpath);
             appendStringInfoChar(buf, ')');
+            break;
+        }
+
+        case T_Gather: {
+            const GatherPath *gp = (GatherPath *) path;
+            append_leading_expr(buf, root, gp->subpath);
+            break;
+        }
+        case T_GatherMerge: {
+            const GatherMergePath *gmp = (GatherMergePath *) path;
+            append_leading_expr(buf, root, gmp->subpath);
+            break;
+        }
+        case T_Agg: {
+            const AggPath *ap = (AggPath *) path;
+            append_leading_expr(buf, root, ap->subpath);
+            break;
+        }
+        case T_Sort: {
+            const SortPath *sp = (SortPath *) path;
+            append_leading_expr(buf, root, sp->subpath);
+            break;
+        }
+        case T_IncrementalSort: {
+            const IncrementalSortPath *isp = (IncrementalSortPath *) path;
+            append_leading_expr(buf, root, isp->spath.subpath);
+            break;
+        }
+        case T_Limit: {
+            const LimitPath *lp = (LimitPath *) path;
+            append_leading_expr(buf, root, lp->subpath);
             break;
         }
 
@@ -315,14 +347,21 @@ append_leading_expr(StringInfo buf, PlannerInfo *root, Path *path) {
 /* ---------- Tree printer (plan-like) ---------- */
 
 const char *
-path_tag_to_name(NodeTag tag) {
+path_tag_to_name(const NodeTag tag) {
     switch (tag) {
         case T_SeqScan: return "SeqScan";
         case T_IndexScan: return "IndexScan";
+        case T_IndexOnlyScan: return "IndexOnlyScan";
         case T_HashJoin: return "HashJoin";
         case T_MergeJoin: return "MergeJoin";
         case T_NestLoop: return "NestLoop";
-        default: return "OtherPath";
+        case T_Gather: return "Gather";
+        case T_GatherMerge: return "GatherMerge";
+        case T_Agg: return "Aggregate";
+        case T_Sort: return "Sort";
+        case T_IncrementalSort: return "IncrementalSort";
+        case T_Limit: return "Limit";
+        default: return "Other";
     }
 }
 
@@ -333,22 +372,24 @@ path_tag_to_name(NodeTag tag) {
  *   then recursively print children indented.
  */
 void
-append_path_tree(StringInfo buf, PlannerInfo *root, Path *path, int indent) {
-    int i;
-
+append_path_tree(StringInfo buf, const PlannerInfo *root, Path *path, const int indent) {
     if (path == NULL) {
         appendStringInfoString(buf, "<NULL path>\n");
         return;
     }
 
-    for (i = 0; i < indent; i++)
+    for (int i = 0; i < indent; i++)
         appendStringInfoChar(buf, ' ');
 
+    if (path->is_set_by_dv) {
+        appendStringInfo(buf, "'");
+    }
     appendStringInfo(buf, "%s (", path_tag_to_name(path->pathtype));
 
     switch (path->pathtype) {
         case T_SeqScan:
         case T_IndexScan:
+        case T_IndexOnlyScan:
             append_single_rel_as_alias(buf, root, path->parent);
             break;
 
@@ -373,6 +414,24 @@ append_path_tree(StringInfo buf, PlannerInfo *root, Path *path, int indent) {
         const JoinPath *jp = (JoinPath *) path;
         append_path_tree(buf, root, jp->outerjoinpath, indent + 2);
         append_path_tree(buf, root, jp->innerjoinpath, indent + 2);
+    } else if (nodeTag(path) == T_GatherPath) {
+        const GatherPath *gp = (GatherPath *) path;
+        append_path_tree(buf, root, gp->subpath, indent + 2);
+    } else if (nodeTag(path) == T_GatherMergePath) {
+        const GatherMergePath *gmp = (GatherMergePath *) path;
+        append_path_tree(buf, root, gmp->subpath, indent + 2);
+    } else if (nodeTag(path) == T_AggPath) {
+        const AggPath *ap = (AggPath *) path;
+        append_path_tree(buf, root, ap->subpath, indent + 2);
+    } else if (nodeTag(path) == T_SortPath) {
+        const SortPath *sp = (SortPath *) path;
+        append_path_tree(buf, root, sp->subpath, indent + 2);
+    } else if (nodeTag(path) == T_IncrementalSortPath) {
+        const IncrementalSortPath *isp = (IncrementalSortPath *) path;
+        append_path_tree(buf, root, isp->spath.subpath, indent + 2);
+    } else if (nodeTag(path) == T_LimitPath) {
+        const LimitPath *lp = (LimitPath *) path;
+        append_path_tree(buf, root, lp->subpath, indent + 2);
     }
 }
 
@@ -380,11 +439,11 @@ append_path_tree(StringInfo buf, PlannerInfo *root, Path *path, int indent) {
 
 /*
  * Build hint-like strings from a Path:
- * 1) Composition tree (plan-ish)
- * 2) Leading((...)) join order
+ * 1) Leading((...)) join order
+ * 2) Composition tree (plan-ish)
  */
 void
-debug_print_path_hintstyle(PlannerInfo *root, Path *path) {
+debug_print_path_hintstyle(const PlannerInfo *root, Path *path) {
     StringInfoData treebuf;
     StringInfoData leadbuf;
 
@@ -399,15 +458,15 @@ debug_print_path_hintstyle(PlannerInfo *root, Path *path) {
 
     elog(LOG, "[planner-debug] Path score: %.3f", path->score);
     elog(LOG, "[planner-debug] Path cost: %.3f..%.3f", path->startup_cost, path->total_cost);
-    elog(LOG, "[planner-debug] Path composition:\n%s", treebuf.data);
     elog(LOG, "[planner-debug] %s", leadbuf.data);
+    elog(LOG, "[planner-debug] Path composition:\n%s", treebuf.data);
 
     pfree(treebuf.data);
     pfree(leadbuf.data);
 }
 
 const char *
-reloptkind_to_cstring(RelOptKind kind) {
+reloptkind_to_cstring(const RelOptKind kind) {
     switch (kind) {
         case RELOPT_BASEREL: return "baserel";
         case RELOPT_JOINREL: return "joinrel";
@@ -420,7 +479,7 @@ reloptkind_to_cstring(RelOptKind kind) {
  * If alias names cannot be found, fallback to "rel<varno>".
  */
 void
-build_join_key(StringInfo buf, PlannerInfo *root, RelOptInfo *rel) {
+build_join_key(StringInfo buf, const PlannerInfo *root, const RelOptInfo *rel) {
     int member = -1;
     bool first = true;
 
@@ -456,7 +515,7 @@ build_join_key(StringInfo buf, PlannerInfo *root, RelOptInfo *rel) {
  *   [planner-debug] rel=0x... kind=joinrel name=t1=t2 paths=5 partial_paths=2
  */
 void
-debug_print_rel_paths(PlannerInfo *root, RelOptInfo *rel) {
+debug_print_rel_paths(const PlannerInfo *root, const RelOptInfo *rel) {
     int npaths;
     int npartial;
     StringInfoData namebuf;
@@ -3801,6 +3860,7 @@ standard_join_search(PlannerInfo *root, const int levels_needed, List *initial_r
          * After that, we're done creating paths for the joinrel, so run
          * set_cheapest().
          */
+
         foreach(lc, root->join_rel_level[lev]) {
             RelOptInfo *rel = lfirst(lc);
             debug_print_rel_paths(root, rel);
@@ -3850,6 +3910,27 @@ standard_join_search(PlannerInfo *root, const int levels_needed, List *initial_r
                 foreach(lc_path, kept_pathlist) {
                     Path *path = lfirst(lc_path);
                     debug_print_path_hintstyle(root, path);
+
+                    /* Check whether `cur_child_local_path` is the subpath of `path`. */
+                    Path *inner_path = NULL, *outer_path = NULL;
+                    if (path->pathtype == T_NestLoop) {
+                        inner_path = ((NestPath *) path)->jpath.innerjoinpath;
+                        outer_path = ((NestPath *) path)->jpath.outerjoinpath;
+                    } else if (path->pathtype == T_HashJoin) {
+                        inner_path = ((HashPath *) path)->jpath.innerjoinpath;
+                        outer_path = ((HashPath *) path)->jpath.outerjoinpath;
+                    } else if (path->pathtype == T_MergeJoin) {
+                        inner_path = ((MergePath *) path)->jpath.innerjoinpath;
+                        outer_path = ((MergePath *) path)->jpath.outerjoinpath;
+                    }
+
+                    elog(LOG, ">>>> [A+F] >>>>");
+                    if ((inner_path->is_set_by_dv || outer_path->is_set_by_dv) && lev > 2) {
+                        elog(LOG, "---- [FOUND] ----");
+                        debug_print_path_hintstyle(root, inner_path);
+                        debug_print_path_hintstyle(root, outer_path);
+                    }
+                    elog(LOG, "<<<< [A+F] <<<<");
                 }
 
                 /* Pass B: only if capacity remains */

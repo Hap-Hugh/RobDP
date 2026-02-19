@@ -335,6 +335,11 @@ select_path_by_retention_set(
         if (should_save_score) {
             /* Expose expected total cost on Path for later stages. */
             keep->score = rank.score;
+            keep->is_set_by_dv = false;
+        } else {
+            if (keep) {
+                keep->is_set_by_dv = true;
+            }
         }
         kept_list = lappend(kept_list, keep);
     }
@@ -349,6 +354,11 @@ select_path_by_retention_set(
             if (should_save_score) {
                 /* Expose expected total cost on Path for later stages. */
                 drop->score = rank.score;
+                drop->is_set_by_dv = false;
+            } else {
+                if (drop) {
+                    drop->is_set_by_dv = true;
+                }
             }
             dropped_list = lappend(dropped_list, drop);
         }
@@ -618,6 +628,11 @@ select_path_by_jointype_based_score(
             if (should_save_score) {
                 /* Expose the jointype-based strategy score on Path. */
                 keep->score = rank.score;
+                keep->is_set_by_dv = false;
+            } else {
+                if (keep) {
+                    keep->is_set_by_dv = true;
+                }
             }
             kept_list = lappend(kept_list, keep);
         }
@@ -635,6 +650,11 @@ select_path_by_jointype_based_score(
             if (should_save_score) {
                 /* Expose the jointype-based strategy score on Path. */
                 drop->score = rank.score;
+                drop->is_set_by_dv = false;
+            } else {
+                if (drop) {
+                    drop->is_set_by_dv = true;
+                }
             }
             dropped_list = lappend(dropped_list, drop);
         }
@@ -737,6 +757,11 @@ select_path_by_robust_coverage(
         if (should_save_score) {
             /* Expose TOTAL robust coverage as Path->score (scalar) */
             keep->score = cover_arr[i].score;
+            keep->is_set_by_dv = false;
+        } else {
+            if (keep) {
+                keep->is_set_by_dv = true;
+            }
         }
         kept_list = lappend(kept_list, keep);
     }
@@ -746,6 +771,11 @@ select_path_by_robust_coverage(
         Path *drop = cover_arr[i].path;
         if (should_save_score) {
             drop->score = cover_arr[i].score;
+            drop->is_set_by_dv = false;
+        } else {
+            if (drop) {
+                drop->is_set_by_dv = true;
+            }
         }
         dropped_list = lappend(dropped_list, drop);
     }
@@ -884,6 +914,11 @@ select_path_by_strategy_basic(
             /* Expose computed score on Path for later stages,
              * and for the final output after the DP process. */
             keep->score = rank.score;
+            keep->is_set_by_dv = false;
+        } else {
+            if (keep) {
+                keep->is_set_by_dv = true;
+            }
         }
         kept_list = lappend(kept_list, keep);
     }
@@ -897,6 +932,11 @@ select_path_by_strategy_basic(
                 /* Expose computed score on Path for later stages,
                  * and for the final output after the DP process. */
                 drop->score = rank.score;
+                drop->is_set_by_dv = false;
+            } else {
+                if (drop) {
+                    drop->is_set_by_dv = true;
+                }
             }
             dropped_list = lappend(dropped_list, drop);
         }
